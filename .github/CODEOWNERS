@@ -1,0 +1,45 @@
+# CODEOWNERS
+#
+# Routes pull-request review requests to the person(s) familiar with the
+# changed area. This file does NOT grant repository access and does NOT
+# by itself require code-owner approval to merge -- that depends on a
+# separate branch-protection setting (see docs/TEAM_WORKFLOW.md).
+#
+# GitHub uses the LAST matching pattern in this file, not the first. If a
+# broader fallback pattern is ever added, put it ABOVE these more specific
+# entries so the specific ones keep winning.
+#
+# Person A = @Patric-1613            (ingestion)
+# Person B = @SujinJK                (intelligence and agentic workflows)
+# Person C = @chamath-wijayasundara  (delivery: API, email, chat, frontend)
+
+# --- Module ownership ---
+/src/ai_daily_digest/ingestion/      @Patric-1613
+/src/ai_daily_digest/intelligence/   @SujinJK
+/src/ai_daily_digest/delivery/       @chamath-wijayasundara
+
+# Person A's source research and registry live outside src/.
+/sources.yaml                        @Patric-1613
+/PART_A_SOURCE_RESEARCH.md           @Patric-1613
+
+# --- Shared code and contracts: any one of the three satisfies review ---
+/src/ai_daily_digest/shared/         @Patric-1613 @SujinJK @chamath-wijayasundara
+/docs/API_CONTRACT.md                @Patric-1613 @SujinJK @chamath-wijayasundara
+/docs/ARCHITECTURE.md                @Patric-1613 @SujinJK @chamath-wijayasundara
+/docs/adr/                           @Patric-1613 @SujinJK @chamath-wijayasundara
+
+# --- Engineering policy and process (shared per AGENTS.md) ---
+/AGENTS.md                           @Patric-1613 @SujinJK @chamath-wijayasundara
+/CLAUDE.md                           @Patric-1613 @SujinJK @chamath-wijayasundara
+/CONTRIBUTING.md                     @Patric-1613 @SujinJK @chamath-wijayasundara
+/docs/ENGINEERING_STANDARDS.md       @Patric-1613 @SujinJK @chamath-wijayasundara
+/docs/TEAM_WORKFLOW.md               @Patric-1613 @SujinJK @chamath-wijayasundara
+
+# --- CI and quality-gate configuration ---
+/.github/workflows/                  @Patric-1613 @SujinJK @chamath-wijayasundara
+/pyproject.toml                      @Patric-1613 @SujinJK @chamath-wijayasundara
+/Makefile                            @Patric-1613 @SujinJK @chamath-wijayasundara
+/.pre-commit-config.yaml             @Patric-1613 @SujinJK @chamath-wijayasundara
+
+# --- This file protects itself from silent changes ---
+/.github/CODEOWNERS                  @Patric-1613 @SujinJK @chamath-wijayasundara

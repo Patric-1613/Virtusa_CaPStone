@@ -1,0 +1,130 @@
+# Starter registry for Part A. Secrets belong in environment variables, never here.
+# Global timeout, retry, response-size, rate-limit, and user-agent policy will be added with the
+# first collector schema. Per-source overrides must be explicit; collectors must not invent them.
+sources:
+  - id: openai_news
+    publisher: OpenAI
+    type: rss
+    url: https://openai.com/news/rss.xml
+    priority: 0
+    cadence_minutes: 360
+
+  - id: openai_release_notes
+    publisher: OpenAI
+    type: changelog
+    url: https://openai.com/products/release-notes/
+    priority: 0
+    cadence_minutes: 360
+
+  - id: anthropic_news
+    publisher: Anthropic
+    type: html
+    url: https://www.anthropic.com/news
+    priority: 0
+    cadence_minutes: 360
+
+  - id: anthropic_release_notes
+    publisher: Anthropic
+    type: changelog
+    url: https://docs.claude.com/en/release-notes/overview
+    priority: 0
+    cadence_minutes: 360
+
+  - id: google_ai_blog
+    publisher: Google
+    type: rss
+    url: https://blog.google/technology/ai/rss/
+    priority: 0
+    cadence_minutes: 360
+
+  - id: google_deepmind
+    publisher: Google DeepMind
+    type: rss
+    url: https://deepmind.google/blog/rss.xml
+    priority: 0
+    cadence_minutes: 360
+
+  - id: gemini_api_changelog
+    publisher: Google
+    type: changelog
+    url: https://ai.google.dev/gemini-api/docs/changelog
+    priority: 0
+    cadence_minutes: 360
+
+  - id: xai_release_notes
+    publisher: xAI
+    type: changelog
+    url: https://docs.x.ai/developers/release-notes
+    priority: 0
+    cadence_minutes: 360
+
+  - id: langchain_changelog
+    publisher: LangChain
+    type: changelog
+    url: https://docs.langchain.com/oss/python/releases/changelog
+    priority: 0
+    cadence_minutes: 360
+
+  - id: langchain_pypi
+    publisher: Python Package Index
+    subject: LangChain
+    type: rss
+    url: https://pypi.org/rss/project/langchain/releases.xml
+    priority: 0
+    cadence_minutes: 360
+
+  - id: langgraph_pypi
+    publisher: Python Package Index
+    subject: LangGraph
+    type: rss
+    url: https://pypi.org/rss/project/langgraph/releases.xml
+    priority: 1
+    cadence_minutes: 360
+
+  - id: deepagents_pypi
+    publisher: Python Package Index
+    subject: Deep Agents
+    type: rss
+    url: https://pypi.org/rss/project/deepagents/releases.xml
+    priority: 1
+    cadence_minutes: 360
+
+  - id: langchain_github_releases
+    publisher: LangChain
+    type: github_releases_api
+    url: https://api.github.com/repos/langchain-ai/langchain/releases
+    auth_env: GITHUB_TOKEN
+    auth_optional: true
+    priority: 1
+    cadence_minutes: 360
+
+  - id: xai_news
+    publisher: xAI
+    type: html
+    url: https://x.ai/news
+    priority: 1
+    cadence_minutes: 720
+
+  - id: meta_ai_blog
+    publisher: Meta
+    subject: Llama
+    type: html
+    url: https://ai.meta.com/blog/
+    priority: 1
+    cadence_minutes: 720
+
+  - id: deeplearning_ai_batch
+    publisher: DeepLearning.AI
+    type: html
+    url: https://www.deeplearning.ai/the-batch
+    editorial: true
+    priority: 1
+    cadence_minutes: 1440
+
+  - id: huggingface_blog
+    publisher: Hugging Face
+    type: rss
+    url: https://huggingface.co/blog/feed.xml
+    community_content: true
+    priority: 1
+    cadence_minutes: 720
