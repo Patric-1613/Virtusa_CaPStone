@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+CLAUDE.local.md
+.codex-log/
+
+# Generated/runtime data
+data/raw/
+data/processed/
+*.log
+
+# Frontend (when added)
+node_modules/
+.vite/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/*.log
+
+# Obsidian — optional local vault state
+.obsidian/
