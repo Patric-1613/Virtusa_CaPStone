@@ -13,7 +13,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_FROZEN: "1"
   UV_NO_EDITABLE: "1"
 
 jobs:
