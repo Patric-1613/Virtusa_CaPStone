@@ -52,6 +52,72 @@ def test_identical_value_is_a_silent_no_op():
     )
     assert change is None
     assert store.field_history(subject, "context_window_tokens") == []
+    # not a Change, but the citation should still point at the freshest
+    # confirming snapshot, not the original one from June
+    assert store.get_current_fact(subject, "context_window_tokens").snapshot_id == "snap_2"
+
+
+def test_change_type_auto_infers_increased_and_decreased():
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    increased = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert increased.change_type == "increased"
+
+    decreased = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "64000", "snap_3", "fact_3"),
+        source_url=None,
+        observed_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    assert decreased.change_type == "decreased"
+
+
+def test_change_type_falls_back_to_changed_for_non_numeric_values():
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("licence_terms", "MIT", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("licence_terms", "Apache-2.0", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert change.change_type == "changed"
+
+
+def test_explicit_change_type_overrides_auto_inference():
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_type="disclosed",
+    )
+    assert change.change_type == "disclosed"
 
 
 def test_changed_value_emits_a_change_with_correct_previous_and_current():

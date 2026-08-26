@@ -94,7 +94,12 @@ def extract_facts(
                 candidate.confidence,
             )
             continue
-        if normalise_name(candidate.quoted_span) not in haystack:
+        # normalise_name("") == "" and "" is a substring of everything,
+        # so an empty/punctuation-only quoted_span would otherwise sail
+        # straight through this check -- reject it explicitly rather than
+        # relying on the substring test alone.
+        normalised_span = normalise_name(candidate.quoted_span)
+        if not normalised_span or normalised_span not in haystack:
             logger.warning(
                 "extraction_rejected reason=ungrounded_span snapshot_id=%s field=%s quoted_span=%r",
                 snapshot.id,

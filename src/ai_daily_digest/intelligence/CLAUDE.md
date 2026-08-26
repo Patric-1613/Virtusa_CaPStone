@@ -96,6 +96,10 @@ each call site are in `docs/LLM_AGENT_SPECS.md` — update both together.
 - LLM call sites (`resolve_llm.py`, `extract_facts.py`) take an
   injectable `call_fn` specifically so tests don't need a real API key or
   network call — use that pattern for new call sites too.
-- Log the exact context bundle sent to the model (`intelligence/llm.py`
-  does this by default) — it's the debugging surface when a claim looks
-  wrong days later.
+- `intelligence/llm.py` logs model, attempt number, prompt length, and a
+  content fingerprint (hash) for every call — **never the raw prompt
+  itself**, per repo-root AGENTS.md's "never log raw prompts" rule
+  (collected page content flows into prompts, so logging them verbatim
+  would leak scraped content into log retention). If you need to inspect
+  an actual prompt while debugging, reproduce the call locally with the
+  same inputs rather than reading it back out of logs.

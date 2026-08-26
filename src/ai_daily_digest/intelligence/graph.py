@@ -153,11 +153,18 @@ def build_graph(
         return {"claims": claims}
 
     def validate(state: PipelineState) -> PipelineState:
-        """Deterministic — no LLM call. known_snapshot_ids here is scoped
-        to just this one item's run (its own snapshot plus whatever
-        snapshot ids its changes cite) — daily_run.py's known_snapshot_ids
-        is the caller-owned superset spanning every run, used again at
-        the final assemble_digest() step."""
+        """Deterministic — no LLM call. Be clear about what this step
+        actually proves at the per-item level: draft() only ever builds
+        a claim's citations FROM the same Change objects this function
+        derives known_snapshot_ids from, so by construction every claim
+        here always validates -- this node cannot currently catch a
+        genuinely bad citation. It exists as (a) a defensive check that
+        starts pulling its weight the moment draft_claims.py or this
+        node's wiring changes, and (b) so every claim leaving this graph
+        already carries a validation_status, matching the shape
+        assemble_digest()/publish_digest() expect. The validation that
+        actually matters runs there, in daily_run.py, against the real
+        accumulated known_snapshot_ids spanning every run — not here."""
         known_snapshot_ids = {state["snapshot"].id}
         for change in state.get("changes", []):
             if change.previous is not None and change.previous.snapshot_id:

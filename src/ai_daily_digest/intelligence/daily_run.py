@@ -9,6 +9,7 @@ Digest.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -32,6 +33,8 @@ from ai_daily_digest.shared.schemas import (
     Subject,
 )
 
+logger = logging.getLogger("intelligence.daily_run")
+
 
 @dataclass
 class BatchItem:
@@ -44,6 +47,7 @@ class DailyRunResult:
     digest: Digest
     resolved_subjects: list[Subject] = field(default_factory=list)
     unresolved_item_ids: list[str] = field(default_factory=list)
+    failed_item_ids: list[str] = field(default_factory=list)
 
 
 def run_daily(
@@ -68,7 +72,12 @@ def run_daily(
     calls the same way — the caller threads the same two objects into
     tomorrow's run so history and citation validity both carry over. An
     item that fails to resolve (even after the LLM fallback) is recorded
-    in `unresolved_item_ids`, not silently dropped.
+    in `unresolved_item_ids`, not silently dropped. An item whose
+    processing *raises* (a transient model failure, a malformed response
+    that exhausts `call_structured`'s retry, ...) is recorded in
+    `failed_item_ids` and the rest of the batch still runs — one item's
+    failure must not cost every other item's already-computed claims for
+    the day, the same principle ingestion applies to its own sources.
     """
     graph = build_graph(
         store,
@@ -84,10 +93,21 @@ def run_daily(
     # O(1) instead of a list scan repeated for every item in the batch.
     seen_subjects: set[Subject] = set()
     unresolved_item_ids: list[str] = []
+    failed_item_ids: list[str] = []
 
     for entry in batch:
         known_snapshot_ids.add(entry.snapshot.id)
-        result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
+        try:
+            result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
+        except Exception:
+            # Deliberately broad: whatever failed (network, validation
+            # exhaustion, an unexpected bug in a node), this one item's
+            # failure must not silently discard the whole batch's
+            # already-computed claims. Logged with a traceback so it's
+            # still diagnosable, not swallowed.
+            logger.exception("daily_run_item_failed item_id=%s", entry.item.id)
+            failed_item_ids.append(entry.item.id)
+            continue
         subject = result.get("subject")
         if subject is None:
             unresolved_item_ids.append(entry.item.id)
@@ -99,8 +119,13 @@ def run_daily(
 
     fields = comparison_fields if comparison_fields is not None else list(COMPARABLE_FIELDS)
     if fields and len(resolved_subjects) >= 2:
-        rows = build_fact_table(store, resolved_subjects, fields)
-        claims.extend(compare_subjects(rows, call_fn=compare_call_fn))
+        try:
+            rows = build_fact_table(store, resolved_subjects, fields)
+            claims.extend(compare_subjects(rows, call_fn=compare_call_fn))
+        except Exception:
+            # Same principle as the per-item loop: a comparison failure
+            # shouldn't cost every per-item claim already gathered above.
+            logger.exception("daily_run_comparison_failed")
 
     digest = assemble_digest(
         digest_date, claims, known_snapshot_ids=known_snapshot_ids, title=title
@@ -110,4 +135,5 @@ def run_daily(
         digest=digest,
         resolved_subjects=resolved_subjects,
         unresolved_item_ids=unresolved_item_ids,
+        failed_item_ids=failed_item_ids,
     )

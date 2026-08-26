@@ -167,6 +167,67 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison():
     assert all(c.validation_status == "supported" for c in result.digest.claims)
 
 
+def test_one_item_raising_does_not_abort_the_rest_of_the_batch():
+    """A per-item failure (e.g. a real extract_facts call exhausting its
+    retries) must not cost the claims already computed from other items
+    in the same batch."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    store.register_subject(ANTHROPIC_CLAUDE)
+    known_snapshot_ids: set[str] = set()
+
+    def extract_fake(system, prompt):
+        if "snap_broken" in prompt:
+            raise RuntimeError("simulated transient extraction failure")
+        if "snap_launch" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="context_window_tokens",
+                        value="128000",
+                        quoted_span="128,000 token context window",
+                        confidence=0.95,
+                    )
+                ]
+            )
+        return FactExtractionResponse(facts=[])
+
+    batch = [
+        BatchItem(
+            _item("item_broken", "GPT-4o update"),
+            _snapshot(
+                "snap_broken",
+                "item_broken",
+                "OpenAI GPT-4o details.",
+                datetime(2026, 8, 19, tzinfo=UTC),
+            ),
+        ),
+        BatchItem(
+            _item("item_launch", "Introducing GPT-4o"),
+            _snapshot(
+                "snap_launch",
+                "item_launch",
+                "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        ),
+    ]
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        extract_call_fn=extract_fake,
+    )
+
+    assert result.failed_item_ids == ["item_broken"]
+    # the second item still resolved and its fact was recorded, despite
+    # the first item raising
+    assert store.get_current_fact(OPENAI_GPT4O, "context_window_tokens").value == "128000"
+
+
 def test_unresolvable_item_is_recorded_not_dropped():
     store = FactStore()
     known_snapshot_ids: set[str] = set()

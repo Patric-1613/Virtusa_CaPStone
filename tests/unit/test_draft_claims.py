@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from ai_daily_digest.intelligence.draft_claims import draft_change_claim
+from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.schemas import Change, FactObservation, Subject
 
 
@@ -86,3 +87,24 @@ def test_generic_change_type_falls_back_to_neutral_phrasing():
     )
     claim = draft_change_claim(change)
     assert "changed from MIT to Apache-2.0" in claim.text
+
+
+def test_field_label_matches_the_same_curated_label_compare_subjects_uses():
+    """A field must read identically whether it appears in a drafted
+    change claim or a compare_subjects comparison claim -- both need to
+    come from the same COMPARABLE_FIELDS source, not two different
+    label-generation strategies."""
+    change = Change(
+        id="c5",
+        change_set_id="cs1",
+        subject=_subject(),
+        field="context_window_tokens",
+        change_type="increased",
+        previous=FactObservation(value="128000", snapshot_id="snap_prev"),
+        current=FactObservation(value="256000", snapshot_id="snap_current"),
+        confidence=0.9,
+    )
+    claim = draft_change_claim(change)
+    expected_label = COMPARABLE_FIELDS["context_window_tokens"].lower()
+    assert expected_label in claim.text
+    assert "context window tokens" not in claim.text  # the old raw-field-key wording

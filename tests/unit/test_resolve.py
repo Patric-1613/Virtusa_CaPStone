@@ -76,6 +76,31 @@ def test_ambiguous_when_two_subjects_both_match():
     assert set(result.candidate_subjects) == {shared, other}
 
 
+def test_short_two_character_product_names_still_match():
+    """Real OpenAI models are literally named "o1"/"o3" -- a 2-character
+    candidate must still be matchable as a whole, space-bounded token."""
+    subject = Subject(company="OpenAI", product="o1")
+    item = _item("item_o1", "o1 launches today")
+    result = resolve_deterministic(
+        item, [subject], alias_table=[], item_text="OpenAI's o1 model is now generally available."
+    )
+    assert result.subject == subject
+
+
+def test_short_product_name_does_not_match_as_a_substring_of_a_longer_word():
+    """ "o1" must not match inside "o100" or similar -- word-boundary
+    matching, not a loose substring check."""
+    subject = Subject(company="OpenAI", product="o1")
+    item = _item("item_o100", "o100 launches today")
+    result = resolve_deterministic(
+        item,
+        [subject],
+        alias_table=[],
+        item_text="A completely different product called o100 was announced.",
+    )
+    assert result.subject is None
+
+
 def test_no_match_returns_all_known_subjects_as_candidates_for_llm_fallback():
     item = _item("item_x", "Totally unrelated headline")
     result = resolve_deterministic(

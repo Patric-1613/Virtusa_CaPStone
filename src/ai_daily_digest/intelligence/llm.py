@@ -10,6 +10,7 @@ Requires: anthropic, pydantic>=2, python-dotenv
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -72,10 +73,24 @@ def call_structured(
     StructuredCallFailedError — never return unvalidated data.
     """
     client = _client()
-    context_log = {"model": model, "system": system, "prompt": prompt}
 
     for attempt in range(2):
-        logger.info("llm_call attempt=%s context=%s", attempt, json.dumps(context_log))
+        # Never log the raw prompt/system text -- repo-root AGENTS.md:
+        # "Never place subscriber email addresses, credentials, or raw
+        # prompts in logs." Collected page content flows into the prompt
+        # (extract_facts, compare_subjects, ...), so logging it verbatim
+        # would put scraped article text into whatever log retention
+        # system picks this up. A short content hash is enough to
+        # correlate "this attempt, this prompt" across log lines without
+        # persisting the content itself.
+        prompt_fingerprint = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+        logger.info(
+            "llm_call attempt=%s model=%s prompt_chars=%s prompt_fingerprint=%s",
+            attempt,
+            model,
+            len(prompt),
+            prompt_fingerprint,
+        )
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,

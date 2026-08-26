@@ -99,9 +99,17 @@ def compare_subjects(
     """rows: build with build_fact_table(). Every candidate is checked
     against the table before becoming a DigestClaim — a candidate that
     fails any check is dropped and logged, never "corrected"."""
-    valid_snapshot_ids = {row.snapshot_id for row in rows if row.snapshot_id}
     known_fields = {row.field for row in rows}
     known_subject_pairs = {(row.subject.company, row.subject.product) for row in rows}
+    # Keyed by exactly which (subject, field) a snapshot id actually
+    # supports -- a flat set of "every real id anywhere in the table"
+    # would let a claim cite a real id that belongs to a completely
+    # different subject/field than the one it's claiming about.
+    snapshot_by_subject_field: dict[tuple[tuple[str, str], str], str] = {
+        ((row.subject.company, row.subject.product), row.field): row.snapshot_id
+        for row in rows
+        if row.snapshot_id
+    }
 
     system, user_template = load_prompt("compare_subjects")
     prompt = render(user_template, fact_table=_format_table(rows))
@@ -120,8 +128,18 @@ def compare_subjects(
         if not candidate.fields or any(f not in known_fields for f in candidate.fields):
             logger.warning("comparison_rejected reason=unknown_field text=%r", candidate.text)
             continue
+
+        # A citation only counts if it's the real snapshot id for one of
+        # THIS candidate's own (subject, field) combinations -- not just
+        # any real id anywhere in the table.
+        allowed_ids = {
+            snapshot_by_subject_field[((s.company, s.product), f)]
+            for s in candidate.subjects
+            for f in candidate.fields
+            if ((s.company, s.product), f) in snapshot_by_subject_field
+        }
         if not candidate.snapshot_ids or any(
-            sid not in valid_snapshot_ids for sid in candidate.snapshot_ids
+            sid not in allowed_ids for sid in candidate.snapshot_ids
         ):
             logger.warning("comparison_rejected reason=ungrounded_citation text=%r", candidate.text)
             continue

@@ -10,15 +10,27 @@ backed step (not built yet — see docs/LLM_AGENT_SPECS.md).
 
 from __future__ import annotations
 
+from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, DigestClaim
+
+
+def _field_label(field: str) -> str:
+    """The same curated label compare_subjects.py and extract_facts.py
+    use, so a field reads identically whether it shows up in a drafted
+    change claim or a comparison claim within the same digest — falls
+    back to the raw field key only for a field COMPARABLE_FIELDS somehow
+    doesn't know about. Lowercased for mid-sentence use ("Context
+    window" -> "context window")."""
+    label = COMPARABLE_FIELDS.get(field, field.replace("_", " "))
+    return label[:1].lower() + label[1:] if label else label
 
 
 def draft_change_claim(change: Change) -> DigestClaim:
     """One DigestClaim per Change. validation_status starts "pending" —
     intelligence/validate.py is what's allowed to mark it supported."""
     subject_name = f"{change.subject.company}'s {change.subject.product}"
-    field_label = change.field.replace("_", " ")
+    field_label = _field_label(change.field)
 
     if change.previous is None:
         text = f"{subject_name}'s {field_label} is now disclosed as {change.current.value}."

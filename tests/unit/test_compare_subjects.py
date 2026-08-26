@@ -110,6 +110,30 @@ def test_fabricated_snapshot_citation_is_rejected():
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
+def test_citation_borrowed_from_an_unrelated_subject_field_is_rejected():
+    """A real snapshot id that exists in the table, but supports a
+    *different* subject/field than the one being claimed about, must not
+    count as grounding -- this is the specific gap a real citation cross-
+    check has to catch, not just "is this id real somewhere"."""
+
+    def fake_call(system, prompt):
+        return ComparisonResponse(
+            claims=[
+                ComparisonClaimCandidate(
+                    text="OpenAI's GPT-4o price beats Anthropic's Claude price.",
+                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
+                    fields=["context_window_tokens"],
+                    # snap_anthropic_bench is real, but it's Anthropic's
+                    # benchmark_scores snapshot, not a context_window_tokens
+                    # snapshot for either subject.
+                    snapshot_ids=["snap_anthropic_bench"],
+                )
+            ]
+        )
+
+    assert compare_subjects(_rows(), call_fn=fake_call) == []
+
+
 def test_unknown_field_is_rejected():
     def fake_call(system, prompt):
         return ComparisonResponse(

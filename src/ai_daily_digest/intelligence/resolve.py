@@ -79,8 +79,12 @@ def _candidate_strings(subject: Subject, alias_index: dict[Subject, list[str]]) 
         normalise_name(f"{subject.company} {subject.product}"),
     }
     strings |= set(alias_index.get(subject, ()))
-    # Drop candidates too short to match safely (e.g. a bare "x").
-    return {s for s in strings if len(s) >= 3}
+    # Drop only single-character candidates (a bare "x" is unsafe to
+    # match on) -- 2 characters is deliberately allowed through: real
+    # product names are this short (OpenAI's "o1"/"o3"/"o4-mini" family),
+    # and _contains_phrase() still requires it as a whole, space-bounded
+    # token, not a loose substring, so "o1" won't match inside "o100" etc.
+    return {s for s in strings if len(s) >= 2}
 
 
 def _contains_phrase(haystack_normalised: str, phrase_normalised: str) -> bool:

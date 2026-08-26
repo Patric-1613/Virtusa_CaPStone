@@ -44,6 +44,24 @@ def _subject_key(subject: Subject) -> tuple[str, str]:
     return (normalise_name(subject.company), normalise_name(subject.product))
 
 
+def _infer_change_type(previous_value: str, current_value: str) -> str:
+    """ "increased"/"decreased" when both values parse as plain numbers
+    and differ that way; "changed" otherwise (non-numeric fields like
+    licence_terms, or values with units/formatting that don't parse).
+    Callers can still override via update_fact()'s change_type param for
+    cases they know more about than a bare float comparison can."""
+    try:
+        previous_number = float(previous_value)
+        current_number = float(current_value)
+    except (TypeError, ValueError):
+        return "changed"
+    if current_number > previous_number:
+        return "increased"
+    if current_number < previous_number:
+        return "decreased"
+    return "changed"
+
+
 @dataclass
 class _FieldRecord:
     """One (subject, field)'s current known value plus its full history.
@@ -103,7 +121,7 @@ class FactStore:
         *,
         source_url: str | None,
         observed_at: datetime,
-        change_type: str = "changed",
+        change_type: str | None = None,
         confidence: float = 1.0,
     ) -> Change | None:
         """Record a newly extracted fact for (subject, fact.field).
@@ -112,10 +130,19 @@ class FactStore:
         it, and a second copy is exactly the kind of thing that silently
         drifts out of sync (this file's own tests once did).
 
+        change_type=None (the default) auto-infers "increased"/
+        "decreased"/"changed" from the two values (_infer_change_type) —
+        pass an explicit value only when the caller knows something a
+        bare numeric comparison can't (e.g. "disclosed").
+
         Returns a Change if this differs from the currently known value —
         returns None for a first-time observation (that's new information,
         reported elsewhere as "what's new", not a change) or an identical
-        value (a genuine no-op, not even logged)."""
+        value. An identical value still refreshes the stored provenance
+        (snapshot/source/observed_at) to this newer confirmation, so a
+        fact re-confirmed many times doesn't keep citing its original,
+        increasingly stale snapshot — it's a no-op for Change purposes,
+        not a no-op for "what's the freshest evidence for this fact"."""
         self.register_subject(subject)
         key = (*_subject_key(subject), fact.field)
         record = self._fields.setdefault(key, _FieldRecord())
@@ -124,7 +151,11 @@ class FactStore:
         previous_observation = None
         if previous is not None:
             if previous.value == fact.value:
-                return None  # unchanged
+                record.current = fact
+                record.current_snapshot_id = fact.snapshot_id
+                record.current_source_url = source_url
+                record.current_observed_at = observed_at
+                return None  # unchanged value, but provenance refreshed above
             previous_observation = FactObservation(
                 value=previous.value,
                 observed_at=record.current_observed_at,
@@ -143,12 +174,18 @@ class FactStore:
         if previous is None:
             return None  # first observation, not a change
 
+        resolved_change_type = (
+            change_type
+            if change_type is not None
+            else _infer_change_type(previous.value, fact.value)
+        )
+
         return Change(
             id=new_id(),
             change_set_id="",  # assigned by the caller grouping Changes into a ChangeSet
             subject=subject,
             field=fact.field,
-            change_type=change_type,
+            change_type=resolved_change_type,
             previous=previous_observation,
             current=FactObservation(
                 value=fact.value,
