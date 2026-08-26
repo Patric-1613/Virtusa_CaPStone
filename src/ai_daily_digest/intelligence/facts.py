@@ -1,0 +1,160 @@
+"""Fact store with history — intelligence's internal working state for
+change detection. Not part of the public shared contract:
+docs/API_CONTRACT.md has no "Entity" or "FactStore" resource, only
+Change/ChangeSet (the output) and ExtractedFact (the per-snapshot input).
+This class exists purely to answer "what did we last observe for this
+subject/field" so update_fact() can emit a contract-shaped Change when a
+new observation differs from it.
+
+The core rule this module exists to protect: a Change's `previous` is
+built from what was actually stored before — never recomputed or
+mutated after the fact. history() is append-only.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from datetime import datetime
+
+from ai_daily_digest.shared.ids import new_id
+from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
+
+# Compiled once at import time rather than inside normalise_name(): this
+# function runs on every candidate string for every subject for every
+# item during resolution (resolve.py) plus every FactStore lookup here,
+# so re-compiling the same two patterns on every call is pure overhead.
+_PUNCTUATION_RE = re.compile(r"[^\w\s]")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalise_name(name: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace. Deliberately
+    simple and auditable — see intelligence/resolve.py for where this is
+    used against the alias table."""
+    lowered = name.lower()
+    stripped = _PUNCTUATION_RE.sub(" ", lowered)
+    return _WHITESPACE_RE.sub(" ", stripped).strip()
+
+
+def _subject_key(subject: Subject) -> tuple[str, str]:
+    """The dict key FactStore indexes everything by: normalised
+    (company, product) so "OpenAI" / "openai" / "OpenAI." all collide."""
+    return (normalise_name(subject.company), normalise_name(subject.product))
+
+
+@dataclass
+class _FieldRecord:
+    """One (subject, field)'s current known value plus its full history.
+    current_snapshot_id/current_source_url/current_observed_at are kept
+    alongside `current` (rather than reading them off `current` itself)
+    because ExtractedFact only carries snapshot_id — source_url and
+    observed_at are provenance FactStore adds, not part of the extracted
+    fact's own contract shape."""
+
+    current: ExtractedFact | None = None
+    current_snapshot_id: str | None = None
+    current_source_url: str | None = None
+    current_observed_at: datetime | None = None
+    history: list[ExtractedFact] = dataclass_field(default_factory=list)
+
+
+class FactStore:
+    """In-memory now; the natural place for a Postgres-backed
+    implementation to live once ingestion's database exists (see
+    docs/adr/0002-postgres-pgvector.md) — the public method signatures
+    below are the contract intelligence code depends on, not this
+    dict-based storage."""
+
+    def __init__(self) -> None:
+        """Starts empty — nothing is known until register_subject() or
+        update_fact() (which registers implicitly) is called."""
+        self._known_subjects: dict[tuple[str, str], Subject] = {}
+        self._fields: dict[tuple[str, str, str], _FieldRecord] = {}
+
+    def known_subjects(self) -> list[Subject]:
+        """Every subject this store has ever seen — resolve.py reads
+        this as deterministic matching's candidate list."""
+        return list(self._known_subjects.values())
+
+    def register_subject(self, subject: Subject) -> None:
+        """Idempotent — registering an already-known subject is a no-op,
+        so callers never need to check first."""
+        self._known_subjects.setdefault(_subject_key(subject), subject)
+
+    def get_current_fact(self, subject: Subject, field: str) -> ExtractedFact | None:
+        """None means "never observed", not "observed as empty" — a
+        genuine gap, per the project's grounding rules."""
+        record = self._fields.get((*_subject_key(subject), field))
+        return record.current if record else None
+
+    def field_history(self, subject: Subject, field: str) -> list[ExtractedFact]:
+        """Superseded values only — the current one lives in
+        get_current_fact(), not duplicated here. A defensive copy, so
+        callers can't mutate the store's internal history by accident."""
+        record = self._fields.get((*_subject_key(subject), field))
+        return list(record.history) if record else []
+
+    def update_fact(
+        self,
+        subject: Subject,
+        fact: ExtractedFact,
+        *,
+        source_url: str | None,
+        observed_at: datetime,
+        change_type: str = "changed",
+        confidence: float = 1.0,
+    ) -> Change | None:
+        """Record a newly extracted fact for (subject, fact.field).
+        Snapshot id comes from `fact.snapshot_id` — there is no separate
+        snapshot_id parameter, deliberately: ExtractedFact already carries
+        it, and a second copy is exactly the kind of thing that silently
+        drifts out of sync (this file's own tests once did).
+
+        Returns a Change if this differs from the currently known value —
+        returns None for a first-time observation (that's new information,
+        reported elsewhere as "what's new", not a change) or an identical
+        value (a genuine no-op, not even logged)."""
+        self.register_subject(subject)
+        key = (*_subject_key(subject), fact.field)
+        record = self._fields.setdefault(key, _FieldRecord())
+
+        previous = record.current
+        previous_observation = None
+        if previous is not None:
+            if previous.value == fact.value:
+                return None  # unchanged
+            previous_observation = FactObservation(
+                value=previous.value,
+                observed_at=record.current_observed_at,
+                snapshot_id=record.current_snapshot_id,
+                # pydantic validates/coerces str -> HttpUrl at runtime;
+                # mypy doesn't model that coercion statically.
+                source_url=record.current_source_url,  # type: ignore[arg-type]
+            )
+            record.history.append(previous)
+
+        record.current = fact
+        record.current_snapshot_id = fact.snapshot_id
+        record.current_source_url = source_url
+        record.current_observed_at = observed_at
+
+        if previous is None:
+            return None  # first observation, not a change
+
+        return Change(
+            id=new_id(),
+            change_set_id="",  # assigned by the caller grouping Changes into a ChangeSet
+            subject=subject,
+            field=fact.field,
+            change_type=change_type,
+            previous=previous_observation,
+            current=FactObservation(
+                value=fact.value,
+                observed_at=observed_at,
+                snapshot_id=fact.snapshot_id,
+                source_url=source_url,  # type: ignore[arg-type]
+            ),
+            confidence=confidence,
+        )

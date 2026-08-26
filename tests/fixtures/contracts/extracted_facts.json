@@ -1,0 +1,38 @@
+[
+  {
+    "id": "g1000000-0000-4000-8000-000000000001",
+    "snapshot_id": "b1000000-0000-4000-8000-000000000001",
+    "field": "context_window_tokens",
+    "value": "256000",
+    "extraction_method": "llm_structured_output",
+    "extraction_model": "claude-sonnet-5",
+    "prompt_version": "fact-extraction-v1"
+  },
+  {
+    "id": "g1000000-0000-4000-8000-000000000002",
+    "snapshot_id": "b1000000-0000-4000-8000-000000000002",
+    "field": "context_window_tokens",
+    "value": "256000",
+    "extraction_method": "llm_structured_output",
+    "extraction_model": "claude-sonnet-5",
+    "prompt_version": "fact-extraction-v1"
+  },
+  {
+    "id": "g1000000-0000-4000-8000-000000000003",
+    "snapshot_id": "b1000000-0000-4000-8000-000000000003",
+    "field": "context_window_tokens",
+    "value": "128000",
+    "extraction_method": "llm_structured_output",
+    "extraction_model": "claude-sonnet-5",
+    "prompt_version": "fact-extraction-v1"
+  },
+  {
+    "id": "g1000000-0000-4000-8000-000000000004",
+    "snapshot_id": "b1000000-0000-4000-8000-000000000004",
+    "field": "benchmark_scores",
+    "value": "71.2",
+    "extraction_method": "llm_structured_output",
+    "extraction_model": "claude-sonnet-5",
+    "prompt_version": "fact-extraction-v1"
+  }
+]

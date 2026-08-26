@@ -1,0 +1,46 @@
+[
+  {
+    "id": "b1000000-0000-4000-8000-000000000001",
+    "source_item_id": "a1000000-0000-4000-8000-000000000001",
+    "fetched_at": "2026-08-20T09:05:00Z",
+    "content_hash": "sha256:content-gpt4o-256k",
+    "content_text": "OpenAI today announced that GPT-4o's context window has been increased from 128,000 tokens to 256,000 tokens, effective immediately for all API customers. Pricing is unchanged.",
+    "raw_location": "raw/openai_news/2026/08/20/gpt-4o-256k-context.html",
+    "etag": null,
+    "last_modified": null,
+    "collector_version": "0.1.0"
+  },
+  {
+    "id": "b1000000-0000-4000-8000-000000000002",
+    "source_item_id": "a1000000-0000-4000-8000-000000000002",
+    "fetched_at": "2026-08-20T11:40:00Z",
+    "content_hash": "sha256:content-techdesk-gpt4o-256k",
+    "content_text": "OpenAI has expanded the context window on GPT-4o to 256,000 tokens, up from 128,000. The company says existing customers get the change automatically.",
+    "raw_location": "raw/techdesk_news/2026/08/20/openai-gpt4o-context-boost.html",
+    "etag": null,
+    "last_modified": null,
+    "collector_version": "0.1.0"
+  },
+  {
+    "id": "b1000000-0000-4000-8000-000000000003",
+    "source_item_id": "a1000000-0000-4000-8000-000000000003",
+    "fetched_at": "2026-06-02T09:10:00Z",
+    "content_hash": "sha256:content-gpt4o-launch",
+    "content_text": "OpenAI is launching GPT-4o, a natively multimodal model with a 128,000 token context window, available today via the OpenAI API.",
+    "raw_location": "raw/openai_news/2026/06/02/gpt-4o-launch.html",
+    "etag": null,
+    "last_modified": null,
+    "collector_version": "0.1.0"
+  },
+  {
+    "id": "b1000000-0000-4000-8000-000000000004",
+    "source_item_id": "a1000000-0000-4000-8000-000000000004",
+    "fetched_at": "2026-08-19T14:10:00Z",
+    "content_hash": "sha256:content-claude-benchmark",
+    "content_text": "Anthropic has published benchmark results for Claude, scoring 71.2 on the ReasonBench suite. Pricing and context window details are not yet published in this update.",
+    "raw_location": "raw/anthropic_news/2026/08/19/claude-benchmark-results.html",
+    "etag": null,
+    "last_modified": null,
+    "collector_version": "0.1.0"
+  }
+]

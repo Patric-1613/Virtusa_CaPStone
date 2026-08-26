@@ -1,0 +1,17 @@
+# Checked-in alias table for deterministic subject resolution
+# (intelligence/resolve.py reads this before falling back to the LLM
+# resolver). Maps name variants seen in the wild to a (company, product)
+# subject — see Subject in shared/schemas.py. This is the auditable, cheap
+# first pass; add to it as resolve_llm.py logs new aliases, don't
+# regenerate it from scratch.
+
+subjects:
+  - company: "OpenAI"
+    product: "GPT-4o"
+    aliases:
+      - "gpt4o"
+      - "gpt-4 omni"
+  - company: "Anthropic"
+    product: "Claude"
+    aliases:
+      - "claude model"
