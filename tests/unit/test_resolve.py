@@ -11,19 +11,19 @@ KNOWN_SUBJECTS = [
 ]
 
 
-def _item(item_id, title):
+def _item(item_id: str, title: str) -> SourceItem:
     return SourceItem(
         id=item_id,
         dedupe_key=f"sha256:{item_id}",
         source_id="test-source",
         publisher="Test Publisher",
         title=title,
-        canonical_url="https://example.com/a",
+        canonical_url="https://example.com/a",  # type: ignore[arg-type]
         first_fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
     )
 
 
-def test_all_fixture_items_resolve_with_zero_false_merges():
+def test_all_fixture_items_resolve_with_zero_false_merges() -> None:
     """A false merge is worse than a miss, so this is checked explicitly
     per item against the fixture pack's real content, not just counted."""
     loader = FixtureLoader()
@@ -47,7 +47,7 @@ def test_all_fixture_items_resolve_with_zero_false_merges():
             )
 
 
-def test_unrelated_item_does_not_match():
+def test_unrelated_item_does_not_match() -> None:
     alias_table = load_alias_table()
     item = _item("item_unrelated", "Local bakery wins regional award")
     result = resolve_deterministic(
@@ -60,7 +60,7 @@ def test_unrelated_item_does_not_match():
     assert result.method == "no_match"
 
 
-def test_ambiguous_when_two_subjects_both_match():
+def test_ambiguous_when_two_subjects_both_match() -> None:
     shared = Subject(company="Shared Co", product="Shared Product")
     other = Subject(company="Other Co", product="Shared Product")
     item = _item("item_amb", "Shared Product gets an update")
@@ -76,7 +76,7 @@ def test_ambiguous_when_two_subjects_both_match():
     assert set(result.candidate_subjects) == {shared, other}
 
 
-def test_short_two_character_product_names_still_match():
+def test_short_two_character_product_names_still_match() -> None:
     """Real OpenAI models are literally named "o1"/"o3" -- a 2-character
     candidate must still be matchable as a whole, space-bounded token."""
     subject = Subject(company="OpenAI", product="o1")
@@ -87,7 +87,7 @@ def test_short_two_character_product_names_still_match():
     assert result.subject == subject
 
 
-def test_short_product_name_does_not_match_as_a_substring_of_a_longer_word():
+def test_short_product_name_does_not_match_as_a_substring_of_a_longer_word() -> None:
     """ "o1" must not match inside "o100" or similar -- word-boundary
     matching, not a loose substring check."""
     subject = Subject(company="OpenAI", product="o1")
@@ -101,7 +101,7 @@ def test_short_product_name_does_not_match_as_a_substring_of_a_longer_word():
     assert result.subject is None
 
 
-def test_no_match_returns_all_known_subjects_as_candidates_for_llm_fallback():
+def test_no_match_returns_all_known_subjects_as_candidates_for_llm_fallback() -> None:
     item = _item("item_x", "Totally unrelated headline")
     result = resolve_deterministic(
         item, KNOWN_SUBJECTS, alias_table=[], item_text="Nothing about tracked subjects here."

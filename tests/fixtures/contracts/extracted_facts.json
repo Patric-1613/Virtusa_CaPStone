@@ -6,7 +6,9 @@
     "value": "256000",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
-    "prompt_version": "fact-extraction-v1"
+    "prompt_version": "fact-extraction-v1",
+    "quoted_span": "context window has been increased from 128,000 tokens to 256,000 tokens",
+    "confidence": 0.97
   },
   {
     "id": "g1000000-0000-4000-8000-000000000002",
@@ -15,7 +17,9 @@
     "value": "256000",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
-    "prompt_version": "fact-extraction-v1"
+    "prompt_version": "fact-extraction-v1",
+    "quoted_span": "expanded the context window on GPT-4o to 256,000 tokens, up from 128,000",
+    "confidence": 0.95
   },
   {
     "id": "g1000000-0000-4000-8000-000000000003",
@@ -24,7 +28,9 @@
     "value": "128000",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
-    "prompt_version": "fact-extraction-v1"
+    "prompt_version": "fact-extraction-v1",
+    "quoted_span": "a natively multimodal model with a 128,000 token context window",
+    "confidence": 0.98
   },
   {
     "id": "g1000000-0000-4000-8000-000000000004",
@@ -33,6 +39,8 @@
     "value": "71.2",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
-    "prompt_version": "fact-extraction-v1"
+    "prompt_version": "fact-extraction-v1",
+    "quoted_span": "scoring 71.2 on the ReasonBench suite",
+    "confidence": 0.93
   }
 ]

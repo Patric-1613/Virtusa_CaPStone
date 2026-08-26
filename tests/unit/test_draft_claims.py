@@ -5,11 +5,11 @@ from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.schemas import Change, FactObservation, Subject
 
 
-def _subject():
+def _subject() -> Subject:
     return Subject(company="OpenAI", product="GPT-4o")
 
 
-def test_first_disclosure_phrasing_and_single_citation():
+def test_first_disclosure_phrasing_and_single_citation() -> None:
     change = Change(
         id="c1",
         change_set_id="cs1",
@@ -21,7 +21,7 @@ def test_first_disclosure_phrasing_and_single_citation():
             value="71.2",
             observed_at=datetime(2026, 8, 19, tzinfo=UTC),
             snapshot_id="snap_current",
-            source_url="https://openai.com/a",
+            source_url="https://openai.com/a",  # type: ignore[arg-type]
         ),
         confidence=0.9,
     )
@@ -31,7 +31,7 @@ def test_first_disclosure_phrasing_and_single_citation():
     assert claim.validation_status == "pending"
 
 
-def test_increased_phrasing_cites_both_snapshots():
+def test_increased_phrasing_cites_both_snapshots() -> None:
     change = Change(
         id="c2",
         change_set_id="cs1",
@@ -42,13 +42,13 @@ def test_increased_phrasing_cites_both_snapshots():
             value="128000",
             observed_at=datetime(2026, 6, 2, tzinfo=UTC),
             snapshot_id="snap_prev",
-            source_url="https://openai.com/launch",
+            source_url="https://openai.com/launch",  # type: ignore[arg-type]
         ),
         current=FactObservation(
             value="256000",
             observed_at=datetime(2026, 8, 20, tzinfo=UTC),
             snapshot_id="snap_current",
-            source_url="https://openai.com/a",
+            source_url="https://openai.com/a",  # type: ignore[arg-type]
         ),
         confidence=0.98,
     )
@@ -58,7 +58,7 @@ def test_increased_phrasing_cites_both_snapshots():
     assert set(claim.citation_snapshot_ids) == {"snap_current", "snap_prev"}
 
 
-def test_decreased_phrasing():
+def test_decreased_phrasing() -> None:
     change = Change(
         id="c3",
         change_set_id="cs1",
@@ -74,7 +74,7 @@ def test_decreased_phrasing():
     assert "down from 10" in claim.text
 
 
-def test_generic_change_type_falls_back_to_neutral_phrasing():
+def test_generic_change_type_falls_back_to_neutral_phrasing() -> None:
     change = Change(
         id="c4",
         change_set_id="cs1",
@@ -89,7 +89,7 @@ def test_generic_change_type_falls_back_to_neutral_phrasing():
     assert "changed from MIT to Apache-2.0" in claim.text
 
 
-def test_field_label_matches_the_same_curated_label_compare_subjects_uses():
+def test_field_label_matches_the_same_curated_label_compare_subjects_uses() -> None:
     """A field must read identically whether it appears in a drafted
     change claim or a compare_subjects comparison claim -- both need to
     come from the same COMPARABLE_FIELDS source, not two different

@@ -51,8 +51,10 @@ def resolve_via_llm(
     call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
 ) -> ResolutionResult:
     """call_fn is injectable for testing — defaults to the real Anthropic
-    call via intelligence/llm.py. Confidence below CONFIDENCE_THRESHOLD is
-    never auto-merged, regardless of what the model proposed — it's
+    call via intelligence/llm.py. Two independent guardrails, both
+    required for an auto-merge: confidence below CONFIDENCE_THRESHOLD is
+    never auto-merged, and neither is a company/product the model
+    proposed that isn't actually one of `candidate_subjects` — both are
     logged for manual review instead (see intelligence/CLAUDE.md)."""
     system, user_template = load_prompt("resolve")
     prompt = render(
@@ -87,12 +89,33 @@ def resolve_via_llm(
             matched_text=response.new_subject_proposal,
             candidate_subjects=candidate_subjects,
         )
-    elif proposed_subject is not None:
+    elif proposed_subject is not None and proposed_subject in candidate_subjects:
         result = ResolutionResult(
             item_id=item.id,
             subject=proposed_subject,
             method="llm_resolved",
             confidence=response.confidence,
+        )
+    elif proposed_subject is not None:
+        # High confidence, but the model proposed a company/product that
+        # isn't even one of the candidates it was given -- accepting this
+        # would let the model invent a subject out of thin air. Treated
+        # the same as a new-subject proposal (flagged, not auto-merged),
+        # not silently coerced into one of the real candidates.
+        logger.warning(
+            "llm_resolution_subject_not_in_candidates item_id=%s proposed_subject=%s "
+            "candidates=%s -- flagged for manual review, not auto-merged",
+            item.id,
+            proposed_subject,
+            candidate_subjects,
+        )
+        result = ResolutionResult(
+            item_id=item.id,
+            subject=None,
+            method="llm_subject_not_in_candidates",
+            confidence=response.confidence,
+            matched_text=f"{proposed_subject.company}: {proposed_subject.product}",
+            candidate_subjects=candidate_subjects,
         )
     else:
         result = ResolutionResult(

@@ -12,8 +12,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
+
+from langgraph.graph.state import CompiledStateGraph
 
 from ai_daily_digest.intelligence.assemble_digest import assemble_digest
+from ai_daily_digest.intelligence.change_sets import build_change_sets
 from ai_daily_digest.intelligence.compare_subjects import (
     ComparisonResponse,
     build_fact_table,
@@ -21,11 +25,13 @@ from ai_daily_digest.intelligence.compare_subjects import (
 )
 from ai_daily_digest.intelligence.extract_facts import FactExtractionResponse
 from ai_daily_digest.intelligence.facts import FactStore
-from ai_daily_digest.intelligence.graph import build_graph
+from ai_daily_digest.intelligence.graph import PipelineState, build_graph
 from ai_daily_digest.intelligence.resolve import SubjectAlias
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.schemas import (
+    Change,
+    ChangeSet,
     Digest,
     DigestClaim,
     DocumentSnapshot,
@@ -48,9 +54,84 @@ class DailyRunResult:
     resolved_subjects: list[Subject] = field(default_factory=list)
     unresolved_item_ids: list[str] = field(default_factory=list)
     failed_item_ids: list[str] = field(default_factory=list)
+    # ChangeSet aggregates built from this run's Changes (change_sets.py)
+    # -- ready for whatever persistence layer picks them up next; nothing
+    # downstream of run_daily() currently persists them, the same way
+    # FixtureLoader/StoreLoader's load_change_sets() implies some other
+    # layer owns storage, not intelligence.
+    change_sets: list[ChangeSet] = field(default_factory=list)
 
 
-def run_daily(
+@dataclass
+class _BatchAccumulator:
+    """Everything the per-item loop in run_daily() builds up, one place
+    instead of seven separate local variables — what keeps run_daily()
+    itself readable at a glance. See _process_item() for how one item's
+    result is folded in."""
+
+    claims: list[DigestClaim] = field(default_factory=list)
+    all_changes: list[Change] = field(default_factory=list)
+    resolved_subjects: list[Subject] = field(default_factory=list)
+    # Subject is hashable (frozen, see shared/schemas.py) -- this set
+    # mirrors resolved_subjects purely so membership checks below are
+    # O(1) instead of a list scan repeated for every item in the batch.
+    seen_subjects: set[Subject] = field(default_factory=set)
+    unresolved_item_ids: list[str] = field(default_factory=list)
+    failed_item_ids: list[str] = field(default_factory=list)
+    # Real DocumentSnapshot content for this batch, keyed by id -- passed
+    # to assemble_digest()/validate.py so the final publish gate can
+    # check that a claim's asserted numbers are actually grounded in the
+    # snapshot content it cites, not just that the citation id exists.
+    # See validate.py's module docstring for why this is only available
+    # for the current batch, not every historical snapshot.
+    snapshots_by_id: dict[str, DocumentSnapshot] = field(default_factory=dict)
+
+
+def _process_item(
+    entry: BatchItem,
+    graph: CompiledStateGraph[PipelineState, Any, PipelineState, PipelineState],
+    known_snapshot_ids: set[str],
+    acc: _BatchAccumulator,
+) -> None:
+    """Runs the per-item graph for one BatchItem and folds its result
+    into `acc`. A raising graph.invoke() (a transient model failure, a
+    malformed response that exhausts call_structured's retry, ...) is
+    caught deliberately broadly: whatever failed, this one item's
+    failure must not silently discard the whole batch's already-computed
+    claims -- recorded in acc.failed_item_ids and logged with a
+    traceback instead, so it's still diagnosable, not swallowed."""
+    known_snapshot_ids.add(entry.snapshot.id)
+    acc.snapshots_by_id[entry.snapshot.id] = entry.snapshot
+    try:
+        result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("daily_run_item_failed item_id=%s", entry.item.id)
+        acc.failed_item_ids.append(entry.item.id)
+        return
+
+    subject = result.get("subject")
+    if subject is None:
+        acc.unresolved_item_ids.append(entry.item.id)
+        return
+    if subject not in acc.seen_subjects:
+        acc.seen_subjects.add(subject)
+        acc.resolved_subjects.append(subject)
+    acc.claims.extend(result.get("claims", []))
+    acc.all_changes.extend(result.get("changes", []))
+
+
+def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
+    # 4 required (the batch to run and where to accumulate state) + 6
+    # optional keyword-only DI/config params -- this is the orchestrator's
+    # public entry point, and the *_call_fn params exist specifically so
+    # every LLM call site downstream stays independently testable (see
+    # this file's other tests' pattern); collapsing them into one options
+    # object would just move the same surface area, not reduce it. The
+    # local-variable count pylint also flags here is dominated by these
+    # same 10 parameters (they count toward it too), not by hidden
+    # complexity in the function body -- see _process_item/_BatchAccumulator
+    # just above for where the actual per-item logic was already
+    # extracted out to keep this function itself short.
     store: FactStore,
     known_snapshot_ids: set[str],
     batch: list[BatchItem],
@@ -78,6 +159,11 @@ def run_daily(
     `failed_item_ids` and the rest of the batch still runs — one item's
     failure must not cost every other item's already-computed claims for
     the day, the same principle ingestion applies to its own sources.
+
+    Every Change produced by the batch is also grouped into ChangeSet
+    aggregates (see change_sets.py) and returned on the result —
+    previously nothing did this, and every Change left with an empty,
+    never-assigned `change_set_id`.
     """
     graph = build_graph(
         store,
@@ -86,54 +172,32 @@ def run_daily(
         extract_call_fn=extract_call_fn,
     )
 
-    claims: list[DigestClaim] = []
-    resolved_subjects: list[Subject] = []
-    # Subject is hashable (frozen, see shared/schemas.py) -- this set
-    # mirrors resolved_subjects purely so membership checks below are
-    # O(1) instead of a list scan repeated for every item in the batch.
-    seen_subjects: set[Subject] = set()
-    unresolved_item_ids: list[str] = []
-    failed_item_ids: list[str] = []
-
+    acc = _BatchAccumulator()
     for entry in batch:
-        known_snapshot_ids.add(entry.snapshot.id)
-        try:
-            result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
-        except Exception:
-            # Deliberately broad: whatever failed (network, validation
-            # exhaustion, an unexpected bug in a node), this one item's
-            # failure must not silently discard the whole batch's
-            # already-computed claims. Logged with a traceback so it's
-            # still diagnosable, not swallowed.
-            logger.exception("daily_run_item_failed item_id=%s", entry.item.id)
-            failed_item_ids.append(entry.item.id)
-            continue
-        subject = result.get("subject")
-        if subject is None:
-            unresolved_item_ids.append(entry.item.id)
-            continue
-        if subject not in seen_subjects:
-            seen_subjects.add(subject)
-            resolved_subjects.append(subject)
-        claims.extend(result.get("claims", []))
+        _process_item(entry, graph, known_snapshot_ids, acc)
 
     fields = comparison_fields if comparison_fields is not None else list(COMPARABLE_FIELDS)
-    if fields and len(resolved_subjects) >= 2:
+    if fields and len(acc.resolved_subjects) >= 2:
         try:
-            rows = build_fact_table(store, resolved_subjects, fields)
-            claims.extend(compare_subjects(rows, call_fn=compare_call_fn))
-        except Exception:
-            # Same principle as the per-item loop: a comparison failure
+            rows = build_fact_table(store, acc.resolved_subjects, fields)
+            acc.claims.extend(compare_subjects(rows, call_fn=compare_call_fn))
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Same principle as _process_item: a comparison failure
             # shouldn't cost every per-item claim already gathered above.
             logger.exception("daily_run_comparison_failed")
 
     digest = assemble_digest(
-        digest_date, claims, known_snapshot_ids=known_snapshot_ids, title=title
+        digest_date,
+        acc.claims,
+        known_snapshot_ids=known_snapshot_ids,
+        snapshots_by_id=acc.snapshots_by_id,
+        title=title,
     )
 
     return DailyRunResult(
         digest=digest,
-        resolved_subjects=resolved_subjects,
-        unresolved_item_ids=unresolved_item_ids,
-        failed_item_ids=failed_item_ids,
+        resolved_subjects=acc.resolved_subjects,
+        unresolved_item_ids=acc.unresolved_item_ids,
+        failed_item_ids=acc.failed_item_ids,
+        change_sets=build_change_sets(acc.all_changes),
     )

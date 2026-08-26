@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 import os
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
@@ -25,15 +25,6 @@ if TYPE_CHECKING:
     import anthropic
 
 logger = logging.getLogger("intelligence.llm")
-
-# NOTE: PEP 695 `def call_structured[T: BaseModel](...)` is what
-# ruff (target-version py312) actually wants here, and is what should ship
-# once this runs on the team's real Python 3.12. Left as TypeVar for now
-# because this dev machine only has Python 3.11.9 (see README.md's Setup
-# note) and the PEP 695 syntax is a SyntaxError under 3.11 -- it would
-# silently break every test that imports this module locally. Flip this
-# once you're on 3.12; `ruff check` will flag UP047 until then.
-T = TypeVar("T", bound=BaseModel)
 
 # Model ids — keep in sync with intelligence/CLAUDE.md's model choice table.
 HAIKU = "claude-haiku-4-5-20251001"
@@ -50,7 +41,7 @@ class StructuredCallFailedError(Exception):
 def _client() -> anthropic.Anthropic:
     # Imported lazily so this module can be imported (e.g. by tests that
     # only check prompt files exist) without the anthropic package installed.
-    import anthropic
+    import anthropic  # pylint: disable=import-outside-toplevel
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -58,19 +49,42 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
-def call_structured(
+def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments
+    # All keyword-only: model/system/prompt/response_model are the call
+    # itself, max_tokens is provider-call tuning -- every LLM call site in
+    # intelligence/ goes through this one function (see module docstring)
+    # specifically so that knob lives in one place instead of being
+    # duplicated per call site.
+    #
+    # PEP 695 generic syntax (requires Python >=3.12, this project's
+    # target -- see pyproject.toml's requires-python). An earlier version
+    # of this function used `TypeVar` instead because the machine it was
+    # written on only had Python 3.11 installed; verified and switched to
+    # this syntax once run against a real 3.12 interpreter (`uv`'s
+    # managed toolchain, via `uv run --no-editable`).
     *,
     model: str,
     system: str,
     prompt: str,
     response_model: type[T],
     max_tokens: int = 2048,
-    temperature: float = 0.0,
 ) -> T:
     """Call the model, parse its response as JSON, validate it against
     `response_model`. On validation failure, retry once with the error
     appended to the prompt. On a second failure, raise
     StructuredCallFailedError — never return unvalidated data.
+
+    No `temperature` parameter: sampling controls (temperature/top_p/
+    top_k) are removed on the current-generation models this file's
+    HAIKU/SONNET/OPUS constants point at (they return 400 if sent) --
+    verified against the real installed SDK, not assumed. An earlier
+    version of this function accepted temperature=0.0 hoping for
+    deterministic output; that call would have failed against the real
+    API the first time it ran live (every test here uses an injected
+    fake, so nothing caught it). Reproducibility now comes from this
+    function's own schema-validation retry loop and from each call
+    site's own grounding checks (extract_facts.py, compare_subjects.py,
+    ...), not from a sampling knob.
     """
     client = _client()
 
@@ -94,7 +108,6 @@ def call_structured(
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )

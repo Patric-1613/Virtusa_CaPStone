@@ -13,14 +13,14 @@ from ai_daily_digest.intelligence.loaders import FixtureLoader
 pytestmark = pytest.mark.contract
 
 
-def test_source_items_are_schema_valid():
+def test_source_items_are_schema_valid() -> None:
     items = FixtureLoader().load_items()
     assert len(items) >= 1
     ids = [item.id for item in items]
     assert len(ids) == len(set(ids)), "duplicate item ids in fixtures"
 
 
-def test_snapshots_are_schema_valid_and_reference_real_items():
+def test_snapshots_are_schema_valid_and_reference_real_items() -> None:
     items = {item.id for item in FixtureLoader().load_items()}
     snapshots = FixtureLoader().load_snapshots()
     assert len(snapshots) >= 1
@@ -28,7 +28,7 @@ def test_snapshots_are_schema_valid_and_reference_real_items():
         assert snapshot.source_item_id in items
 
 
-def test_every_item_latest_snapshot_id_resolves():
+def test_every_item_latest_snapshot_id_resolves() -> None:
     items = FixtureLoader().load_items()
     snapshot_ids = {s.id for s in FixtureLoader().load_snapshots()}
     for item in items:
@@ -36,7 +36,7 @@ def test_every_item_latest_snapshot_id_resolves():
             assert item.latest_snapshot_id in snapshot_ids
 
 
-def test_extracted_facts_reference_real_snapshots():
+def test_extracted_facts_reference_real_snapshots() -> None:
     snapshot_ids = {s.id for s in FixtureLoader().load_snapshots()}
     facts = FixtureLoader().load_facts()
     assert len(facts) >= 1
@@ -45,9 +45,13 @@ def test_extracted_facts_reference_real_snapshots():
         if fact.extraction_method == "llm_structured_output":
             assert fact.extraction_model, "LLM-extracted facts must record a model id"
             assert fact.prompt_version, "LLM-extracted facts must record a prompt version"
+            # ADR 0004: LLM-extracted facts must keep their evidence, not
+            # just a bare value, so grounding can be audited later.
+            assert fact.quoted_span, "LLM-extracted facts must record their quoted_span"
+            assert fact.confidence is not None, "LLM-extracted facts must record their confidence"
 
 
-def test_change_set_citations_resolve_to_real_snapshots():
+def test_change_set_citations_resolve_to_real_snapshots() -> None:
     snapshot_ids = {s.id for s in FixtureLoader().load_snapshots()}
     change_sets = FixtureLoader().load_change_sets()
     assert len(change_sets) >= 1
@@ -60,7 +64,7 @@ def test_change_set_citations_resolve_to_real_snapshots():
             assert change.current.snapshot_id in snapshot_ids
 
 
-def test_change_previous_null_only_when_not_disclosed_is_the_intent():
+def test_change_previous_null_only_when_not_disclosed_is_the_intent() -> None:
     """docs/API_CONTRACT.md: 'The previous value may be null only when the
     response explicitly says the fact was not previously disclosed.' This
     fixture pack doesn't exercise that case yet (see its README) — this
@@ -71,7 +75,7 @@ def test_change_previous_null_only_when_not_disclosed_is_the_intent():
             assert change.previous is not None
 
 
-def test_digest_claims_have_resolvable_citations():
+def test_digest_claims_have_resolvable_citations() -> None:
     snapshot_ids = {s.id for s in FixtureLoader().load_snapshots()}
     digests = FixtureLoader().load_digests()
     assert len(digests) >= 1
@@ -82,7 +86,7 @@ def test_digest_claims_have_resolvable_citations():
                 assert sid in snapshot_ids
 
 
-def test_published_digest_has_no_unsupported_claims():
+def test_published_digest_has_no_unsupported_claims() -> None:
     digests = FixtureLoader().load_digests()
     for digest in digests:
         if digest.status == "published":

@@ -19,9 +19,32 @@ from ai_daily_digest.shared.schemas import (
     SourceItem,
 )
 
-# repo_root/tests/fixtures/contracts — four levels up from this file
-# (src/ai_daily_digest/intelligence/loaders.py -> repo root)
-FIXTURES_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "contracts"
+
+def find_repo_root(start: Path) -> Path:
+    """Walk upward from `start` looking for the repo root (marked by
+    pyproject.toml). Deliberately NOT based on this file's own location
+    (`__file__`) -- that broke under a non-editable install, where this
+    module runs from `.venv/.../site-packages/ai_daily_digest/...` with
+    no `tests/` directory anywhere nearby, since the wheel only ships
+    `src/ai_daily_digest` (see pyproject.toml's
+    `[tool.hatch.build.targets.wheel]`). `Path.cwd()` doesn't have that
+    problem: `make`/`uv run`/pytest are always invoked from the repo
+    root regardless of install mode. Falls back to `start` if no marker
+    is found (e.g. genuinely running outside a checkout of this repo) --
+    callers get a clear FileNotFoundError from the actual file read
+    rather than a silent wrong guess."""
+    for candidate in (start, *start.parents):
+        if (candidate / "pyproject.toml").exists():
+            return candidate
+    return start
+
+
+# tests/fixtures/contracts is where docs/TEAM_WORKFLOW.md's Day-one
+# agreement and ingestion/README.md both say test fixtures belong --
+# deliberately NOT moved into the package (that would make them
+# production data, which they aren't; FixtureLoader is an explicit
+# stand-in until the real database-backed StoreLoader exists, see below).
+FIXTURES_DIR = find_repo_root(Path.cwd()) / "tests" / "fixtures" / "contracts"
 
 
 class Loader(Protocol):
@@ -48,6 +71,14 @@ class FixtureLoader:
 
     def _read(self, name: str) -> list[dict[str, Any]]:
         path = self.fixtures_dir / name
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Fixture file not found: {path}. FixtureLoader locates "
+                "tests/fixtures/contracts relative to the current working "
+                "directory (see loaders.py::find_repo_root) -- run from "
+                "within a checkout of this repo, or pass an explicit "
+                "fixtures_dir= to FixtureLoader()."
+            )
         with path.open("r", encoding="utf-8") as f:
             data: list[dict[str, Any]] = json.load(f)
         return data

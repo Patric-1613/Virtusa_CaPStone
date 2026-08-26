@@ -19,7 +19,7 @@ OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
 
 
-def _fact(field, value, snapshot_id, fact_id="f1"):
+def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "f1") -> ExtractedFact:
     return ExtractedFact(
         id=fact_id,
         snapshot_id=snapshot_id,
@@ -31,7 +31,7 @@ def _fact(field, value, snapshot_id, fact_id="f1"):
     )
 
 
-def _store_with_data():
+def _store_with_data() -> FactStore:
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
@@ -48,7 +48,7 @@ def _store_with_data():
     return store
 
 
-def _rows():
+def _rows() -> list[FactRow]:
     store = _store_with_data()
     return build_fact_table(
         store,
@@ -57,7 +57,7 @@ def _rows():
     )
 
 
-def test_build_fact_table_marks_missing_fields_not_disclosed():
+def test_build_fact_table_marks_missing_fields_not_disclosed() -> None:
     rows = _rows()
     openai_bench = next(
         r for r in rows if r.subject == OPENAI_GPT4O and r.field == "benchmark_scores"
@@ -72,8 +72,8 @@ def test_build_fact_table_marks_missing_fields_not_disclosed():
     assert openai_ctx.snapshot_id == "snap_openai_ctx"
 
 
-def test_well_grounded_comparison_is_accepted():
-    def fake_call(system, prompt):
+def test_well_grounded_comparison_is_accepted() -> None:
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
             claims=[
                 ComparisonClaimCandidate(
@@ -94,8 +94,8 @@ def test_well_grounded_comparison_is_accepted():
     assert claims[0].validation_status == "pending"
 
 
-def test_fabricated_snapshot_citation_is_rejected():
-    def fake_call(system, prompt):
+def test_fabricated_snapshot_citation_is_rejected() -> None:
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
             claims=[
                 ComparisonClaimCandidate(
@@ -110,13 +110,13 @@ def test_fabricated_snapshot_citation_is_rejected():
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_citation_borrowed_from_an_unrelated_subject_field_is_rejected():
+def test_citation_borrowed_from_an_unrelated_subject_field_is_rejected() -> None:
     """A real snapshot id that exists in the table, but supports a
     *different* subject/field than the one being claimed about, must not
     count as grounding -- this is the specific gap a real citation cross-
     check has to catch, not just "is this id real somewhere"."""
 
-    def fake_call(system, prompt):
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
             claims=[
                 ComparisonClaimCandidate(
@@ -134,8 +134,29 @@ def test_citation_borrowed_from_an_unrelated_subject_field_is_rejected():
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_unknown_field_is_rejected():
-    def fake_call(system, prompt):
+def test_false_comparison_value_with_real_citation_is_rejected() -> None:
+    """Adversarial case per the review: the citation id is real AND
+    correctly owned by (OpenAI, context_window_tokens) -- the existing
+    ownership check alone would accept this -- but the claim's prose
+    states a number ("999999") the row never actually had."""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return ComparisonResponse(
+            claims=[
+                ComparisonClaimCandidate(
+                    text="OpenAI's GPT-4o context window is 999999 tokens.",
+                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
+                    fields=["context_window_tokens"],
+                    snapshot_ids=["snap_openai_ctx"],
+                )
+            ]
+        )
+
+    assert compare_subjects(_rows(), call_fn=fake_call) == []
+
+
+def test_unknown_field_is_rejected() -> None:
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
             claims=[
                 ComparisonClaimCandidate(
@@ -150,10 +171,10 @@ def test_unknown_field_is_rejected():
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_unknown_subject_is_rejected():
+def test_unknown_subject_is_rejected() -> None:
     intruder = Subject(company="MadeUp Inc", product="Ghost Model")
 
-    def fake_call(system, prompt):
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
             claims=[
                 ComparisonClaimCandidate(
@@ -168,10 +189,10 @@ def test_unknown_subject_is_rejected():
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_single_subject_claim_is_rejected():
+def test_single_subject_claim_is_rejected() -> None:
     """A "comparison" naming only one subject isn't a comparison."""
 
-    def fake_call(system, prompt):
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
             claims=[
                 ComparisonClaimCandidate(
@@ -186,12 +207,12 @@ def test_single_subject_claim_is_rejected():
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_sparse_table_yields_abstention_not_a_fabricated_claim():
+def test_sparse_table_yields_abstention_not_a_fabricated_claim() -> None:
     """Adversarial check per the original design: feed a sparse table and
     confirm the (simulated) model declining to compare is accepted as
     correct output, not treated as a failure."""
 
-    def fake_call(system, prompt):
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(claims=[])
 
     empty_rows = [FactRow(subject=OPENAI_GPT4O, field="context_window_tokens")]

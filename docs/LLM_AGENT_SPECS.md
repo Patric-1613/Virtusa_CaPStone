@@ -54,9 +54,14 @@ worked example with fakes standing in for all three.
 - **Input**: item title + snapshot text excerpt, list of candidate
   `Subject`s (company, product).
 - **Output**: `{company: str|null, product: str|null, new_subject_proposal: str|null, confidence: float}`
-- **Model**: Haiku 4.5, temperature 0.
+- **Model**: Haiku 4.5. No `temperature` control — removed on current-gen
+  models (400 if sent); see `intelligence/llm.py::call_structured`'s
+  docstring.
 - **Guardrail**: constrained JSON only, no free text. `confidence < 0.6` →
-  logged for manual review, never auto-merged.
+  logged for manual review, never auto-merged. A high-confidence proposal
+  naming a company/product that isn't actually one of the candidates it
+  was given is also never auto-merged (`method="llm_subject_not_in_candidates"`)
+  — treated the same as a new-subject proposal.
 - **Failure mode**: on parse/validation failure, `intelligence/llm.py`
   retries once with the error appended; on a second failure the item stays
   unresolved (never force-matched) and is logged.
@@ -69,12 +74,19 @@ worked example with fakes standing in for all three.
 - **Output**: zero or more `ExtractedFact` (see `shared/schemas.py`) —
   one per field actually found. A field not mentioned is simply absent,
   never a null placeholder entry.
-- **Model**: Sonnet 5, temperature 0.
-- **Guardrail** (both enforced in code, not just the prompt):
+- **Model**: Sonnet 5. No `temperature` control — see resolve_llm's note
+  above.
+- **Guardrail** (all enforced in code, not just the prompt):
   1. `field` must be in the closed list — an invented field is dropped.
   2. `quoted_span` must actually appear in the snapshot text — a model
      that paraphrases instead of quoting produces a fact that's silently
      dropped, not silently stored. `confidence` below 0.6 is also dropped.
+  3. `value` must itself be supported by `quoted_span` (see
+     `intelligence/grounding.py::value_supported_by_quote`) — check #2
+     alone doesn't catch a model quoting a real sentence but attaching a
+     different, invented value to it.
+  Accepted facts keep their `quoted_span`/`confidence` (ADR 0004) instead
+  of discarding them, so grounding can be audited later.
 - **Failure mode**: retry once on validation failure, then fail loudly —
   never persist a fact from an unvalidated response.
 
@@ -106,12 +118,18 @@ worked example with fakes standing in for all three.
   Never raw article text — the architectural decision that stops
   fabricated competitive claims, carried over from the original design.
 - **Output**: zero or more `DigestClaim`, one per accepted comparison.
-- **Model**: Sonnet 5, temperature 0.
+- **Model**: Sonnet 5. No `temperature` control — see resolve_llm's note
+  above.
 - **Guardrail** (all enforced in code, not just the prompt): every
   candidate must name exactly two subjects that exist in the table,
-  reference ≥1 field that exists in the table, and cite ≥1 snapshot id
-  that exists in the table. A sparse table should yield an empty claims
-  list (abstention) — verified by an adversarial test
+  reference ≥1 field that exists in the table, cite ≥1 snapshot id that
+  exists in the table AND is actually owned by one of the candidate's own
+  (subject, field) pairs (not just real anywhere in the table), and every
+  number the candidate's own claim text asserts must match a real value
+  from the rows it's comparing — a citation being real and correctly
+  owned still doesn't prove the claim's prose states the right number.
+  A sparse table should yield an empty claims list (abstention) —
+  verified by an adversarial test
   (`tests/unit/test_compare_subjects.py`).
 - **Failure mode**: no retry loop of its own (rides `call_structured`'s
   validate→retry-once→fail-loudly); a candidate that fails a guardrail is
@@ -120,14 +138,26 @@ worked example with fakes standing in for all three.
 ## validate_digest / publish_digest — Validate (deterministic, no LLM)
 
 - **File**: `intelligence/validate.py`
-- **Input**: a `Digest`, the set of known/real snapshot ids.
+- **Input**: a `Digest`, the set of known/real snapshot ids, and
+  (optionally) `snapshots_by_id: dict[str, DocumentSnapshot]` — real
+  snapshot content, when the caller has it.
 - **Output**: `validate_digest` sets each claim's `validation_status`
   and forces `status="review"` if anything is unsupported — it never
   upgrades to `"published"` itself. `publish_digest` is the only place a
   `Digest.status` becomes `"published"`, and only when every claim is
   supported.
 - **Guardrail**: a claim with zero citations is always unsupported,
-  regardless of how the text reads.
+  regardless of how the text reads. Citation *existence* alone was
+  flagged in review as insufficient — a claim can cite a real snapshot
+  id that has nothing to do with what it says. When `snapshots_by_id` is
+  supplied, a second check also runs: every number the claim's text
+  asserts must actually appear in the content of the snapshot(s) it
+  cites (see `intelligence/grounding.py`). `daily_run.py` supplies this
+  for the current batch's own snapshots; `graph.py`'s per-item `validate`
+  node does not (it only has the current item's own snapshot, not every
+  historical one a Change might cite) and keeps the existence-only check
+  — documented as a known, deliberate limitation in that node's own
+  docstring, not a regression.
 
 ## Orchestration — Classify → Extract → Compare → Draft → Validate
 
@@ -179,8 +209,16 @@ worked example with fakes standing in for all three.
   single `compare_subjects` pass over them, then hands everything to
   `assemble_digest`.
 - **Output**: a `DailyRunResult` — the `Digest`, the list of resolved
-  `Subject`s, and `unresolved_item_ids` (items that failed to resolve
-  even after the LLM fallback — recorded, never silently dropped).
+  `Subject`s, `unresolved_item_ids` (items that failed to resolve even
+  after the LLM fallback), `failed_item_ids` (items whose processing
+  *raised* — a transient failure, logged, the rest of the batch still
+  runs), and `change_sets` — the batch's Changes grouped into `ChangeSet`
+  aggregates (`intelligence/change_sets.py`) with `change_set_id`
+  backfilled onto each Change (`FactStore.update_fact()` deliberately
+  leaves this blank; `run_daily` is the caller that fills it in).
+- Also builds `snapshots_by_id` from the batch's real `DocumentSnapshot`s
+  and threads it to `assemble_digest`/`validate.py` for the content-
+  grounding check described above.
 - This is the piece that turns "here are today's items" into an actual
   `Digest` — see `tests/unit/test_daily_run.py` for a full 3-item batch
   (a first observation, a change, and a cross-subject comparison) run

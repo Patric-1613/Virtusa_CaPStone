@@ -15,9 +15,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
 from ai_daily_digest.shared.schemas import Change, Digest
 
-RESULTS_FILE = Path(__file__).resolve().parents[3] / "docs" / "eval_results.md"
+# CWD-rooted, not __file__-rooted -- see loaders.py::find_repo_root's
+# docstring for why (this had the exact same non-editable-install bug
+# FixtureLoader did, for the same reason: __file__ lives in
+# site-packages under a non-editable install, nowhere near docs/).
+RESULTS_FILE = find_repo_root(Path.cwd()) / "docs" / "eval_results.md"
 
 
 def citation_validity(digest: Digest, known_snapshot_ids: set[str]) -> float:
@@ -129,8 +134,6 @@ def main() -> None:
     currently a self-check against the draft fixture pack, not a real
     evaluation of pipeline output. Prints a table and appends a labeled,
     timestamped row to docs/eval_results.md."""
-    from ai_daily_digest.intelligence.loaders import FixtureLoader
-
     loader = FixtureLoader()
     snapshots = loader.load_snapshots()
     change_sets = loader.load_change_sets()

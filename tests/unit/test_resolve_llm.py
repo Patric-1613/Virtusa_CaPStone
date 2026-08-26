@@ -10,23 +10,23 @@ from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse, resolve
 from ai_daily_digest.shared.schemas import SourceItem, Subject
 
 
-def _item():
+def _item() -> SourceItem:
     return SourceItem(
         id="item_test",
         dedupe_key="sha256:item_test",
         source_id="test-source",
         publisher="Test Publisher",
         title="Some ambiguous headline",
-        canonical_url="https://example.com/a",
+        canonical_url="https://example.com/a",  # type: ignore[arg-type]
         first_fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
     )
 
 
-def _candidates():
+def _candidates() -> list[Subject]:
     return [Subject(company="OpenAI", product="GPT-4o")]
 
 
-def test_prompt_loads_and_renders():
+def test_prompt_loads_and_renders() -> None:
     system, user_template = load_prompt("resolve")
     assert "Output JSON only" in system
     rendered = render(
@@ -39,8 +39,8 @@ def test_prompt_loads_and_renders():
     assert "{{item_title}}" not in rendered
 
 
-def test_high_confidence_resolution():
-    def fake_call(system, prompt):
+def test_high_confidence_resolution() -> None:
+    def fake_call(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(company="OpenAI", product="GPT-4o", confidence=0.9)
 
     result = resolve_via_llm(_item(), _candidates(), call_fn=fake_call)
@@ -48,12 +48,12 @@ def test_high_confidence_resolution():
     assert result.method == "llm_resolved"
 
 
-def test_low_confidence_is_never_auto_merged():
+def test_low_confidence_is_never_auto_merged() -> None:
     """Even if the model proposes a subject, a low confidence score must
     not resolve it — this is the guardrail against confident-sounding
     wrong merges."""
 
-    def fake_call(system, prompt):
+    def fake_call(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(company="OpenAI", product="GPT-4o", confidence=0.3)
 
     result = resolve_via_llm(_item(), _candidates(), call_fn=fake_call)
@@ -61,8 +61,24 @@ def test_low_confidence_is_never_auto_merged():
     assert result.method == "llm_low_confidence"
 
 
-def test_new_subject_proposal_with_no_existing_match():
-    def fake_call(system, prompt):
+def test_high_confidence_subject_not_in_candidates_is_not_auto_merged() -> None:
+    """Adversarial case per the review: high confidence alone must not be
+    enough to accept a company/product the model was never actually given
+    as a candidate -- a false merge to an invented subject is exactly the
+    failure mode this project's "false merge worse than a miss" rule
+    exists to prevent."""
+
+    def fake_call(system: str, prompt: str) -> ResolveLLMResponse:
+        return ResolveLLMResponse(company="Mistral", product="Le Chat", confidence=0.95)
+
+    result = resolve_via_llm(_item(), _candidates(), call_fn=fake_call)
+    assert result.subject is None
+    assert result.method == "llm_subject_not_in_candidates"
+    assert result.candidate_subjects == _candidates()
+
+
+def test_new_subject_proposal_with_no_existing_match() -> None:
+    def fake_call(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(new_subject_proposal="Mistral: Le Chat", confidence=0.8)
 
     result = resolve_via_llm(_item(), _candidates(), call_fn=fake_call)

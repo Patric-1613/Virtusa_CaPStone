@@ -4,11 +4,20 @@ DocumentSnapshot's text into zero or more ExtractedFact records against
 the closed field list (shared/attributes.py). See
 docs/LLM_AGENT_SPECS.md#extract_facts for the full contract.
 
-Two guardrails enforced in code, not just requested in the prompt:
+Three guardrails enforced in code, not just requested in the prompt:
   1. quoted_span must actually appear in the snapshot text (grounding
      check) -- a model that paraphrases instead of quoting produces a
      fact that gets silently dropped, not silently stored.
-  2. field must be in the closed list -- an invented field is dropped.
+  2. value must actually be supported by quoted_span itself -- a real,
+     grounded quote can still have an invented value attached to it
+     (e.g. quoting a real sentence but reporting a different number than
+     it states); check #1 alone can't catch that, see grounding.py.
+  3. field must be in the closed list -- an invented field is dropped.
+
+The accepted quoted_span and confidence are kept on the resulting
+ExtractedFact (not discarded) so the evidence a fact was built from can
+still be audited later, not just at extraction time -- see
+docs/adr/0004-extracted-fact-keeps-evidence.md.
 """
 
 from __future__ import annotations
@@ -19,6 +28,7 @@ from collections.abc import Callable
 from pydantic import BaseModel, Field
 
 from ai_daily_digest.intelligence.facts import normalise_name
+from ai_daily_digest.intelligence.grounding import value_supported_by_quote
 from ai_daily_digest.intelligence.llm import SONNET, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
@@ -107,6 +117,20 @@ def extract_facts(
                 candidate.quoted_span,
             )
             continue
+        # The quote itself is real (checked above), but that doesn't mean
+        # the *value* the model reported actually came from it -- a model
+        # can quote a real sentence and still attach a fabricated number
+        # to it. This is the check that catches that specific case.
+        if not value_supported_by_quote(candidate.value, candidate.quoted_span):
+            logger.warning(
+                "extraction_rejected reason=value_not_in_quote snapshot_id=%s field=%s "
+                "value=%r quoted_span=%r",
+                snapshot.id,
+                candidate.field,
+                candidate.value,
+                candidate.quoted_span,
+            )
+            continue
 
         facts.append(
             ExtractedFact(
@@ -117,6 +141,8 @@ def extract_facts(
                 extraction_method="llm_structured_output",
                 extraction_model=SONNET,
                 prompt_version=PROMPT_VERSION,
+                quoted_span=candidate.quoted_span,
+                confidence=candidate.confidence,
             )
         )
         logger.info(

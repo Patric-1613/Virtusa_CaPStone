@@ -4,17 +4,17 @@ from ai_daily_digest.shared.schemas import DigestClaim
 KNOWN_SNAPSHOTS = {"snap_1", "snap_2"}
 
 
-def _claim(citations, claim_id="c1"):
+def _claim(citations: list[str], claim_id: str = "c1") -> DigestClaim:
     return DigestClaim(id=claim_id, text="Some claim.", citation_snapshot_ids=citations)
 
 
-def test_empty_claims_stays_draft_not_published():
+def test_empty_claims_stays_draft_not_published() -> None:
     digest = assemble_digest("2026-08-20", [], known_snapshot_ids=KNOWN_SNAPSHOTS)
     assert digest.status == "draft"
     assert digest.claims == []
 
 
-def test_all_supported_claims_publishes():
+def test_all_supported_claims_publishes() -> None:
     digest = assemble_digest(
         "2026-08-20",
         [_claim(["snap_1"], "c1"), _claim(["snap_2"], "c2")],
@@ -24,7 +24,7 @@ def test_all_supported_claims_publishes():
     assert {c.validation_status for c in digest.claims} == {"supported"}
 
 
-def test_any_unsupported_claim_routes_to_review_but_keeps_all_claims():
+def test_any_unsupported_claim_routes_to_review_but_keeps_all_claims() -> None:
     digest = assemble_digest(
         "2026-08-20",
         [_claim(["snap_1"], "c1"), _claim(["snap_missing"], "c2")],
@@ -36,12 +36,12 @@ def test_any_unsupported_claim_routes_to_review_but_keeps_all_claims():
     assert statuses == {"c1": "supported", "c2": "unsupported"}
 
 
-def test_default_title_includes_the_date():
+def test_default_title_includes_the_date() -> None:
     digest = assemble_digest("2026-08-20", [_claim(["snap_1"])], known_snapshot_ids=KNOWN_SNAPSHOTS)
     assert "2026-08-20" in digest.title
 
 
-def test_custom_title_is_used_verbatim():
+def test_custom_title_is_used_verbatim() -> None:
     digest = assemble_digest(
         "2026-08-20",
         [_claim(["snap_1"])],
@@ -51,7 +51,7 @@ def test_custom_title_is_used_verbatim():
     assert digest.title == "Custom Title"
 
 
-def test_digest_date_and_ids_are_set():
+def test_digest_date_and_ids_are_set() -> None:
     digest = assemble_digest("2026-08-20", [_claim(["snap_1"])], known_snapshot_ids=KNOWN_SNAPSHOTS)
     assert digest.digest_date == "2026-08-20"
     assert digest.id

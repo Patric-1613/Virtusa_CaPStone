@@ -3,6 +3,7 @@ every LLM call site — no network/API key needed. This exercises the
 wiring (state passing, conditional routing) on top of logic that's
 already covered by each node's own unit tests."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
@@ -14,19 +15,19 @@ from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem, Subject
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 
 
-def _item(item_id, title, canonical_url="https://openai.com/a"):
+def _item(item_id: str, title: str, canonical_url: str = "https://openai.com/a") -> SourceItem:
     return SourceItem(
         id=item_id,
         dedupe_key=f"sha256:{item_id}",
         source_id="openai_news",
         publisher="OpenAI",
         title=title,
-        canonical_url=canonical_url,
+        canonical_url=canonical_url,  # type: ignore[arg-type]
         first_fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
     )
 
 
-def _snapshot(snap_id, item_id, text, fetched_at):
+def _snapshot(snap_id: str, item_id: str, text: str, fetched_at: datetime) -> DocumentSnapshot:
     return DocumentSnapshot(
         id=snap_id,
         source_item_id=item_id,
@@ -36,8 +37,10 @@ def _snapshot(snap_id, item_id, text, fetched_at):
     )
 
 
-def _extraction_fake(field, value, quoted_span, confidence=0.95):
-    def fake_call(system, prompt):
+def _extraction_fake(
+    field: str, value: str, quoted_span: str, confidence: float = 0.95
+) -> Callable[[str, str], FactExtractionResponse]:
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
         return FactExtractionResponse(
             facts=[
                 FactCandidate(
@@ -49,7 +52,7 @@ def _extraction_fake(field, value, quoted_span, confidence=0.95):
     return fake_call
 
 
-def test_first_observation_produces_no_claims():
+def test_first_observation_produces_no_claims() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)  # already tracked -- deterministic matching needs this
     graph = build_graph(
@@ -70,10 +73,12 @@ def test_first_observation_produces_no_claims():
 
     assert result["subject"] == OPENAI_GPT4O
     assert result["claims"] == []  # first observation, not a change
-    assert store.get_current_fact(OPENAI_GPT4O, "context_window_tokens").value == "128000"
+    current = store.get_current_fact(OPENAI_GPT4O, "context_window_tokens")
+    assert current is not None
+    assert current.value == "128000"
 
 
-def test_changed_value_flows_through_to_a_supported_claim():
+def test_changed_value_flows_through_to_a_supported_claim() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)  # already tracked -- deterministic matching needs this
     launch_graph = build_graph(
@@ -110,6 +115,7 @@ def test_changed_value_flows_through_to_a_supported_claim():
 
     assert result["subject"] == OPENAI_GPT4O
     assert len(result["changes"]) == 1
+    assert result["changes"][0].previous is not None
     assert result["changes"][0].previous.value == "128000"
     assert result["changes"][0].current.value == "256000"
     assert len(result["claims"]) == 1
@@ -119,11 +125,11 @@ def test_changed_value_flows_through_to_a_supported_claim():
     assert set(claim.citation_snapshot_ids) == {"snap_launch", "snap_256k"}
 
 
-def test_llm_fallback_resolves_when_deterministic_matching_fails():
+def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)  # known, but not findable by phrase match below
 
-    def resolve_fake(system, prompt):
+    def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(company="OpenAI", product="GPT-4o", confidence=0.9)
 
     graph = build_graph(
@@ -145,10 +151,10 @@ def test_llm_fallback_resolves_when_deterministic_matching_fails():
     assert result["resolution"].method == "llm_resolved"
 
 
-def test_unresolvable_item_ends_early_with_no_facts_or_claims():
+def test_unresolvable_item_ends_early_with_no_facts_or_claims() -> None:
     store = FactStore()
 
-    def resolve_fake(system, prompt):
+    def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(confidence=0.9)  # no company/product proposed
 
     graph = build_graph(store, alias_table=[], resolve_llm_call_fn=resolve_fake)

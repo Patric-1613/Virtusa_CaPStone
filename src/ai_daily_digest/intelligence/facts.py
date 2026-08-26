@@ -114,7 +114,12 @@ class FactStore:
         record = self._fields.get((*_subject_key(subject), field))
         return list(record.history) if record else []
 
-    def update_fact(
+    def update_fact(  # pylint: disable=too-many-arguments
+        # subject/fact identify what's being recorded; source_url/
+        # observed_at are provenance the caller must supply per-call
+        # (see _FieldRecord's docstring for why FactStore doesn't infer
+        # them); change_type/confidence are optional overrides for
+        # callers that know more than a bare value comparison can.
         self,
         subject: Subject,
         fact: ExtractedFact,

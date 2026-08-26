@@ -92,7 +92,15 @@ class ExtractedFact(BaseModel):
     """One field-level fact extracted from a single snapshot. Facts
     created by deterministic code use extraction_method="deterministic";
     facts created by an LLM must also record extraction_model and
-    prompt_version so evaluations are reproducible."""
+    prompt_version so evaluations are reproducible.
+
+    quoted_span/confidence: the evidence a fact was built from, kept
+    (not discarded) so it can be audited later -- did this fact's value
+    actually come from the text it claims, and how confident was the
+    extraction. Optional because deterministic facts don't always have a
+    natural "quote" to attach; LLM-extracted facts always populate both
+    (see intelligence/extract_facts.py). Added by
+    docs/adr/0004-extracted-fact-keeps-evidence.md."""
 
     id: str  # UUID v4
     snapshot_id: str
@@ -101,6 +109,8 @@ class ExtractedFact(BaseModel):
     extraction_method: str  # "deterministic" | "llm_structured_output"
     extraction_model: str | None = None
     prompt_version: str | None = None
+    quoted_span: str | None = None
+    confidence: float | None = None
 
 
 # ---------------------------------------------------------------------------

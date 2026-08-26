@@ -2,8 +2,9 @@
 
 Owns: fact retrieval/comparison state (`facts.py`), subject resolution,
 fact extraction, deterministic claim drafting, citation validation, the
-evaluation harness (not yet built), and email rendering/sending (not yet
-built). See `README.md` in this directory for the one-line upstream
+evaluation harness (`evaluate.py`, self-check only — see its own
+docstring), and email rendering/sending (not yet built, delivery's job).
+See `README.md` in this directory for the one-line upstream
 description, and `docs/API_CONTRACT.md` for the real shared contract —
 there is no "Entity" model; this module resolves to `Subject`
 (company + product) and produces `Change`/`ExtractedFact`/`DigestClaim`.
@@ -20,13 +21,21 @@ that cover it.
   general knowledge.
 - **Every `DigestClaim` needs a citation resolvable to a real snapshot
   id.** Enforce this in code (`validate.py`), never rely on the prompt
-  alone to behave.
-- **`quoted_span` must actually appear in the source text** — checked in
-  code (`extract_facts.py`), a fabricated span is silently dropped, not
-  silently stored.
+  alone to behave. Existence alone is not enough — when the caller has
+  real snapshot content (`snapshots_by_id`), `validate.py` also checks
+  that every number the claim asserts is actually grounded in the
+  content of the snapshot(s) it cites (`intelligence/grounding.py`).
+- **`quoted_span` must actually appear in the source text, AND the
+  extracted `value` must actually be supported by that quote** — both
+  checked in code (`extract_facts.py`); a fabricated span or a fabricated
+  value hiding behind a real quote are both silently dropped, not
+  silently stored. Accepted facts keep their `quoted_span`/`confidence`
+  (ADR 0004) rather than discarding them.
 - **A false subject merge is worse than a miss.** Assert on it explicitly
   in `tests/unit/test_resolve.py`; low-confidence LLM resolutions are
-  never auto-merged (`resolve_llm.py`'s 0.6 threshold).
+  never auto-merged (`resolve_llm.py`'s 0.6 threshold) — and neither is a
+  high-confidence resolution naming a company/product that isn't
+  actually one of the candidates it was given.
 - Change detection compares against **stored history**, never a
   recomputed value — `facts.py::FactStore` builds `Change.previous` from
   what was actually recorded, and `field_history()` is append-only.
@@ -36,11 +45,17 @@ that cover it.
 
 ## Model choices
 
+No call site sets `temperature` — sampling controls (`temperature`/`top_p`/
+`top_k`) are removed on the current-gen models below (400 if sent); see
+`intelligence/llm.py::call_structured`'s docstring. Reproducibility comes
+from the schema-validation retry loop and each call site's own grounding
+checks, not from a sampling knob.
+
 | Call site | Model | Notes |
 |---|---|---|
-| `resolve_llm.py` | Haiku 4.5 | Only runs on the residue after deterministic alias matching fails/is ambiguous. Constrained JSON, temperature 0. Confidence < 0.6 → logged for review, never auto-merged. |
+| `resolve_llm.py` | Haiku 4.5 | Only runs on the residue after deterministic alias matching fails/is ambiguous. Constrained JSON. Confidence < 0.6, or a proposed subject not in the candidate list, → logged for review, never auto-merged. |
 | `extract_facts.py` | Sonnet 5 | Must quote an exact source span, not paraphrase — Haiku tends to paraphrase, which breaks the grounding check. |
-| `compare_subjects.py` | Sonnet 5 | Reads the fact table only, never raw article text. Sparse data → abstention, enforced in code (unknown subject/field/snapshot citation all get dropped). |
+| `compare_subjects.py` | Sonnet 5 | Reads the fact table only, never raw article text. Sparse data → abstention, enforced in code (unknown subject/field/citation-ownership/fabricated-value all get dropped). |
 
 `facts.py`'s change detection and `draft_claims.py`'s single-field claim
 drafting are deliberately **not** LLM calls — see
@@ -64,9 +79,12 @@ model still routing through `call_structured`. The individual functions
 first — nodes before the graph shell, so graph wiring only combined
 already-proven logic instead of debugging both at once. See
 `docs/LLM_AGENT_SPECS.md`'s Orchestration section for the exact node/edge
-layout. `compare_subjects` isn't wired into the graph yet — it's a
+layout. `compare_subjects` is not a node in this graph — it's a
 cross-item, cross-subject step, a different shape from the current
-one-item-at-a-time graph.
+one-item-at-a-time graph — but it is wired into the batch-level
+orchestrator, `daily_run.py::run_daily`, which invokes this graph once
+per item and then runs one `compare_subjects` pass over the batch. See
+`docs/LLM_AGENT_SPECS.md`'s `daily_run` section.
 
 ## Structured output discipline
 
