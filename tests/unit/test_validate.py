@@ -123,14 +123,32 @@ def test_claim_with_no_numbers_is_unaffected_by_content_grounding() -> None:
     assert validated.validation_status == "supported"
 
 
-def test_citation_missing_from_snapshots_by_id_is_unsupported_not_a_crash() -> None:
+def test_citation_missing_from_snapshots_by_id_falls_back_to_existence_only() -> None:
     """A citation id that exists in known_snapshot_ids but isn't in
-    snapshots_by_id (e.g. from an earlier run outside this batch) can't
-    be content-verified -- treated as unsupported, not skipped silently
-    or allowed to raise."""
+    snapshots_by_id (e.g. a Change's previous-value snapshot from an
+    earlier day's run, outside the current batch) can't be
+    content-verified here -- rather than punishing every routine
+    multi-day claim as "unsupported", it falls back to the existence-only
+    check per this module's documented interim policy. See
+    test_claim_citing_a_real_but_unrelated_snapshot_is_unsupported for
+    the case this does NOT weaken: when content IS available, it's still
+    enforced."""
     claim = _claim(["snap_2"], text="The price is 5.")
     validated = validate_claim(claim, KNOWN_SNAPSHOTS, snapshots_by_id={})
-    assert validated.validation_status == "unsupported"
+    assert validated.validation_status == "supported"
+
+
+def test_claim_partially_grounded_and_partially_missing_content_falls_back_too() -> None:
+    """One cited snapshot has content available (and would fail the
+    content check on its own), the other doesn't -- per the "every cited
+    snapshot's content must be available, or don't run the content check
+    at all" policy, this whole claim falls back to existence-only rather
+    than a partial check that could be gamed by pairing a bad citation
+    with an out-of-batch one."""
+    claim = _claim(["snap_1", "snap_2"], text="The price is 999999.")
+    snapshots_by_id = {"snap_1": _snapshot("snap_1", "The price is 5.")}
+    validated = validate_claim(claim, KNOWN_SNAPSHOTS, snapshots_by_id=snapshots_by_id)
+    assert validated.validation_status == "supported"
 
 
 def test_content_grounding_does_not_change_behavior_when_omitted() -> None:

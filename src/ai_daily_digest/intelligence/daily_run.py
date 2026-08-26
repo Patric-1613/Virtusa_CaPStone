@@ -87,6 +87,24 @@ class _BatchAccumulator:
     snapshots_by_id: dict[str, DocumentSnapshot] = field(default_factory=dict)
 
 
+def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[str]) -> Digest:
+    """INTERIM SAFETY POLICY (per review): compare_subjects()'s numeric
+    grounding check only catches a claim that states a specific WRONG
+    number -- it does nothing for a qualitative/relational claim like
+    "OpenAI is cheaper than Anthropic" (no number to check at all) or a
+    claim that swaps which number belongs to which subject (both numbers
+    are real, just attributed backwards -- see compare_subjects.py's own
+    docstring for the exact gap). Until a structured, relation-aware
+    comparison check exists, no cross-subject comparison claim may cause
+    a digest to auto-publish -- it can still be part of a "review"
+    digest, same as any other unsupported claim, but never nudge a
+    digest into "published" on its own. Mirrors validate.py's own rule
+    that a check can only ever veto a publish, never grant one."""
+    if comparison_claim_ids and digest.status == "published":
+        return digest.model_copy(update={"status": "review"})
+    return digest
+
+
 def _process_item(
     entry: BatchItem,
     graph: CompiledStateGraph[PipelineState, Any, PipelineState, PipelineState],
@@ -164,6 +182,10 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     aggregates (see change_sets.py) and returned on the result —
     previously nothing did this, and every Change left with an empty,
     never-assigned `change_set_id`.
+
+    INTERIM SAFETY POLICY: no cross-subject comparison claim (from
+    compare_subjects()) may cause the digest to auto-publish, regardless
+    of its own validation status -- see _never_auto_publish_comparisons().
     """
     graph = build_graph(
         store,
@@ -176,11 +198,14 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     for entry in batch:
         _process_item(entry, graph, known_snapshot_ids, acc)
 
+    comparison_claim_ids: set[str] = set()
     fields = comparison_fields if comparison_fields is not None else list(COMPARABLE_FIELDS)
     if fields and len(acc.resolved_subjects) >= 2:
         try:
             rows = build_fact_table(store, acc.resolved_subjects, fields)
-            acc.claims.extend(compare_subjects(rows, call_fn=compare_call_fn))
+            comparison_claims = compare_subjects(rows, call_fn=compare_call_fn)
+            comparison_claim_ids = {c.id for c in comparison_claims}
+            acc.claims.extend(comparison_claims)
         except Exception:  # pylint: disable=broad-exception-caught
             # Same principle as _process_item: a comparison failure
             # shouldn't cost every per-item claim already gathered above.
@@ -193,6 +218,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
         snapshots_by_id=acc.snapshots_by_id,
         title=title,
     )
+    digest = _never_auto_publish_comparisons(digest, comparison_claim_ids)
 
     return DailyRunResult(
         digest=digest,

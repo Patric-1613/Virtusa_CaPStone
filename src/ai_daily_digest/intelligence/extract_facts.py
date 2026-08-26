@@ -33,7 +33,7 @@ from ai_daily_digest.intelligence.llm import SONNET, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import DocumentSnapshot, ExtractedFact, Subject
+from ai_daily_digest.shared.schemas import Confidence, DocumentSnapshot, ExtractedFact, Subject
 
 logger = logging.getLogger("intelligence.extract_facts")
 
@@ -45,7 +45,13 @@ class FactCandidate(BaseModel):
     field: str
     value: str
     quoted_span: str
-    confidence: float
+    # Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    # -- rejects confidence=NaN at parse time (see shared/schemas.py's
+    # comment): NaN silently passed every "< CONFIDENCE_THRESHOLD" check
+    # below before this was added, since every comparison with NaN is
+    # False. A malformed response now fails call_structured's own
+    # validation instead, triggering its retry-once-then-fail-loudly path.
+    confidence: Confidence
 
 
 class FactExtractionResponse(BaseModel):

@@ -5,6 +5,9 @@ tests, not here."""
 
 from datetime import UTC, datetime
 
+import pytest
+from pydantic import ValidationError
+
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse, resolve_via_llm
 from ai_daily_digest.shared.schemas import SourceItem, Subject
@@ -75,6 +78,14 @@ def test_high_confidence_subject_not_in_candidates_is_not_auto_merged() -> None:
     assert result.subject is None
     assert result.method == "llm_subject_not_in_candidates"
     assert result.candidate_subjects == _candidates()
+
+
+def test_nan_confidence_is_rejected_at_parse_time_not_silently_accepted() -> None:
+    """Same NaN-bypass case as test_extract_facts.py's -- confidence=NaN
+    silently passed "< CONFIDENCE_THRESHOLD" here too before the
+    Confidence type existed."""
+    with pytest.raises(ValidationError):
+        ResolveLLMResponse(company="OpenAI", product="GPT-4o", confidence=float("nan"))
 
 
 def test_new_subject_proposal_with_no_existing_match() -> None:

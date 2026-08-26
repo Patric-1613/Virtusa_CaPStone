@@ -3,6 +3,9 @@ an injected fake call_fn — no network/API key needed."""
 
 from datetime import UTC, datetime
 
+import pytest
+from pydantic import ValidationError
+
 from ai_daily_digest.intelligence.extract_facts import (
     FactCandidate,
     FactExtractionResponse,
@@ -131,6 +134,21 @@ def test_grounded_quote_with_fabricated_value_is_rejected() -> None:
 
     facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
     assert facts == []
+
+
+def test_nan_confidence_is_rejected_at_parse_time_not_silently_accepted() -> None:
+    """Adversarial case per the review: confidence=NaN made every
+    "confidence < CONFIDENCE_THRESHOLD" check in the codebase silently
+    False (NaN compares False against everything), bypassing the
+    low-confidence gate entirely. The Confidence type now rejects it
+    before extract_facts() ever sees it."""
+    with pytest.raises(ValidationError):
+        FactCandidate(
+            field="context_window_tokens",
+            value="256000",
+            quoted_span="256,000 tokens",
+            confidence=float("nan"),
+        )
 
 
 def test_empty_response_yields_empty_facts() -> None:

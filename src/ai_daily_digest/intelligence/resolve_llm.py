@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ai_daily_digest.intelligence.llm import HAIKU, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.intelligence.resolve import ResolutionResult
-from ai_daily_digest.shared.schemas import SourceItem, Subject
+from ai_daily_digest.shared.schemas import Confidence, SourceItem, Subject
 
 logger = logging.getLogger("intelligence.resolve_llm")
 
@@ -25,7 +25,10 @@ class ResolveLLMResponse(BaseModel):
     company: str | None = None
     product: str | None = None
     new_subject_proposal: str | None = None
-    confidence: float
+    # Confidence rejects NaN at parse time -- see shared/schemas.py's
+    # comment. Without this, confidence=NaN silently passed the
+    # "< CONFIDENCE_THRESHOLD" check below (NaN < 0.6 is False).
+    confidence: Confidence
 
 
 def _format_candidates(subjects: list[Subject]) -> str:

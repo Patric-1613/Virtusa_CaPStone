@@ -97,8 +97,13 @@ worked example with fakes standing in for all three.
   URL/observed_at.
 - **Output**: a `Change` if the new value differs from what was
   previously known for (subject, field); `None` for a first-time
-  observation (that's "what's new", reported elsewhere) or an identical
-  value (a true no-op).
+  observation or an identical value (both a true no-op here). **Known
+  gap** (flagged in the second review, not yet resolved): a first
+  observation is genuinely new information, but nothing downstream
+  currently turns it into a `DigestClaim` either — there is no "new
+  disclosure" claim path today, despite an earlier version of this
+  comment implying one existed. Whether to build one is one of the open
+  design questions in the second-review response, not assumed here.
 - **Guardrail**: `previous` is always built from what was actually
   stored, never recomputed after the fact — history is append-only.
 

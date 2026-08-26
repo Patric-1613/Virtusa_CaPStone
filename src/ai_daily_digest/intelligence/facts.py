@@ -141,8 +141,11 @@ class FactStore:
         bare numeric comparison can't (e.g. "disclosed").
 
         Returns a Change if this differs from the currently known value —
-        returns None for a first-time observation (that's new information,
-        reported elsewhere as "what's new", not a change) or an identical
+        returns None for a first-time observation (new information, but
+        not a change — see this project's second review: nothing
+        downstream currently turns a first observation into its own
+        digest content either; "reported elsewhere" was aspirational,
+        not a real path, and is corrected here to say so) or an identical
         value. An identical value still refreshes the stored provenance
         (snapshot/source/observed_at) to this newer confirmation, so a
         fact re-confirmed many times doesn't keep citing its original,

@@ -168,8 +168,12 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
 
     # one "changed" claim (128k -> 256k) + one comparison claim = 2
     assert len(result.digest.claims) == 2
-    assert result.digest.status == "published"
     assert all(c.validation_status == "supported" for c in result.digest.claims)
+    # Interim safety policy: a digest containing ANY comparison claim
+    # never auto-publishes, even when every claim in it individually
+    # validates as "supported" -- see
+    # daily_run.py::_never_auto_publish_comparisons.
+    assert result.digest.status == "review"
 
     # the one Change (128k -> 256k) is grouped into one ChangeSet, with
     # its change_set_id backfilled -- not left empty (see change_sets.py)
@@ -179,6 +183,104 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
     assert len(change_set.changes) == 1
     assert change_set.changes[0].change_set_id == change_set.id
     assert change_set.changes[0].change_set_id != ""
+
+
+def test_qualitative_comparison_claim_never_auto_publishes_even_if_grounded() -> None:
+    """Adversarial case per the review: a comparison claim asserting a
+    qualitative relationship ("OpenAI is cheaper than Anthropic") has no
+    numbers in it at all, so compare_subjects.py's numeric check has
+    nothing to verify -- the claim can pass every existing guardrail
+    (real subjects, real field, real correctly-owned citation) while
+    still being TRUE or FALSE about the actual relationship, which
+    nothing here can determine. This is exactly the case the interim
+    "comparisons never auto-publish" policy exists for: even though this
+    claim validates as "supported" by every current check, the digest
+    must still route to review, not auto-publish."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    store.register_subject(ANTHROPIC_CLAUDE)
+    known_snapshot_ids: set[str] = set()
+
+    def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
+        if "snap_openai" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="input_price_usd",
+                        value="5",
+                        quoted_span="priced at $5 per million tokens",
+                        confidence=0.9,
+                    )
+                ]
+            )
+        if "snap_anthropic" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="input_price_usd",
+                        value="3",
+                        quoted_span="priced at $3 per million tokens",
+                        confidence=0.9,
+                    )
+                ]
+            )
+        return FactExtractionResponse(facts=[])
+
+    def compare_fake(system: str, prompt: str) -> ComparisonResponse:
+        # False: OpenAI (5) is actually MORE expensive than Anthropic (3).
+        # No numbers asserted, so today's numeric check can't catch it.
+        return ComparisonResponse(
+            claims=[
+                ComparisonClaimCandidate(
+                    text="OpenAI's GPT-4o is cheaper than Anthropic's Claude.",
+                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
+                    fields=["input_price_usd"],
+                    snapshot_ids=["snap_openai", "snap_anthropic"],
+                )
+            ]
+        )
+
+    batch = [
+        BatchItem(
+            _item("item_openai", "OpenAI pricing update"),
+            _snapshot(
+                "snap_openai",
+                "item_openai",
+                "OpenAI's GPT-4o input tokens are priced at $5 per million tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+        BatchItem(
+            _item(
+                "item_anthropic",
+                "Claude pricing update",
+                publisher="Anthropic",
+                source_id="anthropic_news",
+            ),
+            _snapshot(
+                "snap_anthropic",
+                "item_anthropic",
+                "Anthropic's Claude input tokens are priced at $3 per million tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+    ]
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        extract_call_fn=extract_fake,
+        compare_call_fn=compare_fake,
+    )
+
+    assert len(result.digest.claims) == 1
+    assert (
+        result.digest.claims[0].validation_status == "supported"
+    )  # passes every check that exists
+    assert result.digest.status == "review"  # but still never auto-published
 
 
 def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() -> None:

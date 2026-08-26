@@ -17,8 +17,23 @@ Requires: pydantic>=2
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+
+# A confidence score, everywhere one appears in this contract or in an LLM
+# response model that feeds it (ExtractedFact.confidence, Change.confidence,
+# and intelligence/extract_facts.py::FactCandidate,
+# intelligence/resolve_llm.py::ResolveLLMResponse both import this rather
+# than redeclaring `float`). bounded [0, 1] AND allow_inf_nan=False --
+# ge/le alone already reject NaN (every comparison with NaN is False, so a
+# bare `ge=0` constraint fails closed on it), but allow_inf_nan=False makes
+# that rejection an explicit, intentional guarantee rather than a side
+# effect of how IEEE754 comparisons happen to behave. Without this, a
+# confidence=NaN response silently bypassed every "confidence < threshold"
+# check in the codebase (NaN < 0.6 is also False) — verified as a real gap
+# in review, not hypothetical.
+Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
 # ---------------------------------------------------------------------------
 # Ingestion output, intelligence input
@@ -110,7 +125,7 @@ class ExtractedFact(BaseModel):
     extraction_model: str | None = None
     prompt_version: str | None = None
     quoted_span: str | None = None
-    confidence: float | None = None
+    confidence: Confidence | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +155,7 @@ class Change(BaseModel):
     change_type: str  # e.g. "increased", "decreased", "disclosed", "changed"
     previous: FactObservation | None = None
     current: FactObservation
-    confidence: float
+    confidence: Confidence
     review_status: str = "pending"  # "pending" | "validated" | "rejected"
 
 

@@ -27,6 +27,23 @@ extracted values, not raw snapshot text). daily_run.py/assemble_digest.py
 DO have every batch snapshot's content and pass it through, so the
 content-grounding check runs at the point that matters most: the final
 gate before a digest can auto-publish.
+
+KNOWN LIMITATION, interim behavior (flagged in review, not silently
+accepted): `snapshots_by_id` only ever covers the CURRENT batch. A
+routine multi-day change (e.g. "increased to X, up from Y") legitimately
+cites both a current-batch snapshot AND an earlier one from a previous
+day's run — `daily_run.py` doesn't carry snapshot content across days
+the way it carries `known_snapshot_ids`. Requiring full content for
+every citation would make ordinary historical claims wrongly
+"unsupported" the moment a Change spans more than one batch. The interim
+policy below only runs the content check when EVERY cited snapshot's
+content is actually available; a claim with any citation outside the
+current batch falls back to the existence-only check instead of being
+punished for a plumbing gap. This is deliberately conservative in the
+other direction: it under-checks multi-day claims rather than
+over-rejecting legitimate ones. A real fix (a snapshot-content store
+that persists across daily runs, not just the current batch) is a
+separate, larger change — not made here.
 """
 
 from __future__ import annotations
@@ -39,22 +56,20 @@ def _claim_numbers_are_grounded(
     claim: DigestClaim, snapshots_by_id: dict[str, DocumentSnapshot]
 ) -> bool:
     """Every number claim.text asserts must appear in the combined
-    content of its cited snapshots. A claim asserting no numbers at all
-    (e.g. "Anthropic has not disclosed its price") has nothing this
-    check can verify, so it passes -- existence is all that applies."""
+    content of its cited snapshots -- but only when content for EVERY
+    cited snapshot is actually available (see this module's docstring on
+    why a partial/missing citation falls back to trusting it rather than
+    failing the claim). A claim asserting no numbers at all (e.g.
+    "Anthropic has not disclosed its price") has nothing this check can
+    verify either way, so it passes."""
     claim_numbers = numbers_in(claim.text)
     if not claim_numbers:
         return True
-    # A cited id that isn't in snapshots_by_id is a snapshot this caller
-    # doesn't have content for (e.g. from an earlier run, outside this
-    # batch) -- can't verify grounding against content we don't have, so
-    # that citation contributes nothing rather than raising.
-    cited_snapshots = [
-        snapshots_by_id[sid] for sid in claim.citation_snapshot_ids if sid in snapshots_by_id
-    ]
-    if len(cited_snapshots) != len(claim.citation_snapshot_ids):
-        return False
-    combined_text = " ".join(s.content_text or "" for s in cited_snapshots)
+    if not all(sid in snapshots_by_id for sid in claim.citation_snapshot_ids):
+        return True
+    combined_text = " ".join(
+        snapshots_by_id[sid].content_text or "" for sid in claim.citation_snapshot_ids
+    )
     return claim_numbers <= numbers_in(combined_text)
 
 
