@@ -189,6 +189,25 @@ def test_unknown_subject_is_rejected() -> None:
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
+def test_subject_compared_to_itself_is_rejected() -> None:
+    """Per the third review: reject comparisons where subject_a ==
+    subject_b -- a subject can't be legitimately compared to itself."""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return ComparisonResponse(
+            claims=[
+                ComparisonClaimCandidate(
+                    text="OpenAI's GPT-4o compared to OpenAI's GPT-4o.",
+                    subjects=[OPENAI_GPT4O, OPENAI_GPT4O],
+                    fields=["context_window_tokens"],
+                    snapshot_ids=["snap_openai_ctx"],
+                )
+            ]
+        )
+
+    assert compare_subjects(_rows(), call_fn=fake_call) == []
+
+
 def test_single_subject_claim_is_rejected() -> None:
     """A "comparison" naming only one subject isn't a comparison."""
 

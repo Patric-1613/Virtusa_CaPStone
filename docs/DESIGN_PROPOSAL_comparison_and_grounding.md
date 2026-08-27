@@ -1,14 +1,21 @@
 # Design proposal — structured comparison output & remaining grounding gaps
 
-Status: **Proposal — not yet implemented, not yet team-approved.** Written in response to the
-second review of the intelligence pipeline PR, which correctly found that the current
-numeric-only grounding checks (`intelligence/grounding.py`) can't catch a *relational* fabrication
-("OpenAI is cheaper than Anthropic" when it isn't) or a *misattributed* one (real numbers, wrong
-subject). This document proposes the fix; it deliberately does not implement it — per the review's
-own request, this needs sign-off before another implementation pass.
+Status: **Revised per third-review feedback — approved in direction, revisions incorporated below,
+awaiting Persons A and C's review of THIS revision before implementation.** The original version of
+this document proposed a structural fix for `compare_subjects.py`'s free-text comparison claims;
+that direction was approved, with the specific corrections in each numbered section below required
+before implementation starts. See [ADR 0005](adr/0005-structured-comparison-and-snapshot-resolution.md)
+for the recorded decision this document backs.
 
-An interim, code-level mitigation is already in place (see "Interim safety net" below) so the gap
-this document addresses is contained, not open, while it's under discussion.
+Two things are **already implemented** (not just proposed), because they were required conditions
+for safely deferring the rest, not optional design choices:
+- `daily_run.py::_never_auto_publish_comparisons()` — no comparison claim may cause a digest to
+  auto-publish, regardless of its own validation status.
+- `extract_facts.py`'s cross-field ambiguity guard — a fact whose quote is shared with a
+  *different* field's candidate in the same extraction response is dropped, not guessed at (the
+  exact "Input costs 5 and output costs 15" case).
+- `validate.py`'s content-grounding check is now fail-closed: a citation whose content can't be
+  loaded is `unsupported`, never trusted on the strength of the id existing.
 
 ## The core problem
 
@@ -25,9 +32,7 @@ sentence.
 
 ## Proposed design, by the review's numbered points
 
-### (a) Structured subject/field/value/relation comparison output
-
-Replace `ComparisonClaimCandidate`'s free-text `text` field with a structured, verifiable shape:
+### (a) Structured subject/field comparison output — with same-subject and duplicate-pair rejection
 
 ```python
 class ComparisonAssertion(BaseModel):
@@ -41,147 +46,192 @@ class ComparisonAssertion(BaseModel):
 The model's job shrinks to picking interesting `(subject_a, subject_b, field)` triples — a
 curation task, not an assertion task. Code then:
 
-1. Looks up `value_a`/`value_b` from `build_fact_table()`'s real rows for exactly that
+1. **Rejects `subject_a == subject_b`** outright — a subject can't be legitimately compared to
+   itself. (An equivalent check already shipped for the current free-text shape — see
+   `compare_subjects.py::_candidate_rejection_reason`'s `subject_compared_to_itself` case — as an
+   immediate fix, not waiting for this redesign.)
+2. **Deduplicates reversed pairs** — `(A, B, field)` and `(B, A, field)` are the same comparison;
+   code normalizes the pair (e.g. sort by `(company, product)` before dedup) so the model proposing
+   both doesn't produce two claims saying the same thing from opposite framing.
+3. Looks up `value_a`/`value_b` from `build_fact_table()`'s real rows for exactly that
    `(subject, field)` pair — no string-matching against prose, direct dictionary lookup.
-2. If either value is `None` ("not disclosed"), the comparison is either dropped or rendered as
-   an explicit "X has not disclosed Y" claim — never a relational claim with a missing side.
-3. If both values are present, code decides whether they're numerically comparable (see (f) below)
-   and computes the relation itself.
+4. Applies the field-specific comparison rule for that field (see (f), revised below) — or drops
+   the candidate if the field has no defined rule yet.
+
+### (a2) "Unknown" vs. "not disclosed" — these are different claims, and only one is groundable
+
+**New, from review feedback — not in the original proposal.** `FactRow.value = None` currently
+means "not disclosed" per its own docstring — this conflates two genuinely different states:
+
+- **Unknown**: we simply have no data for this (subject, field) — no extraction has ever found
+  it. This is the default, silent absence of information. Nothing should be *claimed* about it.
+- **Not disclosed**: the source explicitly states the fact is being withheld (e.g. "pricing has
+  not yet been announced"). This is itself a groundable claim — it needs its own citation, the
+  same as any other extracted fact — and only this state should ever produce text like "X has not
+  disclosed Y."
+
+Today's code effectively treats every missing value as "not disclosed" and lets `compare_subjects`
+render sentences like "Anthropic has not disclosed its price" from nothing but an absent row —
+an ungrounded claim in exactly the sense this whole review is about, just for an absence instead of
+a presence.
+
+Proposed representation: "not disclosed" becomes its own extractable, groundable fact state rather
+than a default inferred from silence:
+
+```python
+# shared/schemas.py — illustrative, needs its own contract-change process
+class ExtractedFact(BaseModel):
+    ...
+    value: str | None  # the disclosed value, when there is one
+    disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
+    # "not_disclosed" REQUIRES quoted_span to cite the actual statement
+    # of non-disclosure -- it is a claim like any other, not a fallback.
+```
+
+`build_fact_table()`'s `FactRow.value` stays `None` for the genuinely-unknown case (no
+`ExtractedFact` exists at all for that `(subject, field)`) — but comparison rendering must
+distinguish "no row data → say nothing about this side" from "row data says `disclosure_status
+="not_disclosed"` with real evidence → render the explicit non-disclosure sentence." Only the
+latter may ever produce "has not disclosed" text. This is a shared-contract change affecting
+`ExtractedFact` (the same kind of addition ADR 0004 made for `quoted_span`/`confidence`) and needs
+the same sign-off, tracked as part of this ADR rather than assumed.
 
 ### (b) Deterministic comparison validation and rendering
 
-Once (a) exists, `compare_subjects.py` becomes structurally identical to `draft_claims.py`:
-
-```python
-def render_comparison_claim(assertion, value_a, value_b) -> DigestClaim:
-    if value_a is None or value_b is None:
-        text = f"{subject_a_name}... ; {subject_b_name} has not disclosed {field_label}."
-    elif is_numeric_field(assertion.field):
-        relation = (
-            "lower"
-            if float(value_a) < float(value_b)
-            else ("higher" if float(value_a) > float(value_b) else "equal")
-        )
-        text = (
-            f"{subject_a_name}'s {field_label} is {value_a}, {relation} than "
-            f"{subject_b_name}'s {value_b}."
-        )
-    else:
-        text = f"{subject_a_name}'s {field_label} is {value_a}; {subject_b_name}'s is {value_b}."
-    ...
-```
-
-The model never writes prose that reaches a claim; every word in the final `DigestClaim.text` is
-code-generated from verified values. This closes the "cheaper than" case and the swapped-value case
-at the root — there's no longer a sentence for the model to get wrong, only a `(subject, subject,
-field)` selection for it to get uninteresting (worst case: a boring or irrelevant comparison, not a
-false one).
+Once (a) exists, `compare_subjects.py` becomes structurally identical to `draft_claims.py`: the
+model never writes prose that reaches a claim. Every word in the final `DigestClaim.text` is
+code-generated from verified values and the field's comparison rule. This closes the "cheaper
+than" case and the swapped-value case at the root — there's no longer a sentence for the model to
+get wrong, only a `(subject, subject, field)` selection for it to get uninteresting.
 
 ### (c) Fail-closed handling of LLM-authored non-numeric claims
 
-Once (a)/(b) ship, comparison claims stop being "LLM-authored" in the sense that matters (the
-sentence is code-rendered), so the interim "comparisons never auto-publish" policy (see below)
-should be **lifted**, not made permanent — it's a stand-in for the real fix, not a replacement for
-it. This document proposes making that removal an explicit follow-up step when (a)/(b) land, not
-an automatic side effect.
+Once (a)/(b) ship, comparison claims stop being "LLM-authored" in the sense that matters, so the
+interim "comparisons never auto-publish" policy should be **lifted as an explicit follow-up step**
+when (a)/(b) land — not made permanent, and not an automatic side effect of merging (a)/(b); a
+deliberate change with its own review.
 
-### (d) Historical snapshot lookup at the final gate
+### (d) Historical snapshot lookup — typed resolver boundary, not a growing dict
 
-Today, `validate.py`'s content-grounding check only has `snapshots_by_id` for the *current batch*
-— a routine multi-day change ("increased to X, up from Y") cites a previous-day snapshot that
-isn't there, so the interim code (already pushed) falls back to existence-only for that claim
-rather than wrongly rejecting it. That's a safe stopgap, not a fix.
+**Revised.** The original proposal — thread a `known_snapshots: dict[str, DocumentSnapshot]` across
+days the same way `known_snapshot_ids` already grows — was correctly flagged as the wrong shape for
+production: an ever-growing, caller-owned, in-memory dict has no eviction, no real backing store,
+and bakes "it's just a dict" into the interface.
 
-Proposed real fix: extend the existing "caller threads state across days" pattern (already used for
-`FactStore` and `known_snapshot_ids`) to snapshot content too — `run_daily()`'s caller owns a
-`known_snapshots: dict[str, DocumentSnapshot]` that grows across days the same way
-`known_snapshot_ids` already does, instead of `daily_run.py` building a batch-only dict internally.
-This needs no new storage layer, just a signature/contract change to `run_daily()` (and updates to
-every test that calls it) — the same shape of change as `known_snapshot_ids`, not a database. Once
-`StoreLoader` (the real DB-backed loader, not yet built) exists, this in-memory dict gets replaced
-by a real lookup the same way `FixtureLoader` is expected to be replaced.
+Corrected design: a typed boundary, matching the existing `Loader`/`FixtureLoader`/`StoreLoader`
+split in `loaders.py`:
+
+```python
+class SnapshotResolver(Protocol):
+    def get_content(self, snapshot_id: str) -> DocumentSnapshot | None: ...
+
+
+class InMemorySnapshotResolver:
+    """Interim implementation, backed by a plain dict -- same caveats
+    the original proposal had (unbounded growth if the caller keeps
+    adding to it), but now isolated behind an interface validate.py
+    depends on, not a raw dict type. A real ingestion-store-backed
+    resolver plugs in later without changing validate.py's signature."""
+
+    def __init__(self, snapshots_by_id: dict[str, DocumentSnapshot]) -> None:
+        self._snapshots_by_id = snapshots_by_id
+
+    def get_content(self, snapshot_id: str) -> DocumentSnapshot | None:
+        return self._snapshots_by_id.get(snapshot_id)
+```
+
+`validate.py`'s functions take a `snapshot_resolver: SnapshotResolver | None` instead of
+`snapshots_by_id: dict[...]`. This is the seam ingestion's real snapshot store plugs into later —
+this crosses module boundaries (intelligence depends on a resolver interface; ingestion or a
+shared storage layer eventually implements it), which is exactly why this needs recording as an
+ADR rather than being an intelligence-internal decision.
+
+**Also revised — the fail-closed rule this replaces:** the original proposal's fallback ("if
+content isn't available, trust the citation on the strength of its id existing") was rejected:
+**existence of a snapshot id is never proof its content supports the claim.** The corrected,
+already-shipped behavior: if `_claim_numbers_are_grounded` can't load content for every cited
+snapshot, the claim is `unsupported` (routes to review), not trusted. This means routine multi-day
+claims will need review more often than ideal until a real resolver can actually retrieve
+historical content — an accepted cost of the fail-closed default, not a bug to route around.
 
 ### (e) Ambiguous multi-number evidence spans
 
-The reproduced case: "Input costs 5 and output costs 15" lets `input_price_usd=15` pass, because
-`value_supported_by_quote()` only checks whether the value's digits appear *anywhere* in the quote,
-not whether they're the number actually *associated* with the field being extracted.
+**Partially addressed, real fix still open.** The interim guard (already shipped, see
+`extract_facts.py::_cross_contaminated_indices`) drops a fact whose quote also contains a
+*different field's* real value in the same extraction response — precise enough to catch "Input
+costs 5, output costs 15" without also flagging the legitimate "increased from 128,000 to 256,000
+tokens" pattern (same field, no sibling candidate involved).
 
-This is a real, unsolved gap. Two options, in increasing order of robustness:
+This guard is a floor, not the real fix, per the review's own note: **character offsets improve
+citation precision but do not alone prove which number belongs to which field** — two fields could
+still each have their own distinct, non-overlapping quote and still both be wrong if the model
+mis-transcribes which number came from where. The real fix needs the model to report the value's
+exact character offset within `content_text` (the shape Anthropic's own citations API uses —
+`start_char_index`/`end_char_index`) instead of a re-quoted substring, verified against the source
+text at exactly that offset — combined with a check that no *other* field's offset range overlaps
+or nearly-coincides with it. This is a prompt + response-schema change to `extract_facts.py`
+(`FactCandidate` gains offset fields alongside or instead of `quoted_span`), needing its own
+contract-change process (the same discipline ADR 0004 established) — proposed as a follow-up ADR
+once the comparison redesign here is settled, not bundled into this one.
 
-1. **Weak, immediate heuristic**: reject a fact if its `quoted_span` contains more than one
-   distinct number from `COMBINED_FIELDS`'-relevant digit runs, on the theory that a tight,
-   single-fact quote shouldn't need to contain someone else's number. Cheap, but blunt — it would
-   also reject legitimate quotes like "increased from 128,000 to 256,000 tokens" (two numbers, one
-   fact), which is exactly the accepted pattern in this project's own examples. **Not proposed** —
-   the false-positive rate looks too high without more care.
-2. **Real fix**: require the model to report the value's exact character offset within
-   `content_text` (the same shape Anthropic's own citations API uses — `start_char_index`/
-   `end_char_index`) instead of a re-quoted substring, and verify the value against the source
-   text at exactly that offset, not a fuzzy re-search. This is the option this document
-   recommends, but it's a prompt + response-schema change to `extract_facts.py` (`FactCandidate`
-   gains `start_char`/`end_char` instead of, or alongside, `quoted_span`), which itself needs the
-   same contract-change discipline ADR 0004 established. Proposed as a follow-up ADR once this
-   design is agreed, not bundled into this document's approval.
+### (f) The canonical shared value representation — field-specific rules, not a numeric/text split
 
-Until either lands, this gap remains open and disclosed — not fixed by this PR.
+**Replaced.** The original proposal's `COMPARABLE_FIELD_KINDS: dict[str, Literal["numeric",
+"text"]]` was too coarse — correctly flagged. Different fields need genuinely different comparison
+semantics:
 
-### (f) The canonical shared value representation
+| Field | What it actually needs |
+|---|---|
+| `context_window_tokens` | Integer + unit (tokens) — already unambiguous as a bare string today. |
+| `input_price_usd` / `output_price_usd` | Currency, unit (per-what — tokens? requests?), and basis (list price vs. discounted) — **not currently captured at extraction time at all**, so comparing two bare price strings today can silently compare incompatible things. |
+| `benchmark_scores` | Benchmark name and test conditions — "71.2" means nothing without knowing which benchmark, under what setup. |
+| `availability_regions` / `modalities` | Set comparison (overlap/subset/disjoint), not a scalar relation ("higher/lower" doesn't apply to a list of regions). |
+| `licence_terms` | Not proposed for automated comparison at all — this is a category judgment ("more permissive"), not comparable, and shouldn't be treated as one. |
 
-`ExtractedFact.value`/`FactObservation.value` stay `str` (matches the fixed doc examples) — no
-change proposed there; splitting into `str | float` would need a discriminated per-field type,
-duplicating information that already exists in `shared/attributes.py::COMPARABLE_FIELDS`. Instead,
-propose extending that same table with an explicit kind marker:
+Proposed: a per-field comparison-rule registry in `shared/attributes.py`, and — critically — **only
+`context_window_tokens` is in scope for Phase 1** (this ADR), because it's the one field whose
+current bare-string representation is already sufficient and unambiguous. Every other field is
+**excluded from cross-subject comparison** until its own structured representation is designed and
+agreed, each via its own follow-up ADR (prices need an extraction-level schema change too, not just
+a comparison-rendering change — a bare `"5"` doesn't carry currency/unit/basis today regardless of
+how comparison renders it).
 
 ```python
-# shared/attributes.py
-COMPARABLE_FIELD_KINDS: dict[str, Literal["numeric", "text"]] = {
-    "context_window_tokens": "numeric",
-    "input_price_usd": "numeric",
-    "output_price_usd": "numeric",
-    "benchmark_scores": "numeric",
-    "availability_regions": "text",
-    "licence_terms": "text",
-    "modalities": "text",
+# shared/attributes.py (illustrative -- exact shape to be finalized during implementation)
+COMPARISON_RULES: dict[str, ComparisonRule] = {
+    "context_window_tokens": IntegerComparisonRule(unit="tokens"),
+    # input_price_usd, output_price_usd, benchmark_scores, availability_regions,
+    # modalities, licence_terms: deliberately absent -- see table above.
 }
 ```
 
-(b)'s relation computation reads this instead of trying `float(value)` and catching the exception —
-explicit intent instead of duck-typing. Small, additive, low-risk; proposed as part of (a)/(b)'s
-implementation, not standalone.
+`compare_subjects()` drops (does not attempt) any candidate naming a field not in this registry,
+the same way it already drops a field not in `COMPARABLE_FIELDS` at all.
 
 ### (g) Should first observations create "new disclosure" claims?
 
-Currently a first-ever fact about a subject produces no `Change`, no `ChangeSet`, no `DigestClaim`
-— by design at the `FactStore` level (a first observation isn't a *change*), but the project's own
-comments used to imply this was "reported elsewhere," which isn't true anywhere in the code today
-(corrected in this PR — see `facts.py`/`docs/LLM_AGENT_SPECS.md`).
+Confirmed as a **separate product decision**, not decided here. If adopted:
+- **Scoped via an explicit allowlist** (mirroring `comparison_fields`) — not every field of every
+  newly-tracked subject, a deliberate choice of which fields are "disclosure-worthy."
+- **Neutral wording required**: "first recorded observation," never "changed from" — there is no
+  "from" for a first observation, and implying continuity with a prior state would itself be an
+  ungrounded claim.
 
-Whether to build a "new disclosure" claim path is a **product decision**, not a backend detail:
+## Interim safety net (already implemented)
 
-- **For**: a subject's first disclosed price/benchmark/context-window is genuinely newsworthy —
-  arguably core to what "AI Daily Digest" is supposed to report.
-- **Against**: every field of every newly-tracked subject would generate a claim, which could
-  dominate a digest's volume on any day a new subject is first tracked, with no tuning knob today.
+Three independent fail-closed mechanisms are live now, closing the *publishing* risk while the
+*detection* mechanisms above remain to be built:
 
-Proposed: don't build this silently. If the team wants it, scope it the same way
-`comparison_fields` already scopes cross-subject comparisons — an explicit, opt-in list of which
-fields are "disclosure-worthy" on first sight, defaulting to none — so digest volume stays a
-deliberate choice, not a side effect of whichever fields a prompt happens to extract.
-
-## Interim safety net (already implemented, this PR)
-
-Until (a)–(c) land, `daily_run.py::_never_auto_publish_comparisons()` forces any digest containing
-a cross-subject comparison claim to `"review"`, regardless of how that claim scores against every
-other check. This closes the *publishing* risk (a false comparison can no longer reach subscribers
-automatically) without yet closing the *detection* gap (a human reviewer still has to catch it) —
-which is the correct ordering per the review's own request: fail closed now, fix the real mechanism
-next.
+1. `daily_run.py::_never_auto_publish_comparisons()` — no cross-subject comparison claim may cause
+   auto-publish.
+2. `extract_facts.py::_cross_contaminated_indices()` — a fact whose evidence is ambiguous across
+   sibling fields is dropped, never becomes a `Change` or claim at all.
+3. `validate.py`'s content-grounding check is fail-closed on missing content — existence is never
+   treated as proof.
 
 ## What this document is asking for
 
-Feedback/approval on the shape above (particularly (a)/(b), the structural fix, and (d), the
-snapshot-content threading) before implementing it — per the review's explicit request not to start
-another implementation pass without one. (e) and (g) are flagged as open/deferred regardless of
-this document's approval, since they need either more design work or a product decision this PR
-can't make unilaterally.
+Persons A and C's review of this revision (per their own explicit request), before implementation
+of (a)/(b)/(d)/(f) begins. (e) is flagged as a genuinely open problem needing its own follow-up ADR
+regardless of this document's approval. (g) needs an explicit product decision, separately, before
+any implementation.

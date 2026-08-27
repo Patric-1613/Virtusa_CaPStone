@@ -145,14 +145,27 @@ def _index_rows(rows: list[FactRow]) -> _TableIndex:
     )
 
 
-def _candidate_rejection_reason(
-    candidate: ComparisonClaimCandidate, index: _TableIndex
+def _candidate_rejection_reason(  # pylint: disable=too-many-return-statements
+    # One independent guardrail per return, each a distinct rejection
+    # reason surfaced in the log line and easy to test in isolation --
+    # collapsing these into fewer returns would trade that clarity for
+    # nothing; the seven checks are the seven guardrails this module's
+    # docstring documents, not incidental complexity.
+    candidate: ComparisonClaimCandidate,
+    index: _TableIndex,
 ) -> str | None:
     """None means the candidate passes every check. Otherwise, the reason
     it was rejected -- used both for the log message and to short-circuit
     compare_subjects()'s loop with a single condition."""
     if len(candidate.subjects) != 2:
         return "not_two_subjects"
+    if candidate.subjects[0] == candidate.subjects[1]:
+        # A "comparison" naming the same subject twice isn't a
+        # comparison -- catches e.g. a model given a single-subject
+        # candidate set that still fills both slots with it rather than
+        # abstaining. Subject equality is company+product (frozen model,
+        # see shared/schemas.py), not identity.
+        return "subject_compared_to_itself"
     if any((s.company, s.product) not in index.known_subject_pairs for s in candidate.subjects):
         return "unknown_subject"
     if not candidate.fields or any(f not in index.known_fields for f in candidate.fields):

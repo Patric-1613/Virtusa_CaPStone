@@ -4,7 +4,7 @@ DocumentSnapshot's text into zero or more ExtractedFact records against
 the closed field list (shared/attributes.py). See
 docs/LLM_AGENT_SPECS.md#extract_facts for the full contract.
 
-Three guardrails enforced in code, not just requested in the prompt:
+Four guardrails enforced in code, not just requested in the prompt:
   1. quoted_span must actually appear in the snapshot text (grounding
      check) -- a model that paraphrases instead of quoting produces a
      fact that gets silently dropped, not silently stored.
@@ -13,6 +13,15 @@ Three guardrails enforced in code, not just requested in the prompt:
      (e.g. quoting a real sentence but reporting a different number than
      it states); check #1 alone can't catch that, see grounding.py.
   3. field must be in the closed list -- an invented field is dropped.
+  4. a quote shared across two different fields' candidates in the SAME
+     extraction response is ambiguous evidence -- e.g. "Input costs 5
+     and output costs 15" doesn't prove which number is input_price_usd
+     and which is output_price_usd. Per the third review: this is a
+     real, currently-unsolved attribution gap (the real fix needs
+     character-offset citations, not a re-quoted substring -- see
+     docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e)); until
+     that lands, BOTH candidates sharing the ambiguous evidence are
+     dropped rather than guessing which one is right.
 
 The accepted quoted_span and confidence are kept on the resulting
 ExtractedFact (not discarded) so the evidence a fact was built from can
@@ -28,7 +37,7 @@ from collections.abc import Callable
 from pydantic import BaseModel, Field
 
 from ai_daily_digest.intelligence.facts import normalise_name
-from ai_daily_digest.intelligence.grounding import value_supported_by_quote
+from ai_daily_digest.intelligence.grounding import numbers_in, value_supported_by_quote
 from ai_daily_digest.intelligence.llm import SONNET, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
@@ -62,6 +71,30 @@ def _format_fields() -> str:
     return "\n".join(f"- {key}: {label}" for key, label in COMPARABLE_FIELDS.items())
 
 
+def _cross_contaminated_indices(candidates: list[FactCandidate]) -> set[int]:
+    """Indices of candidates whose quoted_span also contains a DIFFERENT
+    field's candidate's value, from the same extraction response --
+    exactly the "Input costs 5 and output costs 15" case reproduced in
+    review: input_price_usd=5's quote also contains "15"
+    (output_price_usd's own value), so we can't be confident "5" is
+    really input's and not a misattribution. Deliberately narrower than
+    "quote contains more than one number" -- that would also flag the
+    legitimate, already-tested "increased from 128,000 to 256,000
+    tokens" pattern (two numbers, one field, no sibling candidate
+    involved), which this does not."""
+    ambiguous: set[int] = set()
+    for i, candidate in enumerate(candidates):
+        quote_numbers = numbers_in(candidate.quoted_span)
+        for other in candidates:
+            if other.field == candidate.field:
+                continue
+            other_value_numbers = numbers_in(other.value)
+            if other_value_numbers and other_value_numbers <= quote_numbers:
+                ambiguous.add(i)
+                break
+    return ambiguous
+
+
 def _default_call(system: str, prompt: str) -> FactExtractionResponse:
     return call_structured(
         model=SONNET,
@@ -93,8 +126,19 @@ def extract_facts(
     response = call(system, prompt)
 
     haystack = normalise_name(snapshot.content_text or "")
+    ambiguous_indices = _cross_contaminated_indices(response.facts)
     facts: list[ExtractedFact] = []
-    for candidate in response.facts:
+    for i, candidate in enumerate(response.facts):
+        if i in ambiguous_indices:
+            logger.warning(
+                "extraction_rejected reason=ambiguous_multi_field_quote snapshot_id=%s "
+                "field=%s value=%r quoted_span=%r",
+                snapshot.id,
+                candidate.field,
+                candidate.value,
+                candidate.quoted_span,
+            )
+            continue
         if candidate.field not in COMPARABLE_FIELDS:
             logger.warning(
                 "extraction_rejected reason=unknown_field snapshot_id=%s field=%s",

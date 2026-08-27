@@ -136,6 +136,61 @@ def test_grounded_quote_with_fabricated_value_is_rejected() -> None:
     assert facts == []
 
 
+def test_ambiguous_multi_field_quote_drops_both_candidates() -> None:
+    """The exact reproduced case from the third review: 'Input costs 5
+    and output costs 15' -- if both input_price_usd and output_price_usd
+    candidates share this quote, neither value can be confidently
+    attributed (input_price_usd=15 would otherwise pass, since 15 does
+    appear somewhere in the quote). Both are dropped rather than
+    guessing which one is right."""
+    text = "Input costs 5 and output costs 15 per million tokens."
+
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="input_price_usd",
+                    value="5",
+                    quoted_span="Input costs 5 and output costs 15",
+                    confidence=0.9,
+                ),
+                FactCandidate(
+                    field="output_price_usd",
+                    value="15",
+                    quoted_span="Input costs 5 and output costs 15",
+                    confidence=0.9,
+                ),
+            ]
+        )
+
+    facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
+    assert facts == []
+
+
+def test_shared_quote_for_the_same_field_is_not_flagged_as_ambiguous() -> None:
+    """Sanity check that the ambiguity guard is scoped to DIFFERENT
+    fields sharing a quote -- the legitimate "increased from X to Y"
+    pattern (two numbers, one field, no sibling candidate) must still be
+    accepted, same as test_well_grounded_high_confidence_fact_is_accepted."""
+    text = "GPT-4o's context window has been increased from 128,000 to 256,000 tokens."
+
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="256000",
+                    quoted_span="increased from 128,000 to 256,000 tokens",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
+    assert len(facts) == 1
+    assert facts[0].value == "256000"
+
+
 def test_nan_confidence_is_rejected_at_parse_time_not_silently_accepted() -> None:
     """Adversarial case per the review: confidence=NaN made every
     "confidence < CONFIDENCE_THRESHOLD" check in the codebase silently

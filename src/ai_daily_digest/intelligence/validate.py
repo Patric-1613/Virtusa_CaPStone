@@ -28,22 +28,26 @@ DO have every batch snapshot's content and pass it through, so the
 content-grounding check runs at the point that matters most: the final
 gate before a digest can auto-publish.
 
-KNOWN LIMITATION, interim behavior (flagged in review, not silently
-accepted): `snapshots_by_id` only ever covers the CURRENT batch. A
-routine multi-day change (e.g. "increased to X, up from Y") legitimately
-cites both a current-batch snapshot AND an earlier one from a previous
-day's run — `daily_run.py` doesn't carry snapshot content across days
-the way it carries `known_snapshot_ids`. Requiring full content for
-every citation would make ordinary historical claims wrongly
-"unsupported" the moment a Change spans more than one batch. The interim
-policy below only runs the content check when EVERY cited snapshot's
-content is actually available; a claim with any citation outside the
-current batch falls back to the existence-only check instead of being
-punished for a plumbing gap. This is deliberately conservative in the
-other direction: it under-checks multi-day claims rather than
-over-rejecting legitimate ones. A real fix (a snapshot-content store
-that persists across daily runs, not just the current batch) is a
-separate, larger change — not made here.
+KNOWN LIMITATION, corrected policy (per the third review): `snapshots_by_id`
+only ever covers the CURRENT batch. A routine multi-day change (e.g.
+"increased to X, up from Y") legitimately cites both a current-batch
+snapshot AND an earlier one from a previous day's run — `daily_run.py`
+doesn't carry snapshot content across days the way it carries
+`known_snapshot_ids` (see the design proposal doc's point (d) for the
+real fix: a typed SnapshotResolver boundary, not an ever-growing
+caller-owned dict). An earlier version of this function treated a
+missing citation as "trust it" (fall back to existence-only) so ordinary
+historical claims wouldn't be wrongly rejected — review correctly
+flagged that as unsafe: existence of a snapshot id is not proof its
+content supports the claim, and treating "we can't check" as "it's fine"
+lets an unverifiable claim auto-publish on the strength of nothing. The
+corrected policy is fail-closed instead: if content for ANY cited
+snapshot can't be loaded, the claim is NOT supported -- it routes to
+"review" the same as a claim that actively fails the content check, not
+silently trusted and not silently dropped. This means routine multi-day
+claims will need review more often than ideal until the real
+SnapshotResolver (point (d)) can actually retrieve historical content --
+an accepted cost of not trusting unverifiable citations, not a bug.
 """
 
 from __future__ import annotations
@@ -56,17 +60,17 @@ def _claim_numbers_are_grounded(
     claim: DigestClaim, snapshots_by_id: dict[str, DocumentSnapshot]
 ) -> bool:
     """Every number claim.text asserts must appear in the combined
-    content of its cited snapshots -- but only when content for EVERY
-    cited snapshot is actually available (see this module's docstring on
-    why a partial/missing citation falls back to trusting it rather than
-    failing the claim). A claim asserting no numbers at all (e.g.
-    "Anthropic has not disclosed its price") has nothing this check can
-    verify either way, so it passes."""
+    content of its cited snapshots. If content for ANY cited snapshot
+    isn't available here, the claim is NOT grounded -- existence of a
+    snapshot id is never treated as proof its content supports the
+    claim (see this module's docstring). A claim asserting no numbers at
+    all (e.g. "Anthropic has not disclosed its price") has nothing this
+    check can verify either way, so it passes."""
     claim_numbers = numbers_in(claim.text)
     if not claim_numbers:
         return True
     if not all(sid in snapshots_by_id for sid in claim.citation_snapshot_ids):
-        return True
+        return False
     combined_text = " ".join(
         snapshots_by_id[sid].content_text or "" for sid in claim.citation_snapshot_ids
     )
