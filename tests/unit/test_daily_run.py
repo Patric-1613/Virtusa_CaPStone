@@ -283,6 +283,97 @@ def test_qualitative_comparison_claim_never_auto_publishes_even_if_grounded() ->
     assert result.digest.status == "review"  # but still never auto-published
 
 
+def test_swapped_comparison_never_auto_publishes_even_though_compare_subjects_accepts_it() -> None:
+    """Companion to
+    test_compare_subjects.py::test_swapped_real_values_are_not_yet_caught_known_gap.
+    That test documents that compare_subjects() itself currently accepts
+    a claim with two real numbers attributed to the wrong subject
+    (swapped). This test proves the interim safety net still holds end
+    to end: even though nothing rejects the claim on its own, the digest
+    it ends up in can never auto-publish."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    store.register_subject(ANTHROPIC_CLAUDE)
+    known_snapshot_ids: set[str] = set()
+
+    def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
+        if "snap_openai_price" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="input_price_usd",
+                        value="5",
+                        quoted_span="priced at $5 per million tokens",
+                        confidence=0.9,
+                    )
+                ]
+            )
+        if "snap_anthropic_price" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="input_price_usd",
+                        value="3",
+                        quoted_span="priced at $3 per million tokens",
+                        confidence=0.9,
+                    )
+                ]
+            )
+        return FactExtractionResponse(facts=[])
+
+    def compare_fake(system: str, prompt: str) -> ComparisonResponse:
+        # Real: OpenAI=5, Anthropic=3. Claim states it backwards.
+        return ComparisonResponse(
+            claims=[
+                ComparisonClaimCandidate(
+                    text="OpenAI's input price is 3; Anthropic's input price is 5.",
+                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
+                    fields=["input_price_usd"],
+                    snapshot_ids=["snap_openai_price", "snap_anthropic_price"],
+                )
+            ]
+        )
+
+    batch = [
+        BatchItem(
+            _item("item_openai_price", "OpenAI pricing update"),
+            _snapshot(
+                "snap_openai_price",
+                "item_openai_price",
+                "OpenAI's GPT-4o input tokens are priced at $5 per million tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+        BatchItem(
+            _item(
+                "item_anthropic_price",
+                "Claude pricing update",
+                publisher="Anthropic",
+                source_id="anthropic_news",
+            ),
+            _snapshot(
+                "snap_anthropic_price",
+                "item_anthropic_price",
+                "Anthropic's Claude input tokens are priced at $3 per million tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+    ]
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        extract_call_fn=extract_fake,
+        compare_call_fn=compare_fake,
+    )
+
+    assert len(result.digest.claims) == 1
+    assert result.digest.status == "review"  # never auto-published, swapped or not
+
+
 def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() -> None:
     """run_daily builds snapshots_by_id from the batch's real
     DocumentSnapshots and threads it to assemble_digest()/validate.py --

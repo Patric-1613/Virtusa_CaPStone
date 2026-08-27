@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from ai_daily_digest.intelligence.evaluate import (
     EvalResult,
     change_recall,
@@ -6,13 +8,30 @@ from ai_daily_digest.intelligence.evaluate import (
     run_eval,
     unsupported_claim_count,
 )
-from ai_daily_digest.shared.schemas import Change, Digest, DigestClaim, FactObservation, Subject
+from ai_daily_digest.shared.schemas import (
+    Change,
+    Digest,
+    DigestClaim,
+    DocumentSnapshot,
+    FactObservation,
+    Subject,
+)
 
 KNOWN = {"snap_1", "snap_2"}
 
 
 def _claim(text: str, citations: list[str], claim_id: str = "c1") -> DigestClaim:
     return DigestClaim(id=claim_id, text=text, citation_snapshot_ids=citations)
+
+
+def _snapshot(snap_id: str, text: str) -> DocumentSnapshot:
+    return DocumentSnapshot(
+        id=snap_id,
+        source_item_id="item_1",
+        fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
+        content_hash=f"sha256:{snap_id}",
+        content_text=text,
+    )
 
 
 def _digest(claims: list[DigestClaim]) -> Digest:
@@ -47,6 +66,28 @@ def test_citation_validity_partial() -> None:
 
 def test_citation_validity_empty_digest_is_vacuously_perfect() -> None:
     assert citation_validity(_digest([]), KNOWN) == 1.0
+
+
+def test_citation_validity_uses_real_content_grounding_when_available() -> None:
+    """Per the second review: citation_validity() used to read 100% for
+    a claim citing a real, existing snapshot id whose content had
+    nothing to do with what the claim asserted -- it now reuses
+    validate_claim() directly, so a citation that exists but doesn't
+    ground the claim's numbers is NOT counted as valid, the same as the
+    real publish-time gate would score it."""
+    digest = _digest([_claim("The price increased to 999999.", ["snap_1"], "c1")])
+    snapshots_by_id = {"snap_1": _snapshot("snap_1", "The price increased to 5.")}
+    assert citation_validity(digest, KNOWN, snapshots_by_id=snapshots_by_id) == 0.0
+    assert unsupported_claim_count(digest, KNOWN, snapshots_by_id=snapshots_by_id) == 1
+
+
+def test_citation_validity_without_snapshots_by_id_stays_existence_only() -> None:
+    """Omitting snapshots_by_id keeps the old, weaker existence-only
+    behavior -- callers that don't have snapshot content (there aren't
+    any left in this codebase, but the parameter is optional) aren't
+    forced to provide it."""
+    digest = _digest([_claim("The price increased to 999999.", ["snap_1"], "c1")])
+    assert citation_validity(digest, KNOWN) == 1.0
 
 
 # --- unsupported_claim_count ---

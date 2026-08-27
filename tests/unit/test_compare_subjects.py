@@ -189,6 +189,55 @@ def test_unknown_subject_is_rejected() -> None:
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
+def test_swapped_real_values_are_not_yet_caught_known_gap() -> None:
+    """KNOWN, DOCUMENTED GAP -- not a passing safety guarantee. Both
+    numbers are real and both citations are correctly owned, but the
+    prose attributes them to the WRONG subject (swapped). The current
+    per-field numeric check only verifies "every number in the claim
+    text is SOMEWHERE among the real values being compared" (a set
+    union) -- it has no way to verify WHICH subject a number belongs to
+    in the sentence, so a swap like this is currently accepted.
+
+    This is exactly why docs/DESIGN_PROPOSAL_comparison_and_grounding.md
+    proposes structured (subject, field) -> value assertions instead of
+    free text (see its (a)/(b) sections) -- once that ships, this test's
+    assertion should flip to == []. Until then, daily_run.py's
+    _never_auto_publish_comparisons() is what actually stops a claim
+    like this from reaching a subscriber -- see
+    test_daily_run.py::test_swapped_comparison_never_auto_publishes_even_though_compare_subjects_accepts_it.
+    """
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("input_price_usd", "5", "snap_openai_price"),
+        source_url="https://openai.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("input_price_usd", "3", "snap_anthropic_price"),
+        source_url="https://anthropic.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["input_price_usd"])
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        # Real: OpenAI=5, Anthropic=3. Claim states it backwards.
+        return ComparisonResponse(
+            claims=[
+                ComparisonClaimCandidate(
+                    text="OpenAI's input price is 3; Anthropic's input price is 5.",
+                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
+                    fields=["input_price_usd"],
+                    snapshot_ids=["snap_openai_price", "snap_anthropic_price"],
+                )
+            ]
+        )
+
+    claims = compare_subjects(rows, call_fn=fake_call)
+    assert len(claims) == 1  # accepted -- the gap this test documents
+
+
 def test_subject_compared_to_itself_is_rejected() -> None:
     """Per the third review: reject comparisons where subject_a ==
     subject_b -- a subject can't be legitimately compared to itself."""
