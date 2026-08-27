@@ -13,6 +13,8 @@ def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "fact_1") -> 
         extraction_method="llm_structured_output",
         extraction_model="claude-sonnet-5",
         prompt_version="fact-extraction-v1",
+        quoted_span=f"quote containing {value}",
+        confidence=0.9,
     )
 
 

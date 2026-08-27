@@ -16,11 +16,14 @@ Four guardrails enforced in code, not just requested in the prompt:
   4. a quote shared across two different fields' candidates in the SAME
      extraction response is ambiguous evidence -- e.g. "Input costs 5
      and output costs 15" doesn't prove which number is input_price_usd
-     and which is output_price_usd. Per the third review: this is a
-     real, currently-unsolved attribution gap (the real fix needs
-     character-offset citations, not a re-quoted substring -- see
-     docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e)); until
-     that lands, BOTH candidates sharing the ambiguous evidence are
+     and which is output_price_usd. Per review: this is CONTAINMENT, not
+     a complete attribution fix -- see _cross_contaminated_indices'
+     own docstring for its documented limits (it can't catch a mix-up
+     when the sibling fact is omitted entirely, and can false-positive
+     on coincidental shared digits). The real fix needs character-offset
+     citations, not a re-quoted substring -- see
+     docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e), not yet
+     built. Until then, BOTH candidates sharing ambiguous evidence are
      dropped rather than guessing which one is right.
 
 The accepted quoted_span and confidence are kept on the resulting
@@ -81,7 +84,25 @@ def _cross_contaminated_indices(candidates: list[FactCandidate]) -> set[int]:
     "quote contains more than one number" -- that would also flag the
     legitimate, already-tested "increased from 128,000 to 256,000
     tokens" pattern (two numbers, one field, no sibling candidate
-    involved), which this does not."""
+    involved), which this does not.
+
+    KNOWN LIMITS (documented per review, not silently assumed complete
+    -- this is containment, not a full attribution fix; see
+    docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e) for the
+    real fix, character-offset citations, not yet built):
+      1. Only catches contamination when BOTH the correct and the
+         confused candidate appear in the SAME extraction response. If
+         the model returns the wrong number for a field and simply
+         omits the sibling fact that would have exposed the mix-up
+         (e.g. only reports input_price_usd=15, never mentions
+         output_price_usd at all), there is no sibling value to compare
+         against and this guard cannot catch it.
+      2. Two candidates whose values coincidentally share a digit
+         sequence for unrelated reasons (not an actual mix-up) will
+         still be flagged and both dropped -- a safe direction to be
+         wrong in (an extra fact goes to nothing rather than a wrong
+         fact goes to press), but a real, accepted false-positive rate,
+         not zero-cost caution."""
     ambiguous: set[int] = set()
     for i, candidate in enumerate(candidates):
         quote_numbers = numbers_in(candidate.quoted_span)

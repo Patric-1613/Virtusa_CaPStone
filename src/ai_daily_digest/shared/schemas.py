@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 # A confidence score, everywhere one appears in this contract or in an LLM
 # response model that feeds it (ExtractedFact.confidence, Change.confidence,
@@ -114,8 +114,10 @@ class ExtractedFact(BaseModel):
     actually come from the text it claims, and how confident was the
     extraction. Optional because deterministic facts don't always have a
     natural "quote" to attach; LLM-extracted facts always populate both
-    (see intelligence/extract_facts.py). Added by
-    docs/adr/0004-extracted-fact-keeps-evidence.md."""
+    (see intelligence/extract_facts.py) and this is now enforced here,
+    not just by extraction code and contract tests, per ADR 0004's
+    accepted clarification -- see _require_evidence_for_llm_facts below.
+    Added by docs/adr/0004-extracted-fact-keeps-evidence.md."""
 
     id: str  # UUID v4
     snapshot_id: str
@@ -126,6 +128,31 @@ class ExtractedFact(BaseModel):
     prompt_version: str | None = None
     quoted_span: str | None = None
     confidence: Confidence | None = None
+
+    @model_validator(mode="after")
+    def _require_evidence_for_llm_facts(self) -> ExtractedFact:
+        """ADR 0004's accepted clarification: the requirement that
+        LLM-extracted facts carry both quoted_span and confidence was
+        previously enforced only by intelligence/extract_facts.py's own
+        construction code and by tests/contract/test_fixture_contract.py
+        -- nothing stopped a DIFFERENT construction path (a future
+        extraction call site, a hand-built fixture) from creating an
+        LLM-attributed fact with no evidence at all. This model-level
+        invariant makes that impossible regardless of how the object is
+        built. Deterministic facts are unaffected -- they don't always
+        have a natural quote to attach (see this class's own docstring)."""
+        if self.extraction_method == "llm_structured_output":
+            if self.quoted_span is None:
+                raise ValueError(
+                    "ExtractedFact with extraction_method='llm_structured_output' "
+                    "must have quoted_span set (ADR 0004)"
+                )
+            if self.confidence is None:
+                raise ValueError(
+                    "ExtractedFact with extraction_method='llm_structured_output' "
+                    "must have confidence set (ADR 0004)"
+                )
+        return self
 
 
 # ---------------------------------------------------------------------------

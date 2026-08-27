@@ -1,6 +1,7 @@
-# 0005 — Structured cross-subject comparisons, snapshot content resolution, and disclosure semantics
+# 0005 — Structured cross-subject comparisons and typed snapshot content resolution
 
-Status: Proposed
+Status: Proposed — direction approved, revised per second round of feedback, awaiting final
+sign-off from Persons A and C on this revision. **Not to be implemented until that sign-off.**
 Date: 2026-08-27
 
 ## Context
@@ -19,68 +20,107 @@ reviews found this insufficient in ways a numeric-only check structurally cannot
   unproven, and a value could be extracted from a quote shared with a different field's value with
   no attribution check.
 
-This affects more than `intelligence/`: the fix touches `shared/attributes.py` (field comparison
-rules), the boundary intelligence needs into snapshot content (today served by an ad hoc dict, with
-the real version eventually backed by ingestion's storage), and the shape of `DigestClaim`/
-`ExtractedFact` that delivery and any future API consumers read.
+This affects more than `intelligence/`: the fix touches the boundary intelligence needs into
+snapshot content (today served by an ad hoc dict; the real version eventually backed by ingestion's
+storage), and the shape of `DigestClaim` that delivery and any future API consumers read.
+
+**Scope note**: the "unknown" vs. "not disclosed" value-semantics question originally included here
+has been split into [ADR 0006](0006-disclosure-status-semantics.md) — not required for Phase 1
+(`context_window_tokens`-only comparison), and kept out to avoid expanding this ADR's surface
+unnecessarily.
 
 ## Decision
 
 Adopt the design in
 [`docs/DESIGN_PROPOSAL_comparison_and_grounding.md`](../DESIGN_PROPOSAL_comparison_and_grounding.md),
-summarized:
+with the following clarifications required before this ADR can be marked Accepted:
 
 1. **Comparisons stop being LLM-authored prose.** The model proposes structured
    `(subject_a, subject_b, field)` triples to compare; code looks up real values and renders the
    claim text deterministically — the same pattern `draft_claims.py` already uses for single-subject
-   changes. Same-subject comparisons are rejected; reversed-pair duplicates are deduplicated.
-2. **"Unknown" and "not disclosed" are distinct, and only "not disclosed" is a claim.** A missing
-   value defaults to silence (no claim about that side), not an inferred "has not disclosed"
-   sentence. "Not disclosed" becomes its own extractable, evidence-backed fact state
-   (`ExtractedFact.disclosure_status`), not a default read from an absent row.
-3. **Comparison rules are field-specific, not a numeric/text split.** Each comparable field needs
+   changes.
+   - Same-subject comparisons (`subject_a == subject_b`) are rejected.
+   - Reversed-pair duplicates are deduplicated, keyed by
+     **`(sorted(subject_a, subject_b) by (company, product), field)`** — the field is part of the
+     key. `(A, B, context_window_tokens)` and `(A, B, input_price_usd)` are two distinct
+     comparisons and must never collapse into one just because the subject pair matches.
+2. **Comparison rules are field-specific, not a numeric/text split.** Each comparable field needs
    its own defined representation (currency/unit/basis for prices, benchmark name/conditions for
-   scores, set semantics for regions/modalities). Phase 1 of this decision scopes comparison to
-   `context_window_tokens` only — the one field already unambiguous as a bare string. Every other
+   scores, set semantics for regions/modalities). **Phase 1 of this decision scopes comparison to
+   `context_window_tokens` only** — the one field already unambiguous as a bare string. Every other
    field is excluded from comparison until its own representation is designed, each via a follow-up
    ADR.
-4. **Snapshot content is resolved through a typed `SnapshotResolver` interface**, not a raw,
-   caller-owned, ever-growing dict — mirroring the existing `Loader`/`FixtureLoader`/`StoreLoader`
-   split. An in-memory implementation is the interim backing; a real ingestion-store-backed one
-   plugs in later without changing `validate.py`'s call signature.
-5. **A citation whose content can't be resolved is never treated as proof of support.** Existence of
+   - **Malformed stored values fail per-candidate, not per-batch**: if a stored
+     `context_window_tokens` value can't be parsed as an integer, the comparison rule drops and
+     logs only that one candidate — it must never abort the rest of the comparison pass (mirrors
+     the existing per-item/per-comparison broad-exception handling already in `daily_run.py`).
+3. **Snapshot content is resolved through a typed `SnapshotResolver` interface**, not a raw,
+   caller-owned, ever-growing dict.
+   - **Lives in `shared/`, not `intelligence/`.** A protocol that ingestion is ever expected to
+     implement or provide an instance of cannot live inside an intelligence-private module —
+     ingestion must not import an intelligence-owned type. Proposed location:
+     `shared/snapshot_resolver.py`, alongside `shared/schemas.py`. Mirrors the existing
+     `Loader`/`FixtureLoader`/`StoreLoader` split in `intelligence/loaders.py`, but the interface
+     itself is a shared contract, not an intelligence-internal abstraction.
+   - **Synchronous, Phase 1 only.** This ADR defines a synchronous `get_content(snapshot_id) ->
+     DocumentSnapshot | None` interface. A future database-backed implementation may need to be
+     asynchronous; that is explicitly a separate design decision, not assumed or precluded here.
+   - **The final publish gate must require a real resolver — no `None` fallback.** The version of
+     this proposal reviewed previously allowed `snapshot_resolver: SnapshotResolver | None = None`
+     everywhere, defaulting to existence-only checking. That is corrected: at the actual final gate
+     (`publish_digest`/`validate_digest`'s call from `daily_run.py`), the resolver parameter becomes
+     **required**, not optional — passing nothing must not silently degrade to trusting citation
+     existence. The one narrow exception: `graph.py`'s per-item `validate` node, which — per its own
+     existing docstring — never actually authorizes publication (that happens only at the batch-level
+     final gate) may still run without a resolver, because it cannot grant "supported" status that
+     matters regardless. A resolver-less per-item check is safe specifically because it isn't the
+     thing that decides whether something ships.
+4. **A citation whose content can't be resolved is never treated as proof of support.** Existence of
    a snapshot id is not evidence its content backs a claim; an unresolvable citation routes the
-   claim to review, not "supported."
-6. **Multi-number attribution ambiguity in extraction is deferred, conditionally.** A full fix
-   (character-offset citations) is out of scope for this ADR; deferring it is only acceptable
-   because a fact whose evidence quote is shared with a different field's value is dropped outright
-   rather than guessed at — already implemented as an interim guard, independent of this ADR's
-   approval.
-7. **First-ever disclosures remain a separate, undecided product question.** Not built here. If
+   claim to review, not "supported." (Already implemented, independent of this ADR's approval.)
+5. **Multi-number attribution ambiguity in extraction is deferred, conditionally — and its limits
+   are documented, not assumed away.** A full fix (character-offset citations) is out of scope for
+   this ADR. Deferring it is only acceptable because a fact whose evidence quote is shared with a
+   different field's value is dropped outright rather than guessed at (already implemented,
+   independent of this ADR). That guard's real limits, now documented in
+   `extract_facts.py::_cross_contaminated_indices`'s own docstring:
+   - It only catches the mix-up when **both** the correct and the confused candidate appear in the
+     **same** extraction response. If the model returns a wrong value while omitting the sibling
+     fact that would have exposed it, nothing catches that.
+   - It can false-positive on **coincidentally** shared digit sequences between unrelated fields —
+     a safe direction to be wrong in (a valid fact gets dropped, not a false one published), but a
+     real, non-zero cost, not free caution.
+   - This is **containment**, not a complete attribution fix, and must be described that way
+     wherever referenced, not implied to be a solved problem.
+6. **First-ever disclosures remain a separate, undecided product question.** Not built here. If
    adopted later, scoped via an explicit allowlist, with neutral wording ("first recorded
    observation") that doesn't imply a prior state that never existed.
 
 ## Consequences
 
-- Cross-subject comparison claims become verifiable by construction for the fields they cover,
+- Cross-subject comparison claims become verifiable by construction for the field they cover,
   closing the "cheaper than" and swapped-value fabrication classes at the root rather than trying to
   detect them after the fact in prose.
 - Initial comparison coverage is deliberately narrow (`context_window_tokens` only) — prices,
   benchmarks, regions, modalities, and licence terms are NOT compared until their own representation
-  is designed. This is a real capability reduction from what a free-text `compare_subjects` could
-  attempt (however unreliably) — accepted as the cost of correctness.
-- `ExtractedFact` gains a `disclosure_status` field (additive, same discipline as ADR 0004) —
-  requires updating fixtures and contract tests.
-- `validate.py`'s dependency shifts from `dict[str, DocumentSnapshot]` to a `SnapshotResolver`
-  protocol — a signature change for every caller, test double, and the interim in-memory
-  implementation.
+  is designed, each via its own follow-up ADR. This is a real capability reduction from what a
+  free-text `compare_subjects` could attempt (however unreliably) — accepted as the cost of
+  correctness.
+- `SnapshotResolver` lives in `shared/`, making it a real cross-module contract from day one, not an
+  intelligence-internal type that later has to be relocated when ingestion needs to implement it.
+- The final publish gate's dependency on a real resolver (not optional) means `daily_run.py`'s
+  signature changes to require one — every caller and test double needs an actual (even if
+  in-memory) `SnapshotResolver` instance, not `None`.
 - Multi-day/historical claims will need human review more often until a real `SnapshotResolver` can
   retrieve content beyond the current batch — an accepted, deliberate cost of the fail-closed
-  default in item 5, not treated as a defect to route around.
-- The character-offset citation fix for extraction attribution (item 6's real fix) is explicitly
-  out of scope here and needs its own follow-up ADR before implementation.
-- The "new disclosure claims" question (item 7) stays open pending a product decision separate from
-  this ADR.
+  default in item 4, not treated as a defect to route around.
+- The character-offset citation fix for extraction attribution (item 5's real fix) is explicitly out
+  of scope here and needs its own follow-up ADR before implementation.
+- The "unknown" vs. "not disclosed" value semantics (ADR 0006) and "new disclosure claims" (item 6)
+  both stay open, decided separately from this ADR.
 
-This ADR requires review from Persons A and C before implementation begins, per the team's
-contract-change process (`docs/API_CONTRACT.md`).
+This ADR requires review and acceptance from Persons A and C before implementation begins, per the
+team's contract-change process (`docs/API_CONTRACT.md`). Per explicit instruction: only this
+document and the design proposal it references may be revised in response to feedback — no part of
+the structural implementation (SnapshotResolver, comparison rules, structured assertions) is to be
+built until that acceptance is recorded.

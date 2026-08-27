@@ -28,6 +28,8 @@ def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "f1") -> Extr
         extraction_method="llm_structured_output",
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
+        quoted_span=f"quote containing {value}",
+        confidence=0.9,
     )
 
 

@@ -158,7 +158,8 @@ can be reproduced.
 `quoted_span` and `confidence` (both optional) record the evidence a fact was built from: the
 exact source text the value was extracted from, and the extractor's confidence in it. Optional
 because deterministic facts don't always have a natural quote; LLM-extracted facts always populate
-both — see [ADR 0004](adr/0004-extracted-fact-keeps-evidence.md).
+both, and this is enforced at the model level (not just by extraction code) — see
+[ADR 0004](adr/0004-extracted-fact-keeps-evidence.md).
 
 ```json
 {

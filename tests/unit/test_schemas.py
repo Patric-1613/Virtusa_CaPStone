@@ -21,6 +21,7 @@ def _extracted_fact(confidence: float) -> ExtractedFact:
         field="context_window_tokens",
         value="256000",
         extraction_method="llm_structured_output",
+        quoted_span="256,000 tokens",
         confidence=confidence,
     )
 
@@ -62,3 +63,47 @@ def test_confidence_accepts_valid_range(build: _Builder) -> None:
     assert build(0.0).confidence == 0.0
     assert build(1.0).confidence == 1.0
     assert build(0.6).confidence == 0.6
+
+
+# --- ADR 0004's accepted clarification: LLM-extracted facts must carry
+# their evidence at the model level, not just via extraction code and
+# contract tests. ---
+
+
+def test_llm_extracted_fact_without_quoted_span_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="quoted_span"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="context_window_tokens",
+            value="256000",
+            extraction_method="llm_structured_output",
+            confidence=0.9,
+        )
+
+
+def test_llm_extracted_fact_without_confidence_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="confidence"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="context_window_tokens",
+            value="256000",
+            extraction_method="llm_structured_output",
+            quoted_span="256,000 tokens",
+        )
+
+
+def test_deterministic_fact_without_evidence_is_still_allowed() -> None:
+    """The invariant is scoped to extraction_method="llm_structured_output"
+    only -- deterministic facts don't always have a natural quote to
+    attach (see ExtractedFact's own docstring), and must stay unaffected."""
+    fact = ExtractedFact(
+        id="f1",
+        snapshot_id="snap_1",
+        field="context_window_tokens",
+        value="256000",
+        extraction_method="deterministic",
+    )
+    assert fact.quoted_span is None
+    assert fact.confidence is None
