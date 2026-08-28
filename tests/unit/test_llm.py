@@ -146,8 +146,15 @@ def test_validation_failure_log_does_not_leak_raw_input_value(
     invalid input_value verbatim -- logging the exception object
     directly (logger.warning(..., exc)) could leak raw scraped article
     text flowing through from the model's own malformed response,
-    violating AGENTS.md's "never log raw prompts/content" rule."""
-    sensitive_text = "PRIVATE-ARTICLE-TEXT-MARKER-should-never-appear-in-logs"
+    violating AGENTS.md's "never log raw prompts/content" rule.
+
+    Marker length matters here: pydantic truncates a long input_value
+    repr in str(exc) (verified directly -- a ~55-char marker never
+    appears even against the OLD, unfixed code, which would make this
+    test pass regardless of whether the fix is present). Kept short and
+    confirmed to survive untruncated, so this test actually distinguishes
+    fixed from unfixed code."""
+    sensitive_text = "SECRET-ARTICLE-TEXT"
     # 'value' must be a string; a nested object containing the sensitive
     # text fails validation, and pydantic's ValidationError would embed
     # it verbatim in str(exc) if that were logged directly.
