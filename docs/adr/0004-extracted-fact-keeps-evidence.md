@@ -1,8 +1,8 @@
 # 0004 — ExtractedFact keeps its quoted_span and confidence
 
-Status: Accepted
+Status: Accepted by Person A (2026-08-27, with one clarification — see "Enforcement" below),
+pending Person C's confirmation of this shared-contract change.
 Date: 2026-08-26
-Accepted: 2026-08-27, with one clarification (see "Enforcement" below)
 
 ## Context
 

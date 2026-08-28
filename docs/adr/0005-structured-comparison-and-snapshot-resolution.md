@@ -1,7 +1,11 @@
 # 0005 — Structured cross-subject comparisons and typed snapshot content resolution
 
-Status: Proposed — direction approved, revised per second round of feedback, awaiting final
-sign-off from Persons A and C on this revision. **Not to be implemented until that sign-off.**
+Status: Accepted (design) — accepted by Person A 2026-08-28, pending Person C's confirmation.
+**Accepted as the agreed design, NOT as scope for PR #5.** Implementation is explicitly moved to a
+separate follow-up issue/PR, per Person A's MVP-scoping decision — see that follow-up for
+implementation status once it exists. PR #5 ships with the interim safety nets this ADR's Context
+section describes (`_never_auto_publish_comparisons()`, fail-closed content grounding) and none of
+the structural changes below.
 Date: 2026-08-27
 
 ## Context
@@ -119,8 +123,23 @@ with the following clarifications required before this ADR can be marked Accepte
 - The "unknown" vs. "not disclosed" value semantics (ADR 0006) and "new disclosure claims" (item 6)
   both stay open, decided separately from this ADR.
 
-This ADR requires review and acceptance from Persons A and C before implementation begins, per the
-team's contract-change process (`docs/API_CONTRACT.md`). Per explicit instruction: only this
-document and the design proposal it references may be revised in response to feedback — no part of
-the structural implementation (SnapshotResolver, comparison rules, structured assertions) is to be
-built until that acceptance is recorded.
+## MVP scoping decision (2026-08-28)
+
+Person A accepted this ADR's design direction and, to avoid an open-ended design-review loop,
+explicitly separated **design acceptance** from **implementation scope for PR #5**:
+
+- This ADR is accepted as the agreed design for cross-subject comparison and snapshot resolution —
+  pending Person C's confirmation, same as ADR 0004.
+- **Its implementation is out of scope for PR #5.** Tracked in a separate follow-up issue/PR
+  (linked here once created) — building it is a deliberate next step, not something PR #5 is
+  claiming to have done.
+- PR #5 ships as an intentionally scoped MVP: the interim safety nets this ADR's Context section
+  describes stay exactly as they are — `daily_run.py::_never_auto_publish_comparisons()` unchanged,
+  content-grounding still fails closed on unresolvable citations. Reduced comparison automation
+  (every cross-company comparison still requires human review) is an **accepted, disclosed,
+  temporary limitation** of this PR, not an undisclosed defect.
+- Further work on this design happens through the follow-up issue/ADR process, not by continuing to
+  expand PR #5.
+
+This ADR still requires Person C's review before being considered fully accepted by the team, per
+the team's contract-change process (`docs/API_CONTRACT.md`).

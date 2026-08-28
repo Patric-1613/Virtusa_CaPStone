@@ -1,10 +1,13 @@
 # Design proposal — structured comparison output & remaining grounding gaps
 
-Status: **Revised again per second round of feedback — direction still approved, this revision
-awaiting final sign-off from Persons A and C. Not to be implemented until that sign-off.** See
-[ADR 0005](adr/0005-structured-comparison-and-snapshot-resolution.md) for the recorded decision
-this document backs, and [ADR 0006](adr/0006-disclosure-status-semantics.md) for the "unknown" vs.
-"not disclosed" value-semantics question, split out of this document on this round of feedback.
+Status: **Design accepted by Person A (2026-08-28), pending Person C's confirmation — but
+implementation is explicitly out of scope for PR #5.** Person A separated design acceptance from
+PR #5's scope to avoid an open-ended review loop: this design is the agreed direction for a
+follow-up issue/PR, not something PR #5 claims to have built. See
+[ADR 0005](adr/0005-structured-comparison-and-snapshot-resolution.md)'s "MVP scoping decision"
+section for the full reasoning, and [ADR 0006](adr/0006-disclosure-status-semantics.md) for the
+"unknown" vs. "not disclosed" value-semantics question (remains Proposed, deferred, not needed for
+this design's Phase 1 scope).
 
 Two things are **already implemented** (not just proposed), because they were required conditions
 for safely deferring the rest, not optional design choices:
