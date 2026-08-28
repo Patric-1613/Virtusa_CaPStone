@@ -22,11 +22,38 @@ def test_numbers_in_ignores_digits_embedded_in_a_product_name() -> None:
     assert numbers_in("OpenAI's o1 model") == set()
 
 
+def test_numbers_in_ignores_bare_digit_product_name_with_no_trailing_letter() -> None:
+    """Per review: "GPT-4" (unlike "GPT-4o") has nothing letter-like
+    directly after its digit, so the trailing-letter exclusion alone
+    doesn't catch it -- the preceding "letter-hyphen" pattern must be
+    excluded too, or a claim mentioning "GPT-4" picks up a spurious "4"
+    that can make an otherwise well-grounded claim wrongly fail its
+    content check if the cited evidence spells the name differently
+    (e.g. "GPT4", no hyphen -- see
+    test_claim_and_evidence_agree_on_a_bare_digit_product_name below for
+    that exact shape)."""
+    assert numbers_in("GPT-4 costs $5 per month") == {"5"}
+
+
+def test_claim_and_evidence_agree_on_a_bare_digit_product_name() -> None:
+    """End-to-end shape of the bug: a claim mentioning "GPT-4" and its
+    cited evidence spelling the same product "GPT4" (no hyphen) must
+    still be recognized as mutually grounded -- before the fix, the
+    claim's spurious "4" (from "GPT-4") wasn't matched by the evidence's
+    numbers (which correctly never had a stray "4" from "GPT4", since
+    that digit sits directly against the letter "T"), so the subset
+    check validate.py/compare_subjects.py both rely on would have failed
+    a claim that was actually fully grounded."""
+    claim_numbers = numbers_in("GPT-4's price is 5.")
+    evidence_numbers = numbers_in("GPT4 costs 5 dollars.")
+    assert claim_numbers <= evidence_numbers
+
+
 def test_numbers_in_empty_when_no_digits() -> None:
-    # Not "Apache-2.0" -- that licence string itself contains a real
-    # digit run ("2.0"), which numbers_in is correct to pick up (see
-    # test_value_supported_for_exact_non_numeric_phrase for how a value
-    # like "Apache-2.0" is actually matched -- via phrase, not digits).
+    # Not "Apache-2.0" -- per the fix above, a digit run preceded by
+    # "<letter>-" is now excluded too (the same "GPT-4" shape), so
+    # "Apache-2.0" no longer contributes a number here either; using
+    # "MIT" keeps this test about the true no-digits-at-all case either way.
     assert numbers_in("MIT licence, no numbers here") == set()
 
 

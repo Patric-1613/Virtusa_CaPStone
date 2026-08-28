@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.graph import build_graph
+from ai_daily_digest.intelligence.resolve import SubjectAlias
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem, Subject
 
@@ -123,6 +124,90 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
     assert "256000" in claim.text
     assert claim.validation_status == "supported"
     assert set(claim.citation_snapshot_ids) == {"snap_launch", "snap_256k"}
+
+
+def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
+    """Per review: compare() previously never passed
+    confidence=fact.confidence to store.update_fact(), so every real
+    Change silently got update_fact()'s default confidence=1.0
+    regardless of the actual extraction confidence."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    launch_graph = build_graph(
+        store,
+        alias_table=[],
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "128000", "128,000 token context window", confidence=0.95
+        ),
+    )
+    launch_graph.invoke(
+        {
+            "item": _item("item_launch", "Introducing GPT-4o"),
+            "snapshot": _snapshot(
+                "snap_launch",
+                "item_launch",
+                "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        }
+    )
+
+    update_graph = build_graph(
+        store,
+        alias_table=[],
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "256000", "increased to 256,000 tokens", confidence=0.72
+        ),
+    )
+    result = update_graph.invoke(
+        {
+            "item": _item("item_256k", "GPT-4o now supports a 256k token context window"),
+            "snapshot": _snapshot(
+                "snap_256k",
+                "item_256k",
+                "OpenAI today announced GPT-4o's context window has been increased to 256,000 "
+                "tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        }
+    )
+
+    assert len(result["changes"]) == 1
+    assert result["changes"][0].confidence == 0.72  # not the update_fact() default of 1.0
+
+
+def test_subject_is_registered_even_when_no_facts_are_accepted() -> None:
+    """Per review: register_subject() was previously only called
+    implicitly inside FactStore.update_fact(), so a subject that
+    resolves successfully but ends up with zero accepted facts (e.g.
+    everything the model reported failed a grounding check) never got
+    registered -- known_subjects() would silently omit a subject the
+    pipeline actually saw and resolved. Uses a subject known only via
+    the alias table (never previously registered in the store) so
+    registration during this graph run is the only thing that could add
+    it -- unlike the other tests here, which pre-register their subject
+    in the store before invoking, which would mask this exact bug."""
+    store = FactStore()
+    mistral_le_chat = Subject(company="Mistral", product="Le Chat")
+    alias_table = [SubjectAlias(subject=mistral_le_chat, aliases=["le chat"])]
+
+    graph = build_graph(
+        store,
+        alias_table=alias_table,
+        extract_call_fn=lambda system, prompt: FactExtractionResponse(facts=[]),
+    )
+    item = _item("item_lechat", "Le Chat gets an update", canonical_url="https://mistral.ai/a")
+    snapshot = _snapshot(
+        "snap_lechat",
+        "item_lechat",
+        "Mistral's Le Chat received a minor update today.",
+        datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    result = graph.invoke({"item": item, "snapshot": snapshot})
+
+    assert result["subject"] == mistral_le_chat
+    assert result["facts"] == []
+    assert mistral_le_chat in store.known_subjects()
 
 
 def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:

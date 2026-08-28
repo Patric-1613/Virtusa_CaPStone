@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
-from ai_daily_digest.intelligence.facts import FactStore, normalise_name
-from ai_daily_digest.shared.schemas import ExtractedFact, Subject
+from ai_daily_digest.intelligence.facts import FactStore, change_snapshot_ids, normalise_name
+from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
 
 
 def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "fact_1") -> ExtractedFact:
@@ -183,6 +183,92 @@ def test_different_fields_are_tracked_independently() -> None:
     current = store.get_current_fact(subject, "benchmark_scores")
     assert current is not None
     assert current.value == "71.2"
+
+
+def test_reformatted_but_equivalent_value_is_a_silent_no_op() -> None:
+    """Per review: update_fact() previously compared values with strict
+    string equality, even though extract_facts.py's own acceptance check
+    (value_supported_by_quote) already tolerates formatting differences
+    like "$5" vs "5.00" -- causing a spurious Change for a value that
+    never actually changed, just got reformatted between two
+    extractions."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("input_price_usd", "$5.00", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert change is None
+    assert store.field_history(subject, "input_price_usd") == []
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.snapshot_id == "snap_2"  # provenance still refreshes
+
+
+def test_genuinely_different_numeric_value_still_registers_as_a_change() -> None:
+    """Sanity check that the new formatting-tolerant comparison doesn't
+    over-correct into treating real changes as no-ops."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("input_price_usd", "3", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert change is not None
+    assert change.change_type == "decreased"
+
+
+def _change(previous_snap: str | None, current_snap: str | None) -> Change:
+    return Change(
+        id="c1",
+        change_set_id="",
+        subject=Subject(company="OpenAI", product="GPT-4o"),
+        field="context_window_tokens",
+        change_type="changed",
+        previous=(
+            FactObservation(value="old", snapshot_id=previous_snap) if previous_snap else None
+        ),
+        current=FactObservation(value="new", snapshot_id=current_snap),
+        confidence=0.9,
+    )
+
+
+def test_change_snapshot_ids_with_both_present() -> None:
+    assert change_snapshot_ids(_change("snap_prev", "snap_cur")) == ("snap_cur", "snap_prev")
+
+
+def test_change_snapshot_ids_with_no_previous() -> None:
+    assert change_snapshot_ids(_change(None, "snap_cur")) == ("snap_cur", None)
+
+
+def test_change_snapshot_ids_treats_empty_string_as_absent() -> None:
+    change = Change(
+        id="c1",
+        change_set_id="",
+        subject=Subject(company="OpenAI", product="GPT-4o"),
+        field="context_window_tokens",
+        change_type="changed",
+        previous=FactObservation(value="old", snapshot_id=""),
+        current=FactObservation(value="new", snapshot_id=""),
+        confidence=0.9,
+    )
+    assert change_snapshot_ids(change) == (None, None)
 
 
 def test_known_subjects_accumulates_across_updates() -> None:

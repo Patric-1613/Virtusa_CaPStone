@@ -37,7 +37,19 @@ _NUMBER_FORMATTING_RE = re.compile(r"[,$%]")
 # project routinely embed digits ("GPT-4o", "o1", "GPT-4") and must NOT
 # be read as an asserted number just because the model/subject name
 # appears in the same sentence as a real one.
-_NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?(?![A-Za-z])")
+#
+# Also excludes a digit run preceded by "<letter>-" (e.g. the "4" in
+# "GPT-4"): a name like "GPT-4o" is already caught by the trailing-letter
+# exclusion above ("4" is immediately followed by "o"), but "GPT-4" alone
+# has nothing letter-like directly after its digit, so that exclusion
+# alone misses it -- a claim mentioning "GPT-4" could then pick up a
+# spurious "4" that makes an otherwise well-grounded claim fail its
+# content check if the cited evidence happens to spell the name
+# differently (e.g. "GPT4", no hyphen). Deliberately NOT symmetric: a
+# digit followed by "-<letter>" is a real, common, legitimate pattern in
+# this project's own data ("256,000-token context window") and must
+# stay included -- only the preceding side is excluded.
+_NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?<![A-Za-z]-)\d+(?:\.\d+)?(?![A-Za-z])")
 
 
 def numbers_in(text: str) -> set[str]:

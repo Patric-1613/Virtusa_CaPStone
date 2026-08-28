@@ -32,7 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ai_daily_digest.intelligence.draft_claims import draft_change_claim
 from ai_daily_digest.intelligence.extract_facts import FactExtractionResponse, extract_facts
-from ai_daily_digest.intelligence.facts import FactStore
+from ai_daily_digest.intelligence.facts import FactStore, change_snapshot_ids
 from ai_daily_digest.intelligence.resolve import (
     ResolutionResult,
     SubjectAlias,
@@ -86,6 +86,16 @@ def build_graph(
         result = resolve_deterministic(
             item, store.known_subjects(), resolved_alias_table, item_text=text
         )
+        if result.subject is not None:
+            # Register as soon as a subject is resolved, not only
+            # implicitly later via store.update_fact() -- an item that
+            # resolves successfully but ends up with zero accepted facts
+            # (everything the model reported failed a grounding check)
+            # must still make this subject show up in known_subjects();
+            # otherwise a real, seen subject silently disappears from
+            # future resolution candidates. Idempotent, see
+            # register_subject()'s own docstring.
+            store.register_subject(result.subject)
         return {"resolution": result, "subject": result.subject}
 
     def classify_llm(state: PipelineState) -> PipelineState:
@@ -99,6 +109,8 @@ def build_graph(
             item_text=state["snapshot"].content_text or "",
             call_fn=resolve_llm_call_fn,
         )
+        if result.subject is not None:
+            store.register_subject(result.subject)  # see classify_deterministic's comment
         return {"resolution": result, "subject": result.subject}
 
     def route_after_classify(state: PipelineState) -> str:
@@ -140,6 +152,12 @@ def build_graph(
                 fact,
                 source_url=str(state["item"].canonical_url),
                 observed_at=snapshot.fetched_at,
+                # Without this, update_fact()'s confidence=1.0 default
+                # silently applied to every real Change regardless of
+                # the actual extraction confidence -- fact.confidence is
+                # None only for deterministic facts (see ExtractedFact's
+                # docstring), which never reach this LLM-extraction node.
+                confidence=fact.confidence if fact.confidence is not None else 1.0,
             )
             if change is not None:
                 changes.append(change)
@@ -167,10 +185,9 @@ def build_graph(
         accumulated known_snapshot_ids spanning every run — not here."""
         known_snapshot_ids = {state["snapshot"].id}
         for change in state.get("changes", []):
-            if change.previous is not None and change.previous.snapshot_id:
-                known_snapshot_ids.add(change.previous.snapshot_id)
-            if change.current.snapshot_id:
-                known_snapshot_ids.add(change.current.snapshot_id)
+            for snapshot_id in change_snapshot_ids(change):
+                if snapshot_id:
+                    known_snapshot_ids.add(snapshot_id)
         validated = [validate_claim(c, known_snapshot_ids) for c in state.get("claims", [])]
         return {"claims": validated}
 

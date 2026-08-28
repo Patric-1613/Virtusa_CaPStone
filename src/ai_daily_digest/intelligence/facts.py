@@ -28,6 +28,13 @@ from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservatio
 _PUNCTUATION_RE = re.compile(r"[^\w\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Mirrors grounding.py's _NUMBER_FORMATTING_RE -- deliberately duplicated
+# rather than imported, to avoid a circular import (grounding.py already
+# imports normalise_name from this module). Strips thousands separators
+# and currency/percent symbols WITHOUT turning them into word-boundary
+# spaces, so "$5,000.00" and "5000" parse as the same float.
+_VALUE_NUMBER_FORMATTING_RE = re.compile(r"[,$%]")
+
 
 def normalise_name(name: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace. Deliberately
@@ -36,6 +43,42 @@ def normalise_name(name: str) -> str:
     lowered = name.lower()
     stripped = _PUNCTUATION_RE.sub(" ", lowered)
     return _WHITESPACE_RE.sub(" ", stripped).strip()
+
+
+def _values_are_equivalent(previous_value: str, current_value: str) -> bool:
+    """True if two extracted values represent the same underlying fact
+    despite different formatting. extract_facts.py's own acceptance
+    check (grounding.py::value_supported_by_quote) already tolerates
+    this kind of difference (e.g. a value of "5" is accepted against a
+    quote saying "$5.00"), so a fact that's re-accepted as grounded must
+    not then be treated as "changed" here purely because the model
+    phrased the same real-world value differently between two
+    extractions. Numeric values are compared as floats after stripping
+    formatting; everything else falls back to normalise_name's
+    case/punctuation/whitespace-insensitive comparison."""
+    if previous_value == current_value:
+        return True
+    try:
+        previous_number = float(_VALUE_NUMBER_FORMATTING_RE.sub("", previous_value))
+        current_number = float(_VALUE_NUMBER_FORMATTING_RE.sub("", current_value))
+    except (TypeError, ValueError):
+        return normalise_name(previous_value) == normalise_name(current_value)
+    return previous_number == current_number
+
+
+def change_snapshot_ids(change: Change) -> tuple[str | None, str | None]:
+    """(current_snapshot_id, previous_snapshot_id) -- the shared
+    definition of which snapshot ids a Change references. Previously
+    reimplemented independently in graph.py's validate node,
+    draft_claims.py's citation building, and change_sets.py's
+    previous/current collection, each writing the same
+    previous-is-optional/current-is-required None-checks slightly
+    differently -- a real risk of drift, not just duplication. Either
+    element is None when that side has no recorded snapshot id (a first
+    disclosure has no previous; an empty string is also treated as
+    absent, matching every call site's existing truthy checks)."""
+    previous_id = change.previous.snapshot_id if change.previous is not None else None
+    return (change.current.snapshot_id or None), (previous_id or None)
 
 
 def _subject_key(subject: Subject) -> tuple[str, str]:
@@ -158,7 +201,7 @@ class FactStore:
         previous = record.current
         previous_observation = None
         if previous is not None:
-            if previous.value == fact.value:
+            if _values_are_equivalent(previous.value, fact.value):
                 record.current = fact
                 record.current_snapshot_id = fact.snapshot_id
                 record.current_source_url = source_url

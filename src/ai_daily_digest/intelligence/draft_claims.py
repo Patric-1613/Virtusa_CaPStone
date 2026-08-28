@@ -10,6 +10,7 @@ backed step (not built yet — see docs/LLM_AGENT_SPECS.md).
 
 from __future__ import annotations
 
+from ai_daily_digest.intelligence.facts import change_snapshot_ids
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, DigestClaim
@@ -50,9 +51,10 @@ def draft_change_claim(change: Change) -> DigestClaim:
             f"to {change.current.value}."
         )
 
-    citation_ids = [change.current.snapshot_id] if change.current.snapshot_id else []
-    if change.previous is not None and change.previous.snapshot_id:
-        citation_ids.append(change.previous.snapshot_id)
+    current_id, previous_id = change_snapshot_ids(change)
+    citation_ids = [current_id] if current_id else []
+    if previous_id:
+        citation_ids.append(previous_id)
 
     return DigestClaim(
         id=new_id(),

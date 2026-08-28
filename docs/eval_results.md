@@ -10,3 +10,4 @@ Every `make eval` run appends one row here — never edit or delete past rows, o
 | 2026-08-26T17:52:30.476939+00:00 | self-check | 100% | 0 | 0% | 100% |
 | 2026-08-27T08:31:27.685840+00:00 | self-check | 100% | 0 | 0% | 100% |
 | 2026-08-27T10:11:56.330872+00:00 | self-check | 100% | 0 | 0% | 100% |
+| 2026-08-28T13:05:05.116668+00:00 | self-check | 100% | 0 | 0% | 100% |

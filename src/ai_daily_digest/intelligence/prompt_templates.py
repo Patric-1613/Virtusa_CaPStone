@@ -6,14 +6,19 @@ reviewed-by-hand templates, not user-facing rendering.
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
+@functools.cache
 def load_prompt(name: str) -> tuple[str, str]:
     """Load prompts/<name>.txt, split into (system, user_template) on the
-    SYSTEM / USER TEMPLATE section markers."""
+    SYSTEM / USER TEMPLATE section markers. Cached: prompt file content
+    is immutable for the life of the process, so re-reading and
+    re-parsing the same file from disk on every call (every resolve_llm/
+    extract_facts/compare_subjects invocation) was pure overhead."""
     path = PROMPTS_DIR / f"{name}.txt"
     text = path.read_text(encoding="utf-8")
     if "USER TEMPLATE" not in text:

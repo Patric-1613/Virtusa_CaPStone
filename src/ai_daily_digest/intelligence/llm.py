@@ -10,6 +10,7 @@ Requires: anthropic, pydantic>=2, python-dotenv
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -38,9 +39,21 @@ class StructuredCallFailedError(Exception):
     skip the item (resolution) or fail the run loudly (generation)."""
 
 
+@functools.lru_cache(maxsize=1)
 def _client() -> anthropic.Anthropic:
-    # Imported lazily so this module can be imported (e.g. by tests that
-    # only check prompt files exist) without the anthropic package installed.
+    # Cached: this previously built a brand new anthropic.Anthropic()
+    # (and its own connection pool) on every call_structured() call.
+    # lru_cache only caches a *successful* return -- it never caches a
+    # raised exception, so a missing API key still raises fresh on every
+    # call rather than getting stuck behind a cached failure. The cached
+    # client does persist for the process's lifetime, so it won't pick
+    # up an API key that's rotated at runtime without a process restart
+    # -- an accepted tradeoff of caching a singleton client, same as any
+    # other cached connection/client object.
+    #
+    # Imported lazily so this module can be importable (e.g. by tests
+    # that only check prompt files exist) without the anthropic package
+    # installed.
     import anthropic  # pylint: disable=import-outside-toplevel
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -116,7 +129,31 @@ def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments
             data = json.loads(raw_text)
             return response_model.model_validate(data)
         except (json.JSONDecodeError, ValidationError) as exc:
-            logger.warning("llm_validation_failed attempt=%s error=%s", attempt, exc)
+            # Never log str(exc)/repr(exc) directly for a ValidationError:
+            # pydantic embeds each failing field's actual input_value
+            # verbatim in its default string form, which can include raw
+            # scraped article text flowing through from the model's own
+            # malformed response -- exactly what AGENTS.md's "never log
+            # raw prompts/content" rule exists to prevent (same reasoning
+            # as the prompt_fingerprint hash above, not the prompt
+            # itself). errors(include_input=False) gives the same
+            # type/location/message shape for debugging without the
+            # actual value. json.JSONDecodeError's default str() doesn't
+            # embed the source document, so it's logged as-is.
+            if isinstance(exc, ValidationError):
+                logger.warning(
+                    "llm_validation_failed attempt=%s error_type=%s errors=%s",
+                    attempt,
+                    type(exc).__name__,
+                    exc.errors(include_url=False, include_context=False, include_input=False),
+                )
+            else:
+                logger.warning(
+                    "llm_validation_failed attempt=%s error_type=%s error=%s",
+                    attempt,
+                    type(exc).__name__,
+                    exc,
+                )
             prompt = (
                 f"{prompt}\n\n"
                 f"Your previous response failed validation with this error:\n{exc}\n"

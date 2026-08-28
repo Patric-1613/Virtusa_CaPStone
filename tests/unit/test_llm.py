@@ -6,6 +6,9 @@ client so nothing here needs a real API key or network access."""
 
 from __future__ import annotations
 
+import json
+import logging
+
 import pytest
 from pydantic import BaseModel
 
@@ -116,5 +119,48 @@ def test_non_text_blocks_are_ignored_when_assembling_the_response(
 
 def test_missing_api_key_raises_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    llm._client.cache_clear()  # a client cached by an earlier test must not mask this
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
         llm._client()
+
+
+def test_client_is_cached_across_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per review: _client() previously built a new anthropic.Anthropic()
+    (and its own connection pool) on every call_structured() call.
+    Verified via object identity, not just "it doesn't raise" -- a bug
+    here wouldn't otherwise be observable from the outside."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    llm._client.cache_clear()
+    try:
+        first = llm._client()
+        second = llm._client()
+        assert first is second
+    finally:
+        llm._client.cache_clear()  # don't leak a cached client into other tests
+
+
+def test_validation_failure_log_does_not_leak_raw_input_value(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Per review: pydantic's ValidationError.__str__() embeds the
+    invalid input_value verbatim -- logging the exception object
+    directly (logger.warning(..., exc)) could leak raw scraped article
+    text flowing through from the model's own malformed response,
+    violating AGENTS.md's "never log raw prompts/content" rule."""
+    sensitive_text = "PRIVATE-ARTICLE-TEXT-MARKER-should-never-appear-in-logs"
+    # 'value' must be a string; a nested object containing the sensitive
+    # text fails validation, and pydantic's ValidationError would embed
+    # it verbatim in str(exc) if that were logged directly.
+    raw_texts = [
+        json.dumps({"value": {"nested": sensitive_text}}),
+        '{"value": "ok"}',
+    ]
+    _patch_client(monkeypatch, raw_texts)
+
+    with caplog.at_level(logging.WARNING):
+        result = llm.call_structured(
+            model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+        )
+
+    assert result.value == "ok"
+    assert sensitive_text not in caplog.text

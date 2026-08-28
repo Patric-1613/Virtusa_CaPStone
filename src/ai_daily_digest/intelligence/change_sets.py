@@ -7,6 +7,7 @@ into a ChangeSet", per its own docstring; this module is that caller).
 
 from __future__ import annotations
 
+from ai_daily_digest.intelligence.facts import change_snapshot_ids
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, ChangeSet, Subject
 
@@ -35,10 +36,9 @@ def build_change_sets(changes: list[Change]) -> list[ChangeSet]:
         linked_changes: list[Change] = []
         for change in subject_changes:
             linked_changes.append(change.model_copy(update={"change_set_id": change_set_id}))
-            prev_id = change.previous.snapshot_id if change.previous else None
+            current_id, prev_id = change_snapshot_ids(change)
             if prev_id and prev_id not in previous_snapshot_ids:
                 previous_snapshot_ids.append(prev_id)
-            current_id = change.current.snapshot_id
             if current_id and current_id not in current_snapshot_ids:
                 current_snapshot_ids.append(current_id)
         change_sets.append(
