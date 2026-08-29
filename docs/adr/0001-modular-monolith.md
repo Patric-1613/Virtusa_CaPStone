@@ -17,4 +17,3 @@ Use one repository and codebase with `ingestion`, `intelligence`, `delivery`, an
 - Cross-module calls can use typed Python interfaces and the shared database.
 - Shared-contract changes require coordination.
 - A module may be extracted into a service later only when measured scale or ownership needs justify it.
-

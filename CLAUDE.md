@@ -7,4 +7,3 @@
 - After editing, run the narrowest relevant check first, then `make check`.
 - Do not rewrite a teammate's work merely to match a preferred style; the formatter owns style.
 - Use `/context` to confirm this file loaded when repository instructions appear missing.
-

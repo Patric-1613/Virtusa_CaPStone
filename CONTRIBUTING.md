@@ -36,4 +36,3 @@ Commit a coherent unit of work. Rebase or update from `main` before requesting f
 - Logs and errors are useful without exposing secrets or personal data.
 - The change can be rolled back or disabled safely.
 - A reviewer other than the author approves it.
-

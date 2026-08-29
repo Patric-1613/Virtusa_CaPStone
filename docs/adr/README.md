@@ -24,4 +24,3 @@ What will the team do?
 
 What becomes easier, harder, or deliberately excluded?
 ```
-
