@@ -10,6 +10,22 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "PyYAML>=6.0",
+  # --- intelligence module (Person B) --- added here per AGENTS.md's
+  # "explain why an existing dependency or standard library cannot do the
+  # job" rule; each is justified individually, not a blanket addition:
+  # pydantic: shared/schemas.py is the cross-module contract (SourceItem,
+  #   DocumentSnapshot, Change, ExtractedFact, Digest) -- stdlib dataclasses
+  #   don't give runtime validation, which is the whole point of a contract.
+  # anthropic: the LLM provider for resolve_llm/extract_attributes/
+  #   compare/generate (see intelligence/CLAUDE.md's model-choice table).
+  # langgraph: ADR-listed technology baseline (docs/ARCHITECTURE.md,
+  #   still Proposed) for the intelligence workflow's explicit state/nodes.
+  # NOTE: uv.lock was NOT regenerated for these -- uv isn't installed on
+  # this machine. Whoever picks this up needs to run `uv lock` before
+  # `uv sync --locked` will succeed. Flag this in the PR.
+  "pydantic>=2.6",
+  "anthropic>=0.40",
+  "langgraph>=0.2",
 ]
 
 [dependency-groups]

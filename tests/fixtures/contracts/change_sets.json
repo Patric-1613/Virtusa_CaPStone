@@ -1,0 +1,32 @@
+[
+  {
+    "id": "d1000000-0000-4000-8000-000000000001",
+    "subject": { "company": "OpenAI", "product": "GPT-4o" },
+    "changes": [
+      {
+        "id": "c1000000-0000-4000-8000-000000000001",
+        "change_set_id": "d1000000-0000-4000-8000-000000000001",
+        "subject": { "company": "OpenAI", "product": "GPT-4o" },
+        "field": "context_window_tokens",
+        "change_type": "increased",
+        "previous": {
+          "value": "128000",
+          "observed_at": "2026-06-02T09:10:00Z",
+          "snapshot_id": "b1000000-0000-4000-8000-000000000003",
+          "source_url": "https://openai.com/news/gpt-4o-launch"
+        },
+        "current": {
+          "value": "256000",
+          "observed_at": "2026-08-20T09:05:00Z",
+          "snapshot_id": "b1000000-0000-4000-8000-000000000001",
+          "source_url": "https://openai.com/news/gpt-4o-256k-context"
+        },
+        "confidence": 0.98,
+        "review_status": "validated"
+      }
+    ],
+    "previous_snapshot_ids": ["b1000000-0000-4000-8000-000000000003"],
+    "current_snapshot_ids": ["b1000000-0000-4000-8000-000000000001"],
+    "review_status": "validated"
+  }
+]

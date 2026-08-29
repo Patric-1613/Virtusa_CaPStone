@@ -115,13 +115,13 @@ map explicitly in the shared model and contract tests rather than being used int
   "field": "context_window_tokens",
   "change_type": "increased",
   "previous": {
-    "value": 128000,
+    "value": "128000",
     "observed_at": "2026-07-01T00:00:00Z",
     "snapshot_id": "0b931da4-ca9c-4541-8249-53a7ea70d606",
     "source_url": "https://example.com/old"
   },
   "current": {
-    "value": 256000,
+    "value": "256000",
     "observed_at": "2026-08-24T00:00:00Z",
     "snapshot_id": "96377473-b3ac-4133-9f7d-63f28edbdc39",
     "source_url": "https://example.com/new"
@@ -155,15 +155,23 @@ Facts created by deterministic code use `extraction_method: "deterministic"`. Fa
 an LLM must also record the provider-neutral model identifier and versioned prompt so evaluations
 can be reproduced.
 
+`quoted_span` and `confidence` (both optional) record the evidence a fact was built from: the
+exact source text the value was extracted from, and the extractor's confidence in it. Optional
+because deterministic facts don't always have a natural quote; LLM-extracted facts always populate
+both, and this is enforced at the model level (not just by extraction code) — see
+[ADR 0004](adr/0004-extracted-fact-keeps-evidence.md).
+
 ```json
 {
   "id": "7a5bbb61-d20d-4bd3-93cf-e31236b98f0d",
   "snapshot_id": "96377473-b3ac-4133-9f7d-63f28edbdc39",
   "field": "context_window_tokens",
-  "value": 256000,
+  "value": "256000",
   "extraction_method": "llm_structured_output",
   "extraction_model": "provider/model-version",
-  "prompt_version": "fact-extraction-v1"
+  "prompt_version": "fact-extraction-v1",
+  "quoted_span": "context window has been increased to 256,000 tokens",
+  "confidence": 0.95
 }
 ```
 

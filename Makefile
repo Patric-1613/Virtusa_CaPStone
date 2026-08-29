@@ -1,4 +1,4 @@
-.PHONY: bootstrap format lint typecheck unit check pylint test security build ci hooks
+.PHONY: bootstrap format lint typecheck unit check pylint test security build ci hooks eval
 
 # Non-editable installs avoid platform-specific .pth handling while still rebuilding when the
 # project changes. This also tests the same wheel layout that production receives.
@@ -40,3 +40,8 @@ ci: check pylint test security build
 
 hooks:
 	$(UV_RUN) pre-commit install --hook-type pre-commit --hook-type pre-push
+
+# Currently a self-check against the draft fixture pack, not a real
+# evaluation -- see intelligence/evaluate.py's run_eval() docstring.
+eval:
+	$(UV_RUN) python -m ai_daily_digest.intelligence.evaluate
