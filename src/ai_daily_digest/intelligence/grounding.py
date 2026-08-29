@@ -49,6 +49,19 @@ _NUMBER_FORMATTING_RE = re.compile(r"[,$%]")
 # digit followed by "-<letter>" is a real, common, legitimate pattern in
 # this project's own data ("256,000-token context window") and must
 # stay included -- only the preceding side is excluded.
+#
+# KNOWN GAP, tracked as a follow-up issue (non-blocking, "safe"
+# direction): a COMPOUND decimal-shaped name like "GPT-4.5" still leaks
+# a spurious number. The exclusion above blocks a match from starting at
+# "4" (preceded by "T-"), but the regex engine then retries starting at
+# "5" (the digit after the decimal point), which isn't itself preceded
+# by a letter-hyphen pattern, so "5" alone gets matched as if asserted.
+# Causes occasional over-cautious rejection of a well-grounded claim,
+# never a false claim wrongly accepted -- not patched inline to avoid a
+# third increasingly specific regex exception; see the follow-up issue
+# for the intended direction (possibly structural, alongside the
+# character-offset-citation work already scoped in
+# docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e)).
 _NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?<![A-Za-z]-)\d+(?:\.\d+)?(?![A-Za-z])")
 
 

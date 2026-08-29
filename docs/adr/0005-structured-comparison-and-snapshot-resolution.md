@@ -6,6 +6,9 @@ separate follow-up issue/PR, per Person A's MVP-scoping decision — see that fo
 implementation status once it exists. PR #5 ships with the interim safety nets this ADR's Context
 section describes (`_never_auto_publish_comparisons()`, fail-closed content grounding) and none of
 the structural changes below.
+**Person C's review is temporarily deferred to keep PR #5 moving, not skipped — it must happen
+before any delivery/API/ingestion work depends on this decision, and before the follow-up
+implementation issue is started.**
 Date: 2026-08-27
 
 ## Context

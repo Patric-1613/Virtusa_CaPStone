@@ -49,6 +49,23 @@ def test_claim_and_evidence_agree_on_a_bare_digit_product_name() -> None:
     assert claim_numbers <= evidence_numbers
 
 
+def test_numbers_in_still_leaks_the_decimal_half_of_a_compound_name_known_gap() -> None:
+    """KNOWN, DOCUMENTED GAP -- not a passing safety guarantee (tracked
+    as a follow-up issue, non-blocking). A compound decimal-shaped name
+    like "GPT-4.5" still leaks a spurious number: the letter-hyphen
+    exclusion blocks a match starting at "4" (preceded by "T-"), but the
+    regex engine then retries starting at "5" (the digit right after the
+    decimal point), which isn't itself preceded by a letter-hyphen
+    pattern, so it's matched as if asserted. Safe direction to be wrong
+    in (can cause an over-cautious "unsupported" on an actually-fine
+    claim, never a false claim being accepted) -- see grounding.py's own
+    comment on _NUMBER_TOKEN_RE for the full explanation and why this
+    isn't patched inline. If this test ever starts failing because the
+    gap got fixed, that's good news -- update it to assert the number is
+    gone, don't just delete it."""
+    assert numbers_in("The new GPT-4.5 model launched today.") == {"5"}
+
+
 def test_numbers_in_empty_when_no_digits() -> None:
     # Not "Apache-2.0" -- per the fix above, a digit run preceded by
     # "<letter>-" is now excluded too (the same "GPT-4" shape), so

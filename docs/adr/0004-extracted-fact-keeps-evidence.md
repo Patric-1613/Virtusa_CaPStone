@@ -2,6 +2,9 @@
 
 Status: Accepted by Person A (2026-08-27, with one clarification — see "Enforcement" below),
 pending Person C's confirmation of this shared-contract change.
+**Person C's review is temporarily deferred to keep PR #5 moving, not skipped — it must happen
+before any delivery/API/ingestion work depends on this decision.** This is not yet a full
+three-owner-signed-off contract change.
 Date: 2026-08-26
 
 ## Context
