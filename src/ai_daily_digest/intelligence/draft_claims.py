@@ -11,43 +11,32 @@ backed step (not built yet — see docs/LLM_AGENT_SPECS.md).
 from __future__ import annotations
 
 from ai_daily_digest.intelligence.facts import change_snapshot_ids
-from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
+from ai_daily_digest.shared.attributes import field_label as _field_label_for
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, DigestClaim
-
-
-def _field_label(field: str) -> str:
-    """The same curated label compare_subjects.py and extract_facts.py
-    use, so a field reads identically whether it shows up in a drafted
-    change claim or a comparison claim within the same digest — falls
-    back to the raw field key only for a field COMPARABLE_FIELDS somehow
-    doesn't know about. Lowercased for mid-sentence use ("Context
-    window" -> "context window")."""
-    label = COMPARABLE_FIELDS.get(field, field.replace("_", " "))
-    return label[:1].lower() + label[1:] if label else label
 
 
 def draft_change_claim(change: Change) -> DigestClaim:
     """One DigestClaim per Change. validation_status starts "pending" —
     intelligence/validate.py is what's allowed to mark it supported."""
     subject_name = f"{change.subject.company}'s {change.subject.product}"
-    field_label = _field_label(change.field)
+    label = _field_label_for(change.field)
 
     if change.previous is None:
-        text = f"{subject_name}'s {field_label} is now disclosed as {change.current.value}."
+        text = f"{subject_name}'s {label} is now disclosed as {change.current.value}."
     elif change.change_type == "increased":
         text = (
-            f"{subject_name}'s {field_label} increased to {change.current.value}, "
+            f"{subject_name}'s {label} increased to {change.current.value}, "
             f"up from {change.previous.value}."
         )
     elif change.change_type == "decreased":
         text = (
-            f"{subject_name}'s {field_label} decreased to {change.current.value}, "
+            f"{subject_name}'s {label} decreased to {change.current.value}, "
             f"down from {change.previous.value}."
         )
     else:
         text = (
-            f"{subject_name}'s {field_label} changed from {change.previous.value} "
+            f"{subject_name}'s {label} changed from {change.previous.value} "
             f"to {change.current.value}."
         )
 

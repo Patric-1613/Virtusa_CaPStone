@@ -28,7 +28,7 @@ from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.graph import PipelineState, build_graph
 from ai_daily_digest.intelligence.resolve import SubjectAlias
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
-from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
+from ai_daily_digest.shared.attributes import COMPARISON_RULES
 from ai_daily_digest.shared.schemas import (
     Change,
     ChangeSet,
@@ -38,6 +38,7 @@ from ai_daily_digest.shared.schemas import (
     SourceItem,
     Subject,
 )
+from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
 
 logger = logging.getLogger("intelligence.daily_run")
 
@@ -78,13 +79,14 @@ class _BatchAccumulator:
     seen_subjects: set[Subject] = field(default_factory=set)
     unresolved_item_ids: list[str] = field(default_factory=list)
     failed_item_ids: list[str] = field(default_factory=list)
-    # Real DocumentSnapshot content for this batch, keyed by id -- passed
-    # to assemble_digest()/validate.py so the final publish gate can
-    # check that a claim's asserted numbers are actually grounded in the
-    # snapshot content it cites, not just that the citation id exists.
-    # See validate.py's module docstring for why this is only available
-    # for the current batch, not every historical snapshot.
-    snapshots_by_id: dict[str, DocumentSnapshot] = field(default_factory=dict)
+    # Real DocumentSnapshot content for this batch -- passed to
+    # assemble_digest()/validate.py (ADR 0005's SnapshotResolver) so the
+    # final publish gate can check that a claim's asserted numbers are
+    # actually grounded in the snapshot content it cites, not just that
+    # the citation id exists. See validate.py's module docstring for why
+    # this only ever covers the current batch, not every historical
+    # snapshot.
+    snapshot_resolver: InMemorySnapshotResolver = field(default_factory=InMemorySnapshotResolver)
 
 
 def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[str]) -> Digest:
@@ -119,7 +121,7 @@ def _process_item(
     claims -- recorded in acc.failed_item_ids and logged with a
     traceback instead, so it's still diagnosable, not swallowed."""
     known_snapshot_ids.add(entry.snapshot.id)
-    acc.snapshots_by_id[entry.snapshot.id] = entry.snapshot
+    acc.snapshot_resolver.add(entry.snapshot)
     try:
         result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
     except Exception:  # pylint: disable=broad-exception-caught
@@ -199,7 +201,11 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
         _process_item(entry, graph, known_snapshot_ids, acc)
 
     comparison_claim_ids: set[str] = set()
-    fields = comparison_fields if comparison_fields is not None else list(COMPARABLE_FIELDS)
+    # Default to only the fields with a registered ComparisonRule (ADR
+    # 0005 point 2, Phase 1: context_window_tokens only) -- there is no
+    # point asking the model to consider a field compare_subjects() can
+    # never resolve to a claim regardless of what it proposes.
+    fields = comparison_fields if comparison_fields is not None else list(COMPARISON_RULES)
     if fields and len(acc.resolved_subjects) >= 2:
         try:
             rows = build_fact_table(store, acc.resolved_subjects, fields)
@@ -215,7 +221,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
         digest_date,
         acc.claims,
         known_snapshot_ids=known_snapshot_ids,
-        snapshots_by_id=acc.snapshots_by_id,
+        snapshot_resolver=acc.snapshot_resolver,
         title=title,
     )
     digest = _never_auto_publish_comparisons(digest, comparison_claim_ids)

@@ -1,12 +1,22 @@
-"""Tests the code-level guardrails with an injected fake call_fn — no
+"""Tests the code-level guardrails with an injected fake call_fn -- no
 network/API key needed. This is the adversarial suite: every test that
-matters here is "the model tried something ungrounded and the code caught
-it", not just "the happy path works"."""
+matters here is "the model tried something ungrounded and the code
+caught it", not just "the happy path works".
 
+ADR 0005: the model proposes only structured ComparisonAssertion
+(subject_a, subject_b, field) triples now -- it never writes a value, a
+relation, or any prose. compare_subjects() alone looks up real values and
+renders the claim text. This is what makes the swapped-value fabrication
+class this suite used to just document as a known gap (see git history
+of this file, pre-ADR-0005) structurally impossible instead."""
+
+import logging
 from datetime import UTC, datetime
 
+import pytest
+
 from ai_daily_digest.intelligence.compare_subjects import (
-    ComparisonClaimCandidate,
+    ComparisonAssertion,
     ComparisonResponse,
     FactRow,
     build_fact_table,
@@ -43,7 +53,13 @@ def _store_with_data() -> FactStore:
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _fact("benchmark_scores", "71.2", "snap_anthropic_bench"),
+        _fact("context_window_tokens", "128000", "snap_anthropic_ctx"),
+        source_url="https://anthropic.com/a",
+        observed_at=datetime(2026, 8, 19, tzinfo=UTC),
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("benchmark_scores", "71.2", "snap_anthropic_bench", "f2"),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
     )
@@ -56,6 +72,14 @@ def _rows() -> list[FactRow]:
         store,
         [OPENAI_GPT4O, ANTHROPIC_CLAUDE],
         ["context_window_tokens", "benchmark_scores"],
+    )
+
+
+def _one_assertion_response(
+    subject_a: Subject, subject_b: Subject, field: str
+) -> ComparisonResponse:
+    return ComparisonResponse(
+        assertions=[ComparisonAssertion(subject_a=subject_a, subject_b=subject_b, field=field)]
     )
 
 
@@ -74,101 +98,94 @@ def test_build_fact_table_marks_missing_fields_not_disclosed() -> None:
     assert openai_ctx.snapshot_id == "snap_openai_ctx"
 
 
-def test_well_grounded_comparison_is_accepted() -> None:
+def test_well_grounded_comparison_is_accepted_and_deterministically_rendered() -> None:
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text=(
-                        "OpenAI's GPT-4o has a 256,000-token context window; Anthropic's Claude "
-                        "has not disclosed its context window in this update."
-                    ),
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_openai_ctx"],
-                )
-            ]
-        )
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens")
 
     claims = compare_subjects(_rows(), call_fn=fake_call)
     assert len(claims) == 1
-    assert claims[0].citation_snapshot_ids == ["snap_openai_ctx"]
+    assert set(claims[0].citation_snapshot_ids) == {"snap_openai_ctx", "snap_anthropic_ctx"}
     assert claims[0].validation_status == "pending"
+    # Code renders the text from the real values -- OpenAI's 256000 is
+    # actually higher than Anthropic's 128000.
+    assert "256000" in claims[0].text
+    assert "128000" in claims[0].text
+    assert "higher" in claims[0].text
 
 
-def test_fabricated_snapshot_citation_is_rejected() -> None:
+def test_relation_lower_is_rendered_for_the_smaller_side() -> None:
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="A confident-sounding but ungrounded claim.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_that_does_not_exist"],
-                )
-            ]
-        )
+        return _one_assertion_response(ANTHROPIC_CLAUDE, OPENAI_GPT4O, "context_window_tokens")
 
-    assert compare_subjects(_rows(), call_fn=fake_call) == []
+    claims = compare_subjects(_rows(), call_fn=fake_call)
+    assert len(claims) == 1
+    assert "lower" in claims[0].text
 
 
-def test_citation_borrowed_from_an_unrelated_subject_field_is_rejected() -> None:
-    """A real snapshot id that exists in the table, but supports a
-    *different* subject/field than the one being claimed about, must not
-    count as grounding -- this is the specific gap a real citation cross-
-    check has to catch, not just "is this id real somewhere"."""
-
-    def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="OpenAI's GPT-4o price beats Anthropic's Claude price.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["context_window_tokens"],
-                    # snap_anthropic_bench is real, but it's Anthropic's
-                    # benchmark_scores snapshot, not a context_window_tokens
-                    # snapshot for either subject.
-                    snapshot_ids=["snap_anthropic_bench"],
-                )
-            ]
-        )
-
-    assert compare_subjects(_rows(), call_fn=fake_call) == []
-
-
-def test_false_comparison_value_with_real_citation_is_rejected() -> None:
-    """Adversarial case per the review: the citation id is real AND
-    correctly owned by (OpenAI, context_window_tokens) -- the existing
-    ownership check alone would accept this -- but the claim's prose
-    states a number ("999999") the row never actually had."""
+def test_equal_values_are_rendered_as_equal_not_higher_or_lower() -> None:
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("context_window_tokens", "128000", "snap_openai_ctx"),
+        source_url="https://openai.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("context_window_tokens", "128000", "snap_anthropic_ctx", "f2"),
+        source_url="https://anthropic.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="OpenAI's GPT-4o context window is 999999 tokens.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_openai_ctx"],
-                )
-            ]
-        )
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens")
+
+    claims = compare_subjects(rows, call_fn=fake_call)
+    assert len(claims) == 1
+    assert "same" in claims[0].text
+    assert "higher" not in claims[0].text
+    assert "lower" not in claims[0].text
+
+
+def test_swapped_attribution_is_now_structurally_impossible() -> None:
+    """This is the exact class ADR 0005 closes: pre-ADR-0005, a model
+    could write "OpenAI's price is 3; Anthropic's price is 5" when the
+    real values were reversed, and the old numeric-only check couldn't
+    catch it (both numbers were real, just attributed backwards -- see
+    this file's git history). Now the model can't write a value or an
+    attribution at all -- it only names which two subjects/field to
+    compare -- so the rendered text is always correct by construction."""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        # The model can still name the pair in whichever order it likes
+        # -- it just can't say which number belongs to which subject.
+        return _one_assertion_response(ANTHROPIC_CLAUDE, OPENAI_GPT4O, "context_window_tokens")
+
+    claims = compare_subjects(_rows(), call_fn=fake_call)
+    assert len(claims) == 1
+    # Anthropic (128000) really is lower than OpenAI (256000) -- code
+    # decided that, the model never got a chance to say it backwards.
+    assert claims[0].text == (
+        "Anthropic's Claude has a lower context window (128000) than OpenAI's GPT-4o (256000)."
+    )
+
+
+def test_field_with_no_registered_comparison_rule_is_rejected() -> None:
+    """benchmark_scores is a real COMPARABLE_FIELDS entry and is present
+    in the table, but Phase 1 (ADR 0005 point 2) registers no
+    ComparisonRule for it -- excluded from comparison entirely, not
+    guessed at."""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "benchmark_scores")
 
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
 def test_unknown_field_is_rejected() -> None:
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="Comparing on a field never in the table.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["made_up_field"],
-                    snapshot_ids=["snap_openai_ctx"],
-                )
-            ]
-        )
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "made_up_field")
 
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
@@ -177,67 +194,9 @@ def test_unknown_subject_is_rejected() -> None:
     intruder = Subject(company="MadeUp Inc", product="Ghost Model")
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="Comparing against a subject never in the table.",
-                    subjects=[OPENAI_GPT4O, intruder],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_openai_ctx"],
-                )
-            ]
-        )
+        return _one_assertion_response(OPENAI_GPT4O, intruder, "context_window_tokens")
 
     assert compare_subjects(_rows(), call_fn=fake_call) == []
-
-
-def test_swapped_real_values_are_not_yet_caught_known_gap() -> None:
-    """KNOWN, DOCUMENTED GAP -- not a passing safety guarantee. Both
-    numbers are real and both citations are correctly owned, but the
-    prose attributes them to the WRONG subject (swapped). The current
-    per-field numeric check only verifies "every number in the claim
-    text is SOMEWHERE among the real values being compared" (a set
-    union) -- it has no way to verify WHICH subject a number belongs to
-    in the sentence, so a swap like this is currently accepted.
-
-    This is exactly why docs/DESIGN_PROPOSAL_comparison_and_grounding.md
-    proposes structured (subject, field) -> value assertions instead of
-    free text (see its (a)/(b) sections) -- once that ships, this test's
-    assertion should flip to == []. Until then, daily_run.py's
-    _never_auto_publish_comparisons() is what actually stops a claim
-    like this from reaching a subscriber -- see
-    test_daily_run.py::test_swapped_comparison_never_auto_publishes_even_though_compare_subjects_accepts_it.
-    """
-    store = FactStore()
-    store.update_fact(
-        OPENAI_GPT4O,
-        _fact("input_price_usd", "5", "snap_openai_price"),
-        source_url="https://openai.com/pricing",
-        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
-    )
-    store.update_fact(
-        ANTHROPIC_CLAUDE,
-        _fact("input_price_usd", "3", "snap_anthropic_price"),
-        source_url="https://anthropic.com/pricing",
-        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
-    )
-    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["input_price_usd"])
-
-    def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        # Real: OpenAI=5, Anthropic=3. Claim states it backwards.
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="OpenAI's input price is 3; Anthropic's input price is 5.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["input_price_usd"],
-                    snapshot_ids=["snap_openai_price", "snap_anthropic_price"],
-                )
-            ]
-        )
-
-    claims = compare_subjects(rows, call_fn=fake_call)
-    assert len(claims) == 1  # accepted -- the gap this test documents
 
 
 def test_subject_compared_to_itself_is_rejected() -> None:
@@ -245,36 +204,132 @@ def test_subject_compared_to_itself_is_rejected() -> None:
     subject_b -- a subject can't be legitimately compared to itself."""
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="OpenAI's GPT-4o compared to OpenAI's GPT-4o.",
-                    subjects=[OPENAI_GPT4O, OPENAI_GPT4O],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_openai_ctx"],
-                )
-            ]
-        )
+        return _one_assertion_response(OPENAI_GPT4O, OPENAI_GPT4O, "context_window_tokens")
 
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_single_subject_claim_is_rejected() -> None:
-    """A "comparison" naming only one subject isn't a comparison."""
+def test_value_not_disclosed_on_either_side_is_rejected() -> None:
+    """The field DOES have a registered ComparisonRule (unlike the
+    previous test) but one side's row is genuinely undisclosed -- there
+    is no real value to look up, so the assertion is rejected."""
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("context_window_tokens", "256000", "snap_openai_ctx"),
+        source_url="https://openai.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    # Anthropic's context_window_tokens is never recorded.
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens")
+
+    assert compare_subjects(rows, call_fn=fake_call) == []
+
+
+def test_malformed_stored_value_drops_only_that_candidate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0005 point 2: a stored value the field's ComparisonRule can't
+    parse must fail per-candidate (dropped, logged), never abort the rest
+    of the comparison pass. Proven here with two assertions in one
+    response: the malformed one is dropped, the well-formed one still
+    produces a claim."""
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("context_window_tokens", "not-a-number", "snap_openai_ctx"),
+        source_url="https://openai.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("context_window_tokens", "128000", "snap_anthropic_ctx", "f2"),
+        source_url="https://anthropic.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    intruder = Subject(company="MadeUp Inc", product="Ghost Model")
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="Only about one subject.",
-                    subjects=[OPENAI_GPT4O],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_openai_ctx"],
-                )
+            assertions=[
+                ComparisonAssertion(
+                    subject_a=OPENAI_GPT4O,
+                    subject_b=ANTHROPIC_CLAUDE,
+                    field="context_window_tokens",
+                ),
+                # A second, unrelated assertion naming a subject that was
+                # never in the table at all -- proves the malformed-value
+                # failure above didn't abort the rest of the batch.
+                ComparisonAssertion(
+                    subject_a=ANTHROPIC_CLAUDE, subject_b=intruder, field="context_window_tokens"
+                ),
             ]
         )
 
-    assert compare_subjects(_rows(), call_fn=fake_call) == []
+    with caplog.at_level(logging.WARNING):
+        claims = compare_subjects(rows, call_fn=fake_call)
+
+    # OpenAI's malformed value is dropped; the second assertion is also
+    # rejected (intruder was never in the table) -- both independently,
+    # no exception propagates and the call returns normally.
+    assert claims == []
+    assert "comparison_malformed_value" in caplog.text
+
+
+def test_reversed_pair_duplicate_is_deduped() -> None:
+    """ADR 0005 point 1: (A, B, field) and (B, A, field) are the same
+    comparison -- only the first is resolved into a claim."""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return ComparisonResponse(
+            assertions=[
+                ComparisonAssertion(
+                    subject_a=OPENAI_GPT4O,
+                    subject_b=ANTHROPIC_CLAUDE,
+                    field="context_window_tokens",
+                ),
+                ComparisonAssertion(
+                    subject_a=ANTHROPIC_CLAUDE,
+                    subject_b=OPENAI_GPT4O,
+                    field="context_window_tokens",
+                ),
+            ]
+        )
+
+    claims = compare_subjects(_rows(), call_fn=fake_call)
+    assert len(claims) == 1
+
+
+def test_different_field_for_the_same_pair_is_not_deduped() -> None:
+    """The dedup key includes the field (ADR 0005 point 1) -- a second
+    assertion for the same pair but a DIFFERENT field must be resolved
+    independently, not dropped as a duplicate of the first. Uses a
+    non-comparable field first (rejected on its own terms) to prove the
+    second, comparable-field assertion for the same pair still gets a
+    chance to resolve -- if field weren't part of the key, the pair alone
+    would already be "seen" and the second assertion would never be
+    evaluated at all, so this would incorrectly yield zero claims."""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return ComparisonResponse(
+            assertions=[
+                ComparisonAssertion(
+                    subject_a=OPENAI_GPT4O, subject_b=ANTHROPIC_CLAUDE, field="benchmark_scores"
+                ),
+                ComparisonAssertion(
+                    subject_a=OPENAI_GPT4O,
+                    subject_b=ANTHROPIC_CLAUDE,
+                    field="context_window_tokens",
+                ),
+            ]
+        )
+
+    claims = compare_subjects(_rows(), call_fn=fake_call)
+    assert len(claims) == 1
 
 
 def test_sparse_table_yields_abstention_not_a_fabricated_claim() -> None:
@@ -283,7 +338,7 @@ def test_sparse_table_yields_abstention_not_a_fabricated_claim() -> None:
     correct output, not treated as a failure."""
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(claims=[])
+        return ComparisonResponse(assertions=[])
 
     empty_rows = [FactRow(subject=OPENAI_GPT4O, field="context_window_tokens")]
     assert compare_subjects(empty_rows, call_fn=fake_call) == []

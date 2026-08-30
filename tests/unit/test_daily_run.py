@@ -1,15 +1,19 @@
 """End-to-end test of the orchestrator with injected fake call_fns for
 every LLM call site — no network/API key needed. This is the closest
 thing to a real run this test suite has: a batch of items goes in, a
-published Digest comes out."""
+Digest comes out.
+
+ADR 0005: compare_fake functions below propose structured
+ComparisonAssertion(subject_a, subject_b, field) triples only -- no text,
+no snapshot ids, no values. compare_subjects() looks those up and renders
+the claim deterministically; see test_compare_subjects.py for the
+guardrail-level coverage of that resolution. This file only needs to
+prove daily_run.py wires everything together end to end."""
 
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from ai_daily_digest.intelligence.compare_subjects import (
-    ComparisonClaimCandidate,
-    ComparisonResponse,
-)
+from ai_daily_digest.intelligence.compare_subjects import ComparisonAssertion, ComparisonResponse
 from ai_daily_digest.intelligence.daily_run import BatchItem, run_daily
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.facts import FactStore
@@ -57,7 +61,18 @@ def _extraction_fake(
     return fake_call
 
 
-def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> None:
+def _compare_fake(
+    subject_a: Subject, subject_b: Subject, field: str
+) -> Callable[[str, str], ComparisonResponse]:
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return ComparisonResponse(
+            assertions=[ComparisonAssertion(subject_a=subject_a, subject_b=subject_b, field=field)]
+        )
+
+    return fake_call
+
+
+def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
@@ -85,12 +100,12 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
                 )
             ]
         ),
-        "snap_bench": FactExtractionResponse(
+        "snap_anthropic_ctx": FactExtractionResponse(
             facts=[
                 FactCandidate(
-                    field="benchmark_scores",
-                    value="71.2",
-                    quoted_span="scored 71.2",
+                    field="context_window_tokens",
+                    value="200000",
+                    quoted_span="context window is 200,000 tokens",
                     confidence=0.9,
                 )
             ]
@@ -102,21 +117,6 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
             if snap_id in prompt:
                 return response
         return FactExtractionResponse(facts=[])
-
-    def compare_fake(system: str, prompt: str) -> ComparisonResponse:
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text=(
-                        "OpenAI's GPT-4o has a 256,000-token context window; Anthropic's Claude "
-                        "has not disclosed its context window in this update."
-                    ),
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["context_window_tokens"],
-                    snapshot_ids=["snap_256k"],
-                )
-            ]
-        )
 
     batch = [
         BatchItem(
@@ -139,15 +139,15 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
         ),
         BatchItem(
             _item(
-                "item_bench",
-                "Claude benchmark results published",
+                "item_anthropic_ctx",
+                "Claude context window disclosed",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_bench",
-                "item_bench",
-                "Anthropic published benchmark results; Claude scored 71.2 on ReasonBench.",
+                "snap_anthropic_ctx",
+                "item_anthropic_ctx",
+                "Anthropic disclosed that Claude's context window is 200,000 tokens.",
                 datetime(2026, 8, 19, tzinfo=UTC),
             ),
         ),
@@ -160,15 +160,24 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
         "2026-08-20",
         alias_table=[],
         extract_call_fn=extract_fake,
-        compare_call_fn=compare_fake,
+        compare_call_fn=_compare_fake(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens"),
     )
 
     assert set(result.resolved_subjects) == {OPENAI_GPT4O, ANTHROPIC_CLAUDE}
     assert result.unresolved_item_ids == []
 
-    # one "changed" claim (128k -> 256k) + one comparison claim = 2
+    # one "changed" claim (128k -> 256k) + one deterministically-rendered
+    # comparison claim (256k vs 200k) = 2. Anthropic's own context window
+    # is a first-time observation (200k, no previous value) -- FactStore
+    # still records it (compare_subjects() can see and cite it), but
+    # per facts.py::update_fact()'s own docstring, a first observation
+    # never becomes its own DigestClaim -- only a real Change does.
     assert len(result.digest.claims) == 2
     assert all(c.validation_status == "supported" for c in result.digest.claims)
+    comparison_claim = next(c for c in result.digest.claims if "than" in c.text)
+    assert comparison_claim.text == (
+        "OpenAI's GPT-4o has a higher context window (256000) than Anthropic's Claude (200000)."
+    )
     # Interim safety policy: a digest containing ANY comparison claim
     # never auto-publishes, even when every claim in it individually
     # validates as "supported" -- see
@@ -185,82 +194,66 @@ def test_batch_produces_a_published_digest_with_a_change_and_a_comparison() -> N
     assert change_set.changes[0].change_set_id != ""
 
 
-def test_qualitative_comparison_claim_never_auto_publishes_even_if_grounded() -> None:
-    """Adversarial case per the review: a comparison claim asserting a
-    qualitative relationship ("OpenAI is cheaper than Anthropic") has no
-    numbers in it at all, so compare_subjects.py's numeric check has
-    nothing to verify -- the claim can pass every existing guardrail
-    (real subjects, real field, real correctly-owned citation) while
-    still being TRUE or FALSE about the actual relationship, which
-    nothing here can determine. This is exactly the case the interim
-    "comparisons never auto-publish" policy exists for: even though this
-    claim validates as "supported" by every current check, the digest
-    must still route to review, not auto-publish."""
+def test_well_grounded_comparison_still_never_auto_publishes() -> None:
+    """The interim safety policy (_never_auto_publish_comparisons) is
+    intentionally conservative: even a comparison claim that is fully
+    correct, deterministically rendered, and content-grounded by
+    construction (ADR 0005) must still route the digest to review, not
+    auto-publish. Compare_subjects() closing the swapped-value and
+    qualitative-claim fabrication classes at the source doesn't relax
+    this policy -- it's a second, independent line of defense, not a
+    stand-in for the first."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
     known_snapshot_ids: set[str] = set()
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
-        if "snap_openai" in prompt:
+        if "snap_openai_ctx" in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
-                        field="input_price_usd",
-                        value="5",
-                        quoted_span="priced at $5 per million tokens",
+                        field="context_window_tokens",
+                        value="256000",
+                        quoted_span="context window of 256,000 tokens",
                         confidence=0.9,
                     )
                 ]
             )
-        if "snap_anthropic" in prompt:
+        if "snap_anthropic_ctx" in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
-                        field="input_price_usd",
-                        value="3",
-                        quoted_span="priced at $3 per million tokens",
+                        field="context_window_tokens",
+                        value="128000",
+                        quoted_span="context window of 128,000 tokens",
                         confidence=0.9,
                     )
                 ]
             )
         return FactExtractionResponse(facts=[])
 
-    def compare_fake(system: str, prompt: str) -> ComparisonResponse:
-        # False: OpenAI (5) is actually MORE expensive than Anthropic (3).
-        # No numbers asserted, so today's numeric check can't catch it.
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="OpenAI's GPT-4o is cheaper than Anthropic's Claude.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["input_price_usd"],
-                    snapshot_ids=["snap_openai", "snap_anthropic"],
-                )
-            ]
-        )
-
     batch = [
         BatchItem(
-            _item("item_openai", "OpenAI pricing update"),
+            _item("item_openai_ctx", "GPT-4o context window"),
             _snapshot(
-                "snap_openai",
-                "item_openai",
-                "OpenAI's GPT-4o input tokens are priced at $5 per million tokens.",
+                "snap_openai_ctx",
+                "item_openai_ctx",
+                "OpenAI's GPT-4o has a context window of 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
             _item(
-                "item_anthropic",
-                "Claude pricing update",
+                "item_anthropic_ctx",
+                "Claude context window",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_anthropic",
-                "item_anthropic",
-                "Anthropic's Claude input tokens are priced at $3 per million tokens.",
+                "snap_anthropic_ctx",
+                "item_anthropic_ctx",
+                "Anthropic's Claude has a context window of 128,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
@@ -273,93 +266,83 @@ def test_qualitative_comparison_claim_never_auto_publishes_even_if_grounded() ->
         "2026-08-20",
         alias_table=[],
         extract_call_fn=extract_fake,
-        compare_call_fn=compare_fake,
+        compare_call_fn=_compare_fake(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens"),
     )
 
+    # Both subjects' context windows are first-time observations (no
+    # Change claim -- see facts.py::update_fact()'s docstring), so the
+    # only claim in the digest is the comparison itself.
     assert len(result.digest.claims) == 1
-    assert (
-        result.digest.claims[0].validation_status == "supported"
-    )  # passes every check that exists
-    assert result.digest.status == "review"  # but still never auto-published
+    assert all(c.validation_status == "supported" for c in result.digest.claims)
+    assert result.digest.status == "review"  # never auto-published, however well-grounded
 
 
-def test_swapped_comparison_never_auto_publishes_even_though_compare_subjects_accepts_it() -> None:
-    """Companion to
-    test_compare_subjects.py::test_swapped_real_values_are_not_yet_caught_known_gap.
-    That test documents that compare_subjects() itself currently accepts
-    a claim with two real numbers attributed to the wrong subject
-    (swapped). This test proves the interim safety net still holds end
-    to end: even though nothing rejects the claim on its own, the digest
-    it ends up in can never auto-publish."""
+def test_reversed_pair_proposal_still_renders_the_correct_non_swapped_text() -> None:
+    """The exact fabrication class the pre-ADR-0005 design could only
+    document as a known gap (a model attributing two real numbers to the
+    wrong subject) is now structurally impossible end to end: the model
+    can propose the pair in whichever order it likes, but it never gets
+    to say which number belongs to which subject -- code always does,
+    from the real stored values."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
     known_snapshot_ids: set[str] = set()
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
-        if "snap_openai_price" in prompt:
+        if "snap_openai_r" in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
-                        field="input_price_usd",
-                        value="5",
-                        quoted_span="priced at $5 per million tokens",
+                        field="context_window_tokens",
+                        value="256000",
+                        quoted_span="context window of 256,000 tokens",
                         confidence=0.9,
                     )
                 ]
             )
-        if "snap_anthropic_price" in prompt:
+        if "snap_anthropic_r" in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
-                        field="input_price_usd",
-                        value="3",
-                        quoted_span="priced at $3 per million tokens",
+                        field="context_window_tokens",
+                        value="128000",
+                        quoted_span="context window of 128,000 tokens",
                         confidence=0.9,
                     )
                 ]
             )
         return FactExtractionResponse(facts=[])
 
-    def compare_fake(system: str, prompt: str) -> ComparisonResponse:
-        # Real: OpenAI=5, Anthropic=3. Claim states it backwards.
-        return ComparisonResponse(
-            claims=[
-                ComparisonClaimCandidate(
-                    text="OpenAI's input price is 3; Anthropic's input price is 5.",
-                    subjects=[OPENAI_GPT4O, ANTHROPIC_CLAUDE],
-                    fields=["input_price_usd"],
-                    snapshot_ids=["snap_openai_price", "snap_anthropic_price"],
-                )
-            ]
-        )
-
     batch = [
         BatchItem(
-            _item("item_openai_price", "OpenAI pricing update"),
+            _item("item_openai_r", "GPT-4o context window"),
             _snapshot(
-                "snap_openai_price",
-                "item_openai_price",
-                "OpenAI's GPT-4o input tokens are priced at $5 per million tokens.",
+                "snap_openai_r",
+                "item_openai_r",
+                "OpenAI's GPT-4o has a context window of 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
             _item(
-                "item_anthropic_price",
-                "Claude pricing update",
+                "item_anthropic_r",
+                "Claude context window",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_anthropic_price",
-                "item_anthropic_price",
-                "Anthropic's Claude input tokens are priced at $3 per million tokens.",
+                "snap_anthropic_r",
+                "item_anthropic_r",
+                "Anthropic's Claude has a context window of 128,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
     ]
 
+    # The proposal names Anthropic first, OpenAI second -- reversed from
+    # the previous test -- yet the rendered relation must still be
+    # correct: Anthropic (128000) really is lower than OpenAI (256000).
     result = run_daily(
         store,
         known_snapshot_ids,
@@ -367,20 +350,23 @@ def test_swapped_comparison_never_auto_publishes_even_though_compare_subjects_ac
         "2026-08-20",
         alias_table=[],
         extract_call_fn=extract_fake,
-        compare_call_fn=compare_fake,
+        compare_call_fn=_compare_fake(ANTHROPIC_CLAUDE, OPENAI_GPT4O, "context_window_tokens"),
     )
 
-    assert len(result.digest.claims) == 1
+    comparison_claim = next(c for c in result.digest.claims if "than" in c.text)
+    assert comparison_claim.text == (
+        "Anthropic's Claude has a lower context window (128000) than OpenAI's GPT-4o (256000)."
+    )
     assert result.digest.status == "review"  # never auto-published, swapped or not
 
 
 def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() -> None:
-    """run_daily builds snapshots_by_id from the batch's real
-    DocumentSnapshots and threads it to assemble_digest()/validate.py --
-    a regression test for the plumbing itself (the adversarial content-
-    grounding cases are covered directly in test_validate.py; this
-    confirms run_daily actually wires it up, not just that validate.py's
-    own check works in isolation)."""
+    """run_daily builds an InMemorySnapshotResolver from the batch's real
+    DocumentSnapshots and threads it to assemble_digest()/validate.py
+    (ADR 0005) -- a regression test for the plumbing itself (the
+    adversarial content-grounding cases are covered directly in
+    test_validate.py; this confirms run_daily actually wires it up, not
+    just that validate.py's own check works in isolation)."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     known_snapshot_ids: set[str] = set()
