@@ -50,7 +50,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --all-groups --no-editable
-      - run: uv run pytest -m "not live" --cov-report=xml
+      - run: uv run pytest -m "not live" --cov-report=xml --cov-fail-under=80
 
   security:
     name: security

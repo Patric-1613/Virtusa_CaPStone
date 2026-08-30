@@ -87,4 +87,3 @@ If a check cannot run, state exactly which check and why in the pull request.
 - API and shared data contract: `docs/API_CONTRACT.md`
 - Decisions: `docs/adr/`
 - Source registry: `sources.yaml`
-

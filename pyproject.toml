@@ -85,7 +85,6 @@ addopts = [
   "--strict-markers",
   "--cov=ai_daily_digest",
   "--cov-report=term-missing",
-  "--cov-fail-under=80",
 ]
 testpaths = ["tests"]
 markers = [

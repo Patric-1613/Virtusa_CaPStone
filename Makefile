@@ -27,7 +27,7 @@ pylint:
 	$(UV_RUN) pylint src/ai_daily_digest
 
 test:
-	$(UV_RUN) pytest -m "not live"
+	$(UV_RUN) pytest -m "not live" --cov-fail-under=80
 
 security:
 	$(UV_RUN) bandit -c pyproject.toml -r src

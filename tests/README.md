@@ -6,4 +6,3 @@
 - `tests/e2e/`: a few full workflow tests.
 - `tests/live/`: opt-in source smoke tests; never part of the normal local or PR suite.
 - `tests/fixtures/`: versioned RSS, JSON, HTML, and model-response samples with origin notes.
-

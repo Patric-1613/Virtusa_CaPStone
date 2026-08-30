@@ -353,4 +353,3 @@ Give no more than ten ordered actions. Separate actions required before coding f
 Ask only questions whose answers would materially change the architecture, workflow, security, or delivery plan.
 
 Be concise where the design is sound and detailed where you identify real risk. Avoid redesigning the project merely to demonstrate expertise.
-
