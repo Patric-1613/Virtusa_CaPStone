@@ -33,48 +33,57 @@ _NUMBER_FORMATTING_RE = re.compile(r"[,$%]")
 
 # A bare token of digits (optionally with one decimal point) -- what
 # counts as "a number" for grounding purposes here. Excludes a digit run
-# immediately touching a letter on either side: product names in this
-# project routinely embed digits ("GPT-4o", "o1", "GPT-4") and must NOT
-# be read as an asserted number just because the model/subject name
-# appears in the same sentence as a real one.
+# immediately touching a letter on either side, with nothing between them
+# ("o1", the "4" in "GPT-4o") -- a name where a letter is glued directly
+# onto a digit. Hyphen-connected names ("GPT-4", "GPT-4o", "GPT-4.5") are
+# NOT handled here -- see _COMPOUND_PRODUCT_NAME_RE below for why they
+# need a different mechanism.
+_NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?(?![A-Za-z])")
+
+# A whole "<letters>-<digits>[.<digits>][<letters>]" token -- e.g.
+# "GPT-4", "GPT-4o", "GPT-4.5", "Claude-3.5", "Gemini-1.5". Every digit
+# run inside a match of this pattern is part of a product name/version,
+# never an asserted number, regardless of where within the token it
+# falls -- matched and excluded as a WHOLE SPAN in numbers_in() below,
+# rather than via a boundary lookaround anchored to each individual digit
+# run's own position.
 #
-# Also excludes a digit run preceded by "<letter>-" (e.g. the "4" in
-# "GPT-4"): a name like "GPT-4o" is already caught by the trailing-letter
-# exclusion above ("4" is immediately followed by "o"), but "GPT-4" alone
-# has nothing letter-like directly after its digit, so that exclusion
-# alone misses it -- a claim mentioning "GPT-4" could then pick up a
-# spurious "4" that makes an otherwise well-grounded claim fail its
-# content check if the cited evidence happens to spell the name
-# differently (e.g. "GPT4", no hyphen). Deliberately NOT symmetric: a
-# digit followed by "-<letter>" is a real, common, legitimate pattern in
-# this project's own data ("256,000-token context window") and must
-# stay included -- only the preceding side is excluded.
+# That span-based approach replaces an earlier lookbehind-only fix
+# (`(?<![A-Za-z]-)`) that excluded a match from STARTING at "4" in
+# "GPT-4.5", but couldn't stop the regex engine from then retrying and
+# matching "5" on its own -- nothing about "5", looked at from its own
+# position, is adjacent to a letter or a hyphen. Python's `re` module
+# only supports fixed-width lookbehind, so there's no way to ask "does
+# some letter-hyphen sequence appear an arbitrary distance back from
+# here" from inside a single number-matching regex; matching the whole
+# name+version token as its own span sidesteps that limitation entirely
+# instead of chasing further boundary special cases.
 #
-# KNOWN GAP, tracked as a follow-up issue (non-blocking, "safe"
-# direction): a COMPOUND decimal-shaped name like "GPT-4.5" still leaks
-# a spurious number. The exclusion above blocks a match from starting at
-# "4" (preceded by "T-"), but the regex engine then retries starting at
-# "5" (the digit after the decimal point), which isn't itself preceded
-# by a letter-hyphen pattern, so "5" alone gets matched as if asserted.
-# Causes occasional over-cautious rejection of a well-grounded claim,
-# never a false claim wrongly accepted -- not patched inline to avoid a
-# third increasingly specific regex exception; see the follow-up issue
-# for the intended direction (possibly structural, alongside the
-# character-offset-citation work already scoped in
-# docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e)).
-_NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?<![A-Za-z]-)\d+(?:\.\d+)?(?![A-Za-z])")
+# Deliberately requires the LETTERS to come first, before the hyphen: a
+# number followed by a hyphenated word ("256,000-token context window")
+# is a real, legitimate, already-tested number and must not match this
+# pattern -- digits, not letters, precede its hyphen.
+_COMPOUND_PRODUCT_NAME_RE = re.compile(r"[A-Za-z]+-\d+(?:\.\d+)?[A-Za-z]*")
 
 
 def numbers_in(text: str) -> set[str]:
     """Every standalone numeric token in `text`, with formatting
     differences (commas, currency/percent symbols) normalised away so
-    "$256,000" and "256000" are the same token. Digits embedded in an
-    alphanumeric name (e.g. the "4" in "GPT-4o") are not numbers for this
-    purpose -- see _NUMBER_TOKEN_RE. Used to compare "what numbers does
-    this claim assert" against "what numbers does this evidence actually
-    contain"."""
+    "$256,000" and "256000" are the same token. Digits that are really
+    part of a product name/version are not numbers for this purpose --
+    glued directly to a letter ("o1"), or hyphen-connected with letters
+    on either side ("GPT-4", "GPT-4o", "GPT-4.5") -- see
+    _NUMBER_TOKEN_RE and _COMPOUND_PRODUCT_NAME_RE. Used to compare "what
+    numbers does this claim assert" against "what numbers does this
+    evidence actually contain"."""
     stripped = _NUMBER_FORMATTING_RE.sub("", text)
-    return set(_NUMBER_TOKEN_RE.findall(stripped))
+    excluded_spans = [match.span() for match in _COMPOUND_PRODUCT_NAME_RE.finditer(stripped)]
+    numbers: set[str] = set()
+    for match in _NUMBER_TOKEN_RE.finditer(stripped):
+        if any(start <= match.start() and match.end() <= end for start, end in excluded_spans):
+            continue
+        numbers.add(match.group())
+    return numbers
 
 
 def value_supported_by_quote(value: str, quoted_span: str) -> bool:
