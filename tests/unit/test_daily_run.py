@@ -20,7 +20,7 @@ from ai_daily_digest.intelligence.daily_run import BatchItem, run_daily
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
-from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem, Subject
+from ai_daily_digest.shared.schemas import DocumentSnapshot, ExtractedFact, SourceItem, Subject
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
@@ -48,6 +48,20 @@ def _snapshot(snap_id: str, item_id: str, text: str, fetched_at: datetime) -> Do
         fetched_at=fetched_at,
         content_hash=f"sha256:{snap_id}",
         content_text=text,
+    )
+
+
+def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "seed") -> ExtractedFact:
+    return ExtractedFact(
+        id=fact_id,
+        snapshot_id=snapshot_id,
+        field=field,
+        value=value,
+        extraction_method="llm_structured_output",
+        extraction_model="claude-sonnet-5",
+        prompt_version="v1",
+        quoted_span=f"quote containing {value}",
+        confidence=0.9,
     )
 
 
@@ -515,6 +529,156 @@ def test_one_item_raising_does_not_abort_the_rest_of_the_batch() -> None:
     current = store.get_current_fact(OPENAI_GPT4O, "context_window_tokens")
     assert current is not None
     assert current.value == "128000"
+
+
+def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs() -> None:
+    """Sixth review: InMemorySnapshotResolver.add() raises ValueError on
+    a conflicting snapshot id (shared/snapshot_resolver.py) -- that must
+    be caught by _process_item()'s existing broad except, the same as any
+    other per-item failure, not crash the whole batch. Middle item's
+    snapshot id collides with one already in the caller's resolver but
+    carries different content; the item before and after it must still
+    process normally."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    store.register_subject(ANTHROPIC_CLAUDE)
+    # Both seed snapshot ids are pre-known too, exactly as a real caller
+    # threading known_snapshot_ids across daily runs would have them
+    # (see validate.py's own docstring) -- otherwise the seed citations
+    # would fail the plain existence check before content grounding is
+    # even reached.
+    known_snapshot_ids: set[str] = {"snap_openai_seed", "snap_anthropic_seed"}
+
+    # Seed each subject's "previous" value directly, as if recorded by
+    # an earlier day's run -- both seed snapshots are pre-registered in
+    # the resolver too, so the real Change claims below have citations
+    # that actually resolve.
+    seed_openai_snapshot = _snapshot(
+        "snap_openai_seed",
+        "item_openai_seed",
+        "OpenAI's context window is 128,000 tokens.",
+        datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    seed_anthropic_snapshot = _snapshot(
+        "snap_anthropic_seed",
+        "item_anthropic_seed",
+        "Anthropic's context window is 64,000 tokens.",
+        datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("context_window_tokens", "128000", "snap_openai_seed", "seed_openai"),
+        source_url="https://openai.com/a",
+        observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("context_window_tokens", "64000", "snap_anthropic_seed", "seed_anthropic"),
+        source_url="https://anthropic.com/a",
+        observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+
+    resolver = InMemorySnapshotResolver(
+        {
+            "snap_openai_seed": seed_openai_snapshot,
+            "snap_anthropic_seed": seed_anthropic_snapshot,
+            # Pre-registered under the SAME id item_conflict_2's own
+            # snapshot will use below, but with different content --
+            # that mismatch is exactly what add() must reject.
+            "snap_conflict": _snapshot(
+                "snap_conflict",
+                "item_pre_existing",
+                "Pre-existing, unrelated content already in the resolver.",
+                datetime(2026, 8, 1, tzinfo=UTC),
+            ),
+        }
+    )
+
+    def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
+        if "snap_valid_1" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="context_window_tokens",
+                        value="256000",
+                        quoted_span="increased to 256,000 tokens",
+                        confidence=0.95,
+                    )
+                ]
+            )
+        if "snap_valid_3" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="context_window_tokens",
+                        value="96000",
+                        quoted_span="increased to 96,000 tokens",
+                        confidence=0.95,
+                    )
+                ]
+            )
+        return FactExtractionResponse(facts=[])
+
+    batch = [
+        BatchItem(
+            _item("item_valid_1", "GPT-4o context window update"),
+            _snapshot(
+                "snap_valid_1",
+                "item_valid_1",
+                "OpenAI's GPT-4o context window increased to 256,000 tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+        BatchItem(
+            _item("item_conflict_2", "Unrelated update", publisher="Anthropic"),
+            _snapshot(
+                "snap_conflict",  # same id as the resolver's pre-existing entry
+                "item_conflict_2",
+                "Different content than what the resolver already has for this id.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+        BatchItem(
+            _item(
+                "item_valid_3",
+                "Claude context window update",
+                publisher="Anthropic",
+                source_id="anthropic_news",
+            ),
+            _snapshot(
+                "snap_valid_3",
+                "item_valid_3",
+                "Anthropic's Claude context window increased to 96,000 tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+    ]
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        snapshot_resolver=resolver,
+        extract_call_fn=extract_fake,
+    )
+
+    # Only the conflicting item failed -- the whole batch did not crash.
+    assert result.failed_item_ids == ["item_conflict_2"]
+    assert set(result.resolved_subjects) == {OPENAI_GPT4O, ANTHROPIC_CLAUDE}
+    assert len(result.digest.claims) == 2
+    assert all(c.validation_status == "supported" for c in result.digest.claims)
+    claim_texts = {c.text for c in result.digest.claims}
+    assert any("256000" in text for text in claim_texts)
+    assert any("96000" in text for text in claim_texts)
+    # The resolver's original, pre-existing content for "snap_conflict"
+    # survived the rejected conflicting add() untouched.
+    conflict_content = resolver.get_content("snap_conflict")
+    assert conflict_content is not None
+    assert (
+        conflict_content.content_text == "Pre-existing, unrelated content already in the resolver."
+    )
 
 
 def test_unresolvable_item_is_recorded_not_dropped() -> None:

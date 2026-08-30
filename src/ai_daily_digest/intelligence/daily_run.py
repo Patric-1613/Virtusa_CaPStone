@@ -136,11 +136,16 @@ def _process_item(
     A real, persistent-store-backed resolver may already have this
     snapshot's content (or manage its own ingestion path entirely) and
     have no add() at all -- only register when the resolver actually
-    supports it."""
-    known_snapshot_ids.add(entry.snapshot.id)
-    if hasattr(snapshot_resolver, "add"):
-        snapshot_resolver.add(entry.snapshot)
+    supports it. Registration happens INSIDE the try block below,
+    deliberately: InMemorySnapshotResolver.add() raises ValueError on a
+    conflicting snapshot id (see shared/snapshot_resolver.py), and that
+    must be caught the same broad way as any other per-item failure --
+    one item with a bad/conflicting snapshot must not crash the whole
+    batch any more than a transient model failure would."""
     try:
+        known_snapshot_ids.add(entry.snapshot.id)
+        if hasattr(snapshot_resolver, "add"):
+            snapshot_resolver.add(entry.snapshot)
         result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("daily_run_item_failed item_id=%s", entry.item.id)
