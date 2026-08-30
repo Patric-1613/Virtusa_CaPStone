@@ -16,6 +16,7 @@ from ai_daily_digest.shared.schemas import (
     FactObservation,
     Subject,
 )
+from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
 
 KNOWN = {"snap_1", "snap_2"}
 
@@ -76,16 +77,17 @@ def test_citation_validity_uses_real_content_grounding_when_available() -> None:
     ground the claim's numbers is NOT counted as valid, the same as the
     real publish-time gate would score it."""
     digest = _digest([_claim("The price increased to 999999.", ["snap_1"], "c1")])
-    snapshots_by_id = {"snap_1": _snapshot("snap_1", "The price increased to 5.")}
-    assert citation_validity(digest, KNOWN, snapshots_by_id=snapshots_by_id) == 0.0
-    assert unsupported_claim_count(digest, KNOWN, snapshots_by_id=snapshots_by_id) == 1
+    resolver = InMemorySnapshotResolver(
+        {"snap_1": _snapshot("snap_1", "The price increased to 5.")}
+    )
+    assert citation_validity(digest, KNOWN, snapshot_resolver=resolver) == 0.0
+    assert unsupported_claim_count(digest, KNOWN, snapshot_resolver=resolver) == 1
 
 
-def test_citation_validity_without_snapshots_by_id_stays_existence_only() -> None:
-    """Omitting snapshots_by_id keeps the old, weaker existence-only
-    behavior -- callers that don't have snapshot content (there aren't
-    any left in this codebase, but the parameter is optional) aren't
-    forced to provide it."""
+def test_citation_validity_without_a_snapshot_resolver_stays_existence_only() -> None:
+    """Omitting snapshot_resolver keeps the old, weaker existence-only
+    behavior -- callers that don't have snapshot content aren't forced to
+    provide one."""
     digest = _digest([_claim("The price increased to 999999.", ["snap_1"], "c1")])
     assert citation_validity(digest, KNOWN) == 1.0
 

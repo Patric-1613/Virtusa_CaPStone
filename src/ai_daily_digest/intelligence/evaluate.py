@@ -17,7 +17,8 @@ from pathlib import Path
 
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
 from ai_daily_digest.intelligence.validate import validate_claim
-from ai_daily_digest.shared.schemas import Change, Digest, DocumentSnapshot
+from ai_daily_digest.shared.schemas import Change, Digest
+from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver, SnapshotResolver
 
 # CWD-rooted, not __file__-rooted -- see loaders.py::find_repo_root's
 # docstring for why (this had the exact same non-editable-install bug
@@ -30,11 +31,11 @@ def citation_validity(
     digest: Digest,
     known_snapshot_ids: set[str],
     *,
-    snapshots_by_id: dict[str, DocumentSnapshot] | None = None,
+    snapshot_resolver: SnapshotResolver | None = None,
 ) -> float:
     """Share of claims that validate_claim() marks "supported" -- reuses
     the real production check (citation existence, plus content
-    grounding when `snapshots_by_id` is supplied) rather than
+    grounding when `snapshot_resolver` is supplied) rather than
     re-implementing an existence-only approximation of it, which
     previously let this metric read 100% on claims the real gate would
     have rejected. 1.0 for an empty digest — vacuously true, there are no
@@ -44,7 +45,9 @@ def citation_validity(
     valid = sum(
         1
         for c in digest.claims
-        if validate_claim(c, known_snapshot_ids, snapshots_by_id=snapshots_by_id).validation_status
+        if validate_claim(
+            c, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+        ).validation_status
         == "supported"
     )
     return valid / len(digest.claims)
@@ -54,7 +57,7 @@ def unsupported_claim_count(
     digest: Digest,
     known_snapshot_ids: set[str],
     *,
-    snapshots_by_id: dict[str, DocumentSnapshot] | None = None,
+    snapshot_resolver: SnapshotResolver | None = None,
 ) -> int:
     """The target is zero — this is the number that goes in the report,
     per the original project design. Same real-check reuse as
@@ -62,7 +65,9 @@ def unsupported_claim_count(
     return sum(
         1
         for c in digest.claims
-        if validate_claim(c, known_snapshot_ids, snapshots_by_id=snapshots_by_id).validation_status
+        if validate_claim(
+            c, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+        ).validation_status
         != "supported"
     )
 
@@ -124,11 +129,11 @@ def run_eval(
     expected_changes: list[Change],
     known_snapshot_ids: set[str],
     *,
-    snapshots_by_id: dict[str, DocumentSnapshot] | None = None,
+    snapshot_resolver: SnapshotResolver | None = None,
 ) -> EvalResult:
     """digest/detected_changes: what the pipeline actually produced.
     expected_changes: the gold reference for this test set.
-    snapshots_by_id: passed straight through to citation_validity()/
+    snapshot_resolver: passed straight through to citation_validity()/
     unsupported_claim_count() for the content-grounding check.
 
     NOTE on "frozen test set": there is no real held-out gold test set
@@ -143,10 +148,10 @@ def run_eval(
     """
     return EvalResult(
         citation_validity=citation_validity(
-            digest, known_snapshot_ids, snapshots_by_id=snapshots_by_id
+            digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver
         ),
         unsupported_claims=unsupported_claim_count(
-            digest, known_snapshot_ids, snapshots_by_id=snapshots_by_id
+            digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver
         ),
         duplicate_rate=duplicate_rate(digest),
         change_recall=change_recall(detected_changes, expected_changes),
@@ -164,11 +169,13 @@ def main() -> None:
     digests = loader.load_digests()
 
     known_snapshot_ids = {s.id for s in snapshots}
-    snapshots_by_id = {s.id: s for s in snapshots}
+    snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
     changes = [change for cs in change_sets for change in cs.changes]
     digest = digests[0] if digests else Digest(id="none", digest_date="", status="draft", title="")
 
-    result = run_eval(digest, changes, changes, known_snapshot_ids, snapshots_by_id=snapshots_by_id)
+    result = run_eval(
+        digest, changes, changes, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+    )
 
     print("| Run | Citation validity | Unsupported claims | Duplicate rate | Change recall |")
     print("|---|---|---|---|---|")

@@ -28,7 +28,7 @@ from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.graph import PipelineState, build_graph
 from ai_daily_digest.intelligence.resolve import SubjectAlias
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
-from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
+from ai_daily_digest.shared.attributes import COMPARISON_RULES
 from ai_daily_digest.shared.schemas import (
     Change,
     ChangeSet,
@@ -38,6 +38,7 @@ from ai_daily_digest.shared.schemas import (
     SourceItem,
     Subject,
 )
+from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 logger = logging.getLogger("intelligence.daily_run")
 
@@ -78,28 +79,37 @@ class _BatchAccumulator:
     seen_subjects: set[Subject] = field(default_factory=set)
     unresolved_item_ids: list[str] = field(default_factory=list)
     failed_item_ids: list[str] = field(default_factory=list)
-    # Real DocumentSnapshot content for this batch, keyed by id -- passed
-    # to assemble_digest()/validate.py so the final publish gate can
-    # check that a claim's asserted numbers are actually grounded in the
-    # snapshot content it cites, not just that the citation id exists.
-    # See validate.py's module docstring for why this is only available
-    # for the current batch, not every historical snapshot.
-    snapshots_by_id: dict[str, DocumentSnapshot] = field(default_factory=dict)
 
 
 def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[str]) -> Digest:
-    """INTERIM SAFETY POLICY (per review): compare_subjects()'s numeric
-    grounding check only catches a claim that states a specific WRONG
-    number -- it does nothing for a qualitative/relational claim like
-    "OpenAI is cheaper than Anthropic" (no number to check at all) or a
-    claim that swaps which number belongs to which subject (both numbers
-    are real, just attributed backwards -- see compare_subjects.py's own
-    docstring for the exact gap). Until a structured, relation-aware
-    comparison check exists, no cross-subject comparison claim may cause
-    a digest to auto-publish -- it can still be part of a "review"
+    """INTERIM SAFETY POLICY, kept in force by ADR 0005 (docs/adr/0005-
+    structured-comparison-and-snapshot-resolution.md): no cross-subject
+    comparison claim may cause a digest to auto-publish, regardless of
+    its own validation status -- it can still be part of a "review"
     digest, same as any other unsupported claim, but never nudge a
     digest into "published" on its own. Mirrors validate.py's own rule
-    that a check can only ever veto a publish, never grant one."""
+    that a check can only ever veto a publish, never grant one.
+
+    Pre-ADR-0005, this existed because compare_subjects()'s numeric
+    grounding check only caught a claim stating a specific WRONG number
+    -- it did nothing for a qualitative/relational claim like "OpenAI is
+    cheaper than Anthropic" (no number to check at all), or a claim that
+    swapped which number belonged to which subject (both numbers real,
+    just attributed backwards).
+
+    ADR 0005's structured `ComparisonAssertion` + deterministic rendering
+    (compare_subjects.py) closes both of those fabrication classes at the
+    root: the model can no longer author a value, a relation, or any
+    prose at all, so a swapped or invented comparison can no longer reach
+    a claim's text in the first place. That does NOT retire this
+    function. ADR 0005 explicitly keeps comparison auto-publish disabled
+    regardless -- deterministic rendering removes the specific failure
+    modes this policy was originally written for, but comparison output
+    has not yet been proven correct in practice at scale, and relaxing
+    this guardrail is a deliberate, separate decision for a future review
+    step, not an automatic consequence of this refactor. Every
+    cross-subject comparison still requires human review until that
+    decision is made."""
     if comparison_claim_ids and digest.status == "published":
         return digest.model_copy(update={"status": "review"})
     return digest
@@ -109,6 +119,7 @@ def _process_item(
     entry: BatchItem,
     graph: CompiledStateGraph[PipelineState, Any, PipelineState, PipelineState],
     known_snapshot_ids: set[str],
+    snapshot_resolver: SnapshotResolver,
     acc: _BatchAccumulator,
 ) -> None:
     """Runs the per-item graph for one BatchItem and folds its result
@@ -117,10 +128,24 @@ def _process_item(
     caught deliberately broadly: whatever failed, this one item's
     failure must not silently discard the whole batch's already-computed
     claims -- recorded in acc.failed_item_ids and logged with a
-    traceback instead, so it's still diagnosable, not swallowed."""
-    known_snapshot_ids.add(entry.snapshot.id)
-    acc.snapshots_by_id[entry.snapshot.id] = entry.snapshot
+    traceback instead, so it's still diagnosable, not swallowed.
+
+    `snapshot_resolver` is caller-owned (see run_daily()'s docstring) --
+    registering this item's snapshot into it is best-effort: the
+    SnapshotResolver Protocol only guarantees get_content(), not add().
+    A real, persistent-store-backed resolver may already have this
+    snapshot's content (or manage its own ingestion path entirely) and
+    have no add() at all -- only register when the resolver actually
+    supports it. Registration happens INSIDE the try block below,
+    deliberately: InMemorySnapshotResolver.add() raises ValueError on a
+    conflicting snapshot id (see shared/snapshot_resolver.py), and that
+    must be caught the same broad way as any other per-item failure --
+    one item with a bad/conflicting snapshot must not crash the whole
+    batch any more than a transient model failure would."""
     try:
+        known_snapshot_ids.add(entry.snapshot.id)
+        if hasattr(snapshot_resolver, "add"):
+            snapshot_resolver.add(entry.snapshot)
         result = graph.invoke({"item": entry.item, "snapshot": entry.snapshot})
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("daily_run_item_failed item_id=%s", entry.item.id)
@@ -139,11 +164,12 @@ def _process_item(
 
 
 def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
-    # 4 required (the batch to run and where to accumulate state) + 6
-    # optional keyword-only DI/config params -- this is the orchestrator's
-    # public entry point, and the *_call_fn params exist specifically so
-    # every LLM call site downstream stays independently testable (see
-    # this file's other tests' pattern); collapsing them into one options
+    # 4 required positional (the batch to run and where to accumulate
+    # state) + 1 required keyword-only (snapshot_resolver) + 5 optional
+    # keyword-only DI/config params -- this is the orchestrator's public
+    # entry point, and the *_call_fn params exist specifically so every
+    # LLM call site downstream stays independently testable (see this
+    # file's other tests' pattern); collapsing them into one options
     # object would just move the same surface area, not reduce it. The
     # local-variable count pylint also flags here is dominated by these
     # same 10 parameters (they count toward it too), not by hidden
@@ -155,6 +181,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     batch: list[BatchItem],
     digest_date: str,
     *,
+    snapshot_resolver: SnapshotResolver,
     comparison_fields: list[str] | None = None,
     alias_table: list[SubjectAlias] | None = None,
     resolve_llm_call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
@@ -167,13 +194,27 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     cross-subject comparison pass over whichever subjects the batch
     actually touched, then assembles everything into one Digest.
 
-    `store` and `known_snapshot_ids` are both mutated / owned across
-    calls the same way — the caller threads the same two objects into
-    tomorrow's run so history and citation validity both carry over. An
-    item that fails to resolve (even after the LLM fallback) is recorded
-    in `unresolved_item_ids`, not silently dropped. An item whose
-    processing *raises* (a transient model failure, a malformed response
-    that exhausts `call_structured`'s retry, ...) is recorded in
+    `store`, `known_snapshot_ids`, and `snapshot_resolver` are all
+    mutated / owned across calls the same way — the caller threads the
+    same objects into tomorrow's run so history, citation validity, and
+    resolvable snapshot content all carry over. `snapshot_resolver` is
+    REQUIRED and caller-supplied, deliberately not built internally here:
+    a resolver's usefulness comes entirely from what it can resolve
+    beyond just this batch (e.g. a real ingestion-store-backed resolver
+    spanning many days), so run_daily() must never quietly construct its
+    own batch-scoped one and discard the caller's broader view. Pass
+    `InMemorySnapshotResolver()` for a batch-scoped resolver equivalent
+    to this function's old internal behavior. Each processed item is
+    registered into it via `.add()` when the resolver supports that (see
+    `_process_item()`) — a resolver Protocol only guarantees
+    `get_content()`, so a resolver with no `.add()` (e.g. one backed
+    entirely by ingestion's own storage) is left to manage its own
+    contents.
+
+    An item that fails to resolve (even after the LLM fallback) is
+    recorded in `unresolved_item_ids`, not silently dropped. An item
+    whose processing *raises* (a transient model failure, a malformed
+    response that exhausts `call_structured`'s retry, ...) is recorded in
     `failed_item_ids` and the rest of the batch still runs — one item's
     failure must not cost every other item's already-computed claims for
     the day, the same principle ingestion applies to its own sources.
@@ -196,10 +237,14 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
 
     acc = _BatchAccumulator()
     for entry in batch:
-        _process_item(entry, graph, known_snapshot_ids, acc)
+        _process_item(entry, graph, known_snapshot_ids, snapshot_resolver, acc)
 
     comparison_claim_ids: set[str] = set()
-    fields = comparison_fields if comparison_fields is not None else list(COMPARABLE_FIELDS)
+    # Default to only the fields with a registered ComparisonRule (ADR
+    # 0005 point 2, Phase 1: context_window_tokens only) -- there is no
+    # point asking the model to consider a field compare_subjects() can
+    # never resolve to a claim regardless of what it proposes.
+    fields = comparison_fields if comparison_fields is not None else list(COMPARISON_RULES)
     if fields and len(acc.resolved_subjects) >= 2:
         try:
             rows = build_fact_table(store, acc.resolved_subjects, fields)
@@ -215,7 +260,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
         digest_date,
         acc.claims,
         known_snapshot_ids=known_snapshot_ids,
-        snapshots_by_id=acc.snapshots_by_id,
+        snapshot_resolver=snapshot_resolver,
         title=title,
     )
     digest = _never_auto_publish_comparisons(digest, comparison_claim_ids)

@@ -21,10 +21,14 @@ that cover it.
   general knowledge.
 - **Every `DigestClaim` needs a citation resolvable to a real snapshot
   id.** Enforce this in code (`validate.py`), never rely on the prompt
-  alone to behave. Existence alone is not enough — when the caller has
-  real snapshot content (`snapshots_by_id`), `validate.py` also checks
-  that every number the claim asserts is actually grounded in the
-  content of the snapshot(s) it cites (`intelligence/grounding.py`).
+  alone to behave. Existence alone is not enough — when the caller has a
+  `SnapshotResolver` (`shared/snapshot_resolver.py`, ADR 0005),
+  `validate.py` also checks that every number the claim asserts is
+  actually grounded in the content of the snapshot(s) it cites
+  (`intelligence/grounding.py`). The final publish gate
+  (`validate_digest`/`publish_digest`) requires a real resolver — no
+  `None` fallback to existence-only checking; `graph.py`'s per-item node
+  is the one exception, since it never authorizes publication itself.
 - **`quoted_span` must actually appear in the source text, AND the
   extracted `value` must actually be supported by that quote** — both
   checked in code (`extract_facts.py`); a fabricated span or a fabricated
@@ -55,7 +59,7 @@ checks, not from a sampling knob.
 |---|---|---|
 | `resolve_llm.py` | Haiku 4.5 | Only runs on the residue after deterministic alias matching fails/is ambiguous. Constrained JSON. Confidence < 0.6, or a proposed subject not in the candidate list, → logged for review, never auto-merged. |
 | `extract_facts.py` | Sonnet 5 | Must quote an exact source span, not paraphrase — Haiku tends to paraphrase, which breaks the grounding check. |
-| `compare_subjects.py` | Sonnet 5 | Reads the fact table only, never raw article text. Sparse data → abstention, enforced in code (unknown subject/field/citation-ownership/fabricated-value all get dropped). |
+| `compare_subjects.py` | Sonnet 5 | Reads the fact table only, never raw article text, and proposes structured `(subject_a, subject_b, field)` triples only — never prose or numbers (ADR 0005). Code alone looks up values and renders the claim; same-subject/unknown-subject/non-comparable-field/undisclosed-value/malformed-value candidates are all dropped in code, never guessed at. |
 
 `facts.py`'s change detection and `draft_claims.py`'s single-field claim
 drafting are deliberately **not** LLM calls — see

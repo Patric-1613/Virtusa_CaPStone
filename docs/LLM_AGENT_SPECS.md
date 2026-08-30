@@ -114,7 +114,7 @@ worked example with fakes standing in for all three.
 - **Output**: one `DigestClaim`, `validation_status="pending"`, citing
   the change's current snapshot id (and previous, when it exists).
 
-## compare_subjects — Draft (cross-subject comparisons)
+## compare_subjects — Compare (cross-subject comparisons, ADR 0005)
 
 - **File**: `intelligence/compare_subjects.py`, prompt
   `intelligence/prompts/compare_subjects.txt`
@@ -125,27 +125,52 @@ worked example with fakes standing in for all three.
 - **Output**: zero or more `DigestClaim`, one per accepted comparison.
 - **Model**: Sonnet 5. No `temperature` control — see resolve_llm's note
   above.
-- **Guardrail** (all enforced in code, not just the prompt): every
-  candidate must name exactly two subjects that exist in the table,
-  reference ≥1 field that exists in the table, cite ≥1 snapshot id that
-  exists in the table AND is actually owned by one of the candidate's own
-  (subject, field) pairs (not just real anywhere in the table), and every
-  number the candidate's own claim text asserts must match a real value
-  from the rows it's comparing — a citation being real and correctly
-  owned still doesn't prove the claim's prose states the right number.
-  A sparse table should yield an empty claims list (abstention) —
-  verified by an adversarial test
+- **ADR 0005: the model no longer writes claim prose or numbers at all.**
+  It proposes structured `ComparisonAssertion(subject_a, subject_b,
+  field)` triples only — which two subjects and which field are worth
+  comparing. Code alone looks up both subjects' real stored values,
+  applies the field's `ComparisonRule` (`shared/attributes.py`), and
+  renders the claim text deterministically — the same pattern
+  `draft_claims.py` already uses for single-subject changes. This closes
+  the two fabrication classes a free-text-plus-numeric-check design could
+  not: a claim asserting no number at all (nothing for a numeric check to
+  verify), and a claim stating two real numbers attributed to the wrong
+  subject (swapped) — a check confirming both numbers appear *somewhere*
+  among real values can't detect a swap, but code deciding which number
+  goes with which subject makes the swap structurally impossible.
+- **Phase 1 scope**: only `context_window_tokens` has a registered
+  `ComparisonRule` (`shared/attributes.py::COMPARISON_RULES`) — every
+  other field is excluded from comparison until its own representation
+  (currency/unit/basis for prices, benchmark name/conditions for scores,
+  set semantics for regions/modalities) is designed via its own follow-up
+  ADR. Not a bug — a deliberate, disclosed scope limit.
+- **Guardrail** (all enforced in code, not the prompt): an assertion
+  naming the same subject twice, an unknown subject, a field with no
+  registered `ComparisonRule`, a subject/field with no disclosed value,
+  or a stored value the rule can't parse are all dropped and logged —
+  never guessed at, and a malformed value drops only that one candidate,
+  never the rest of the batch. Reversed-pair duplicates (same two
+  subjects, same field, either order) are deduplicated, keyed by
+  `(sorted((subject_a, subject_b)), field)` — the field is part of the
+  key, so a different field for the same pair is never treated as a
+  duplicate. A sparse table should yield an empty assertions list
+  (abstention) — verified by an adversarial test
   (`tests/unit/test_compare_subjects.py`).
 - **Failure mode**: no retry loop of its own (rides `call_structured`'s
-  validate→retry-once→fail-loudly); a candidate that fails a guardrail is
-  dropped and logged, not retried or "corrected".
+  validate→retry-once→fail-loudly); an assertion that fails a guardrail
+  is dropped and logged, not retried or "corrected".
 
 ## validate_digest / publish_digest — Validate (deterministic, no LLM)
 
 - **File**: `intelligence/validate.py`
-- **Input**: a `Digest`, the set of known/real snapshot ids, and
-  (optionally) `snapshots_by_id: dict[str, DocumentSnapshot]` — real
-  snapshot content, when the caller has it.
+- **Input**: a `Digest`, the set of known/real snapshot ids, and a
+  `snapshot_resolver: SnapshotResolver` (`shared/snapshot_resolver.py`,
+  ADR 0005) — typed access to real snapshot content, not a raw dict.
+  **Required** (no default) on `validate_digest`/`publish_digest` — the
+  actual final gate before a digest can auto-publish, reached from
+  `daily_run.py`, must never silently degrade to existence-only checking
+  just because it forgot to pass one. `validate_claim()` keeps it
+  optional (default `None`) since not every caller has one — see below.
 - **Output**: `validate_digest` sets each claim's `validation_status`
   and forces `status="review"` if anything is unsupported — it never
   upgrades to `"published"` itself. `publish_digest` is the only place a
@@ -154,15 +179,18 @@ worked example with fakes standing in for all three.
 - **Guardrail**: a claim with zero citations is always unsupported,
   regardless of how the text reads. Citation *existence* alone was
   flagged in review as insufficient — a claim can cite a real snapshot
-  id that has nothing to do with what it says. When `snapshots_by_id` is
-  supplied, a second check also runs: every number the claim's text
+  id that has nothing to do with what it says. When `snapshot_resolver`
+  is supplied, a second check also runs: every number the claim's text
   asserts must actually appear in the content of the snapshot(s) it
-  cites (see `intelligence/grounding.py`). `daily_run.py` supplies this
-  for the current batch's own snapshots; `graph.py`'s per-item `validate`
-  node does not (it only has the current item's own snapshot, not every
-  historical one a Change might cite) and keeps the existence-only check
-  — documented as a known, deliberate limitation in that node's own
-  docstring, not a regression.
+  cites (see `intelligence/grounding.py`) — and a citation whose content
+  can't be resolved is never treated as proof of support (routes to
+  "review", not silently trusted). `daily_run.py` supplies an
+  `InMemorySnapshotResolver` built from the current batch's own
+  snapshots; `graph.py`'s per-item `validate` node does not (it only has
+  the current item's own snapshot, not every historical one a Change
+  might cite, and it never authorizes publication by itself anyway) and
+  keeps the existence-only check — documented as a known, deliberate
+  limitation in that node's own docstring, not a regression.
 
 ## Orchestration — Classify → Extract → Compare → Draft → Validate
 
@@ -221,9 +249,10 @@ worked example with fakes standing in for all three.
   aggregates (`intelligence/change_sets.py`) with `change_set_id`
   backfilled onto each Change (`FactStore.update_fact()` deliberately
   leaves this blank; `run_daily` is the caller that fills it in).
-- Also builds `snapshots_by_id` from the batch's real `DocumentSnapshot`s
-  and threads it to `assemble_digest`/`validate.py` for the content-
-  grounding check described above.
+- Also builds an `InMemorySnapshotResolver` from the batch's real
+  `DocumentSnapshot`s and threads it to `assemble_digest`/`validate.py`
+  (a required parameter there, per ADR 0005) for the content-grounding
+  check described above.
 - This is the piece that turns "here are today's items" into an actual
   `Digest` — see `tests/unit/test_daily_run.py` for a full 3-item batch
   (a first observation, a change, and a cross-subject comparison) run
