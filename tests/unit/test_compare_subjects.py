@@ -27,6 +27,7 @@ from ai_daily_digest.shared.schemas import ExtractedFact, Subject
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
+GOOGLE_GEMINI = Subject(company="Google", product="Gemini")
 
 
 def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "f1") -> ExtractedFact:
@@ -235,8 +236,11 @@ def test_malformed_stored_value_drops_only_that_candidate(
     """ADR 0005 point 2: a stored value the field's ComparisonRule can't
     parse must fail per-candidate (dropped, logged), never abort the rest
     of the comparison pass. Proven here with two assertions in one
-    response: the malformed one is dropped, the well-formed one still
-    produces a claim."""
+    response: the malformed one (OpenAI vs. Anthropic) is dropped, and a
+    second, otherwise-unrelated, well-formed assertion between two OTHER
+    valid subjects (Anthropic vs. Google) still resolves to a real
+    DigestClaim -- not just "doesn't raise", but genuinely produces
+    correct output for the candidate that was fine all along."""
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
@@ -250,8 +254,15 @@ def test_malformed_stored_value_drops_only_that_candidate(
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
     )
-    intruder = Subject(company="MadeUp Inc", product="Ghost Model")
-    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
+    store.update_fact(
+        GOOGLE_GEMINI,
+        _fact("context_window_tokens", "256000", "snap_google_ctx", "f3"),
+        source_url="https://google.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    rows = build_fact_table(
+        store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE, GOOGLE_GEMINI], ["context_window_tokens"]
+    )
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return ComparisonResponse(
@@ -261,11 +272,15 @@ def test_malformed_stored_value_drops_only_that_candidate(
                     subject_b=ANTHROPIC_CLAUDE,
                     field="context_window_tokens",
                 ),
-                # A second, unrelated assertion naming a subject that was
-                # never in the table at all -- proves the malformed-value
-                # failure above didn't abort the rest of the batch.
+                # A second, unrelated, well-formed assertion between two
+                # OTHER valid subjects -- proves the malformed-value
+                # failure above didn't abort the rest of the batch, and
+                # that the survivor is genuinely usable, not just absent
+                # from an exception.
                 ComparisonAssertion(
-                    subject_a=ANTHROPIC_CLAUDE, subject_b=intruder, field="context_window_tokens"
+                    subject_a=ANTHROPIC_CLAUDE,
+                    subject_b=GOOGLE_GEMINI,
+                    field="context_window_tokens",
                 ),
             ]
         )
@@ -273,11 +288,15 @@ def test_malformed_stored_value_drops_only_that_candidate(
     with caplog.at_level(logging.WARNING):
         claims = compare_subjects(rows, call_fn=fake_call)
 
-    # OpenAI's malformed value is dropped; the second assertion is also
-    # rejected (intruder was never in the table) -- both independently,
-    # no exception propagates and the call returns normally.
-    assert claims == []
+    # OpenAI's malformed value drops that one candidate; Anthropic vs.
+    # Google is well-formed throughout and survives as a real claim.
     assert "comparison_malformed_value" in caplog.text
+    assert len(claims) == 1
+    assert set(claims[0].citation_snapshot_ids) == {"snap_anthropic_ctx", "snap_google_ctx"}
+    assert claims[0].text == (
+        "Anthropic's Claude has a lower context window (128000) than Google's Gemini (256000)."
+    )
+    assert claims[0].validation_status == "pending"
 
 
 def test_reversed_pair_duplicate_is_deduped() -> None:

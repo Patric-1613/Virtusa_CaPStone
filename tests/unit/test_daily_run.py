@@ -13,12 +13,15 @@ prove daily_run.py wires everything together end to end."""
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+import pytest
+
 from ai_daily_digest.intelligence.compare_subjects import ComparisonAssertion, ComparisonResponse
 from ai_daily_digest.intelligence.daily_run import BatchItem, run_daily
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem, Subject
+from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
@@ -159,6 +162,7 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=extract_fake,
         compare_call_fn=_compare_fake(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens"),
     )
@@ -265,6 +269,7 @@ def test_well_grounded_comparison_still_never_auto_publishes() -> None:
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=extract_fake,
         compare_call_fn=_compare_fake(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens"),
     )
@@ -349,6 +354,7 @@ def test_reversed_pair_proposal_still_renders_the_correct_non_swapped_text() -> 
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=extract_fake,
         compare_call_fn=_compare_fake(ANTHROPIC_CLAUDE, OPENAI_GPT4O, "context_window_tokens"),
     )
@@ -432,6 +438,7 @@ def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() 
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=extract_fake,
     )
 
@@ -498,6 +505,7 @@ def test_one_item_raising_does_not_abort_the_rest_of_the_batch() -> None:
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=extract_fake,
     )
 
@@ -534,6 +542,7 @@ def test_unresolvable_item_is_recorded_not_dropped() -> None:
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         resolve_llm_call_fn=resolve_fake,
     )
 
@@ -566,6 +575,7 @@ def test_comparison_skipped_with_fewer_than_two_resolved_subjects() -> None:
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -602,6 +612,7 @@ def test_known_snapshot_ids_accumulate_across_calls() -> None:
         batch,
         "2026-08-20",
         alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -609,3 +620,99 @@ def test_known_snapshot_ids_accumulate_across_calls() -> None:
 
     assert "snap_from_a_previous_run" in known_snapshot_ids
     assert "snap_launch" in known_snapshot_ids
+
+
+def test_snapshot_resolver_is_required() -> None:
+    """Fourth review, blocker 1: run_daily() must not build its own
+    InMemorySnapshotResolver internally -- a resolver's usefulness comes
+    from covering more than just this one batch (e.g. a real, persistent
+    ingestion-store-backed resolver spanning many days), so the caller
+    must supply one explicitly. Proven here by the call itself failing,
+    not by behavior."""
+    store = FactStore()
+    known_snapshot_ids: set[str] = set()
+    batch: list[BatchItem] = []
+
+    with pytest.raises(TypeError):
+        run_daily(store, known_snapshot_ids, batch, "2026-08-20", alias_table=[])  # type: ignore[call-arg]
+
+
+def test_caller_supplied_snapshot_resolver_is_reused_not_replaced() -> None:
+    """run_daily() must register each item's snapshot into the CALLER's
+    own resolver instance (via .add(), when supported) rather than
+    building and discarding its own -- proven by passing a resolver in,
+    then confirming that same instance can resolve a batch snapshot
+    afterward, with no separate internal resolver involved."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    known_snapshot_ids: set[str] = set()
+    resolver = InMemorySnapshotResolver()
+
+    batch = [
+        BatchItem(
+            _item("item_launch", "Introducing GPT-4o"),
+            _snapshot(
+                "snap_launch",
+                "item_launch",
+                "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        )
+    ]
+
+    run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        snapshot_resolver=resolver,
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "128000", "128,000 token context window"
+        ),
+    )
+
+    assert resolver.get_content("snap_launch") is not None
+
+
+def test_resolver_without_add_is_left_to_manage_its_own_contents() -> None:
+    """A SnapshotResolver Protocol only guarantees get_content() -- a
+    real, persistent-store-backed resolver may have no add() at all
+    (e.g. it's populated by ingestion's own write path, not by
+    daily_run.py). run_daily() must not assume every resolver supports
+    registration; it should run to completion regardless, simply leaving
+    such a resolver's own contents unchanged."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    known_snapshot_ids: set[str] = set()
+
+    class _ReadOnlyResolver:
+        def get_content(self, snapshot_id: str) -> DocumentSnapshot | None:
+            return None
+
+    batch = [
+        BatchItem(
+            _item("item_launch", "Introducing GPT-4o"),
+            _snapshot(
+                "snap_launch",
+                "item_launch",
+                "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        )
+    ]
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        snapshot_resolver=_ReadOnlyResolver(),
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "128000", "128,000 token context window"
+        ),
+    )
+
+    # No exception from the missing add() -- the run completes normally.
+    assert result.resolved_subjects == [OPENAI_GPT4O]

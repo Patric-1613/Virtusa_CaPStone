@@ -10,14 +10,17 @@ Two independent checks, both required for "supported":
      what the review flagged as insufficient: a claim can cite a real,
      existing snapshot id that has nothing to do with what the claim
      actually says.
-  2. Content grounding (only when `snapshot_resolver` is supplied) —
-     every number the claim's text asserts must actually appear in the
-     content of the snapshot(s) it cites. This is what catches a claim
-     citing a real, legitimate snapshot id while stating a value that
-     snapshot's text never actually contains. See intelligence/grounding.py
-     for what this check does and does not prove — it is not a full
-     semantic entailment/contradiction check, only a numeric-grounding
-     floor.
+  2. Content grounding (only when `snapshot_resolver` is supplied) — two
+     parts, in order: (a) every cited snapshot's content must actually be
+     resolvable at all -- fails closed even for a claim with no numbers
+     in it, since an unresolvable citation is never distinguishable from
+     a fabricated one; (b) for a claim that does assert numbers, every
+     one of them must actually appear in the content of the snapshot(s)
+     it cites. (b) is what catches a claim citing a real, legitimate
+     snapshot id while stating a value that snapshot's text never
+     actually contains. See intelligence/grounding.py for what this
+     check does and does not prove — it is not a full semantic
+     entailment/contradiction check, only a numeric-grounding floor.
 
 ADR 0005: `snapshot_resolver` is a typed `SnapshotResolver`
 (`shared/snapshot_resolver.py`), not a raw dict — the seam a real
@@ -55,19 +58,26 @@ from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 
 def _claim_numbers_are_grounded(claim: DigestClaim, snapshot_resolver: SnapshotResolver) -> bool:
-    """Every number claim.text asserts must appear in the combined
-    content of its cited snapshots. If content for ANY cited snapshot
-    can't be resolved, the claim is NOT grounded -- existence of a
-    snapshot id is never treated as proof its content supports the
-    claim (see this module's docstring). A claim asserting no numbers at
-    all (e.g. "Anthropic has not disclosed its price") has nothing this
-    check can verify either way, so it passes."""
-    claim_numbers = numbers_in(claim.text)
-    if not claim_numbers:
-        return True
+    """Resolution comes FIRST, before even looking at claim.text: if
+    content for ANY cited snapshot can't be resolved, the claim is NOT
+    grounded, full stop -- existence of a snapshot id is never treated
+    as proof its content supports the claim (see this module's
+    docstring), and that must hold for a number-free claim exactly the
+    same as a numeric one. A claim like "Anthropic has not disclosed its
+    price" citing a snapshot the resolver can't actually produce is not
+    "vacuously fine" -- there is no way to confirm that citation is even
+    real content, so it fails closed like anything else with an
+    unresolvable citation. Only once every citation is confirmed
+    resolvable does the number check run at all: a claim asserting no
+    numbers has nothing further this check can verify, so it passes from
+    there; a numeric claim's asserted numbers must appear in the
+    combined resolved content."""
     cited_snapshots = [snapshot_resolver.get_content(sid) for sid in claim.citation_snapshot_ids]
     if any(snapshot is None for snapshot in cited_snapshots):
         return False
+    claim_numbers = numbers_in(claim.text)
+    if not claim_numbers:
+        return True
     combined_text = " ".join(
         snapshot.content_text or "" for snapshot in cited_snapshots if snapshot
     )

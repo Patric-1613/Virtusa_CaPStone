@@ -60,5 +60,19 @@ class InMemorySnapshotResolver:
         return self._snapshots_by_id.get(snapshot_id)
 
     def add(self, snapshot: DocumentSnapshot) -> None:
-        """Register one more snapshot's content."""
+        """Register one more snapshot's content. A `DocumentSnapshot` is
+        documented as immutable (see its own docstring), so re-adding the
+        exact same snapshot (e.g. daily_run.py processing the same batch
+        item twice, or two callers sharing a resolver) is accepted as a
+        no-op -- but registering a DIFFERENT snapshot under an id already
+        present is a real conflict, not a routine update, and raises
+        rather than silently overwriting: overwriting here would let a
+        second, different snapshot silently invalidate whatever already
+        cited the first one's content under that id."""
+        existing = self._snapshots_by_id.get(snapshot.id)
+        if existing is not None and existing != snapshot:
+            raise ValueError(
+                f"snapshot {snapshot.id!r} already registered with different content "
+                "-- DocumentSnapshot is immutable, refusing to overwrite"
+            )
         self._snapshots_by_id[snapshot.id] = snapshot

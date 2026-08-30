@@ -25,6 +25,14 @@ def _snapshot(snap_id: str, text: str) -> DocumentSnapshot:
     )
 
 
+def _resolver(*snap_ids: str) -> InMemorySnapshotResolver:
+    """A resolver that can actually resolve each of the given ids --
+    content is irrelevant for these tests (no numbers in the claim text
+    to ground), only resolvability itself matters post-blocker-2 (see
+    validate.py's fail-closed-on-unresolvable-citations fix)."""
+    return InMemorySnapshotResolver({sid: _snapshot(sid, "content") for sid in snap_ids})
+
+
 def test_claim_with_valid_citations_is_supported() -> None:
     claim = validate_claim(_claim(["snap_1"]), KNOWN_SNAPSHOTS)
     assert claim.validation_status == "supported"
@@ -48,9 +56,7 @@ def test_validate_digest_forces_review_on_any_unsupported_claim() -> None:
         title="Test digest",
         claims=[_claim(["snap_1"], "c1"), _claim(["snap_missing"], "c2")],
     )
-    validated = validate_digest(
-        digest, KNOWN_SNAPSHOTS, snapshot_resolver=InMemorySnapshotResolver()
-    )
+    validated = validate_digest(digest, KNOWN_SNAPSHOTS, snapshot_resolver=_resolver("snap_1"))
     assert validated.status == "review"
     statuses = {c.id: c.validation_status for c in validated.claims}
     assert statuses == {"c1": "supported", "c2": "unsupported"}
@@ -64,9 +70,7 @@ def test_validate_digest_never_upgrades_status_on_its_own() -> None:
         title="Test digest",
         claims=[_claim(["snap_1"], "c1")],
     )
-    validated = validate_digest(
-        digest, KNOWN_SNAPSHOTS, snapshot_resolver=InMemorySnapshotResolver()
-    )
+    validated = validate_digest(digest, KNOWN_SNAPSHOTS, snapshot_resolver=_resolver("snap_1"))
     assert validated.status == "draft"  # all supported, but validate_digest doesn't publish
 
 
@@ -94,7 +98,7 @@ def test_publish_digest_publishes_only_when_everything_supported() -> None:
         claims=[_claim(["snap_1"], "c1"), _claim(["snap_2"], "c2")],
     )
     published = publish_digest(
-        digest, KNOWN_SNAPSHOTS, snapshot_resolver=InMemorySnapshotResolver()
+        digest, KNOWN_SNAPSHOTS, snapshot_resolver=_resolver("snap_1", "snap_2")
     )
     assert published.status == "published"
 
@@ -164,6 +168,21 @@ def test_claim_with_no_numbers_is_unaffected_by_content_grounding() -> None:
     resolver = InMemorySnapshotResolver({"snap_1": _snapshot("snap_1", "Completely unrelated.")})
     validated = validate_claim(claim, KNOWN_SNAPSHOTS, snapshot_resolver=resolver)
     assert validated.validation_status == "supported"
+
+
+def test_number_free_claim_with_an_unresolvable_citation_fails_closed() -> None:
+    """Fourth review, blocker 2: resolution must be checked BEFORE the
+    "no numbers, nothing to verify" shortcut -- a number-free claim
+    (e.g. "Anthropic has not disclosed its price") citing a snapshot the
+    resolver can't actually produce is not "vacuously fine" just because
+    there's no number to check. There is no way to confirm that citation
+    is even real content, so it must fail closed exactly like a numeric
+    claim with an unresolvable citation would -- an empty resolver here
+    means content for "snap_1" can't be resolved even though it exists in
+    known_snapshot_ids."""
+    claim = _claim(["snap_1"], text="Anthropic has not disclosed its price.")
+    validated = validate_claim(claim, KNOWN_SNAPSHOTS, snapshot_resolver=InMemorySnapshotResolver())
+    assert validated.validation_status == "unsupported"
 
 
 def test_citation_unresolvable_by_the_resolver_is_unsupported_not_trusted() -> None:
