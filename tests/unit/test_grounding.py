@@ -49,28 +49,40 @@ def test_claim_and_evidence_agree_on_a_bare_digit_product_name() -> None:
     assert claim_numbers <= evidence_numbers
 
 
-def test_numbers_in_still_leaks_the_decimal_half_of_a_compound_name_known_gap() -> None:
-    """KNOWN, DOCUMENTED GAP -- not a passing safety guarantee (tracked
-    as a follow-up issue, non-blocking). A compound decimal-shaped name
-    like "GPT-4.5" still leaks a spurious number: the letter-hyphen
-    exclusion blocks a match starting at "4" (preceded by "T-"), but the
-    regex engine then retries starting at "5" (the digit right after the
-    decimal point), which isn't itself preceded by a letter-hyphen
-    pattern, so it's matched as if asserted. Safe direction to be wrong
-    in (can cause an over-cautious "unsupported" on an actually-fine
-    claim, never a false claim being accepted) -- see grounding.py's own
-    comment on _NUMBER_TOKEN_RE for the full explanation and why this
-    isn't patched inline. If this test ever starts failing because the
-    gap got fixed, that's good news -- update it to assert the number is
-    gone, don't just delete it."""
-    assert numbers_in("The new GPT-4.5 model launched today.") == {"5"}
+def test_numbers_in_ignores_compound_decimal_product_names() -> None:
+    """Fixes issue #7: a compound decimal-shaped name like "GPT-4.5"
+    was leaking a spurious "5" -- the earlier lookbehind-only fix
+    excluded a match from starting at "4" (preceded by "T-"), but
+    couldn't stop the regex engine from then retrying and matching "5"
+    on its own, since nothing about "5" alone looks name-adjacent from
+    its own position. Fixed via whole-span exclusion (see
+    _COMPOUND_PRODUCT_NAME_RE) -- verified across the exact names named
+    in the issue."""
+    assert numbers_in("The new GPT-4.5 model launched today.") == set()
+    assert numbers_in("Claude-3.5 is Anthropic's latest model.") == set()
+    assert numbers_in("Gemini-1.5 supports a huge context window.") == set()
+
+
+def test_numbers_in_still_finds_real_numbers_alongside_a_compound_decimal_name() -> None:
+    """The exact shape from issue #7's acceptance criteria: a real price
+    sitting right next to a compound decimal product name must still be
+    extracted correctly -- the fix must not overreach into excluding
+    legitimate numbers just because a name-shaped token is nearby."""
+    assert numbers_in("GPT-4.5 costs $5.50 per 1M tokens") == {"5.50"}
+    assert numbers_in("Claude-3.5 scored 71.2 on the benchmark") == {"71.2"}
+
+
+def test_numbers_in_ignores_bare_decimal_with_no_letters_attached() -> None:
+    """A plain decimal with nothing letter-like touching it (no name to
+    confuse it with) must always be treated as a real, asserted number."""
+    assert numbers_in("The discount rate is 0.5 this quarter.") == {"0.5"}
 
 
 def test_numbers_in_empty_when_no_digits() -> None:
-    # Not "Apache-2.0" -- per the fix above, a digit run preceded by
-    # "<letter>-" is now excluded too (the same "GPT-4" shape), so
-    # "Apache-2.0" no longer contributes a number here either; using
-    # "MIT" keeps this test about the true no-digits-at-all case either way.
+    # Not "Apache-2.0" -- a digit run preceded by "<letter>-" is excluded
+    # (the same "GPT-4"/"GPT-4.5" shape), so "Apache-2.0" doesn't
+    # contribute a number here either; using "MIT" keeps this test about
+    # the true no-digits-at-all case either way.
     assert numbers_in("MIT licence, no numbers here") == set()
 
 
