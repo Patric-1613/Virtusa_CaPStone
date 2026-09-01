@@ -17,7 +17,7 @@ Requires: pydantic>=2
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
@@ -117,21 +117,12 @@ class ExtractedFact(BaseModel):
     (see intelligence/extract_facts.py) and this is now enforced here,
     not just by extraction code and contract tests, per ADR 0004's
     accepted clarification -- see _require_evidence_for_llm_facts below.
-    Added by docs/adr/0004-extracted-fact-keeps-evidence.md.
-
-    disclosure_status/value: ADR 0006's "unknown" vs. "not disclosed" are
-    different claims. `value=None` here means "the source explicitly
-    states this is being withheld" (disclosure_status="not_disclosed"),
-    itself a groundable claim needing its own citation -- NOT "no
-    extraction ever found a value", which is represented by no
-    ExtractedFact existing at all, never by one with a null value. See
-    docs/adr/0006-disclosure-status-semantics.md."""
+    Added by docs/adr/0004-extracted-fact-keeps-evidence.md."""
 
     id: str  # UUID v4
     snapshot_id: str
     field: str
-    value: str | None = None
-    disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
+    value: str
     extraction_method: str  # "deterministic" | "llm_structured_output"
     extraction_model: str | None = None
     prompt_version: str | None = None
@@ -161,47 +152,6 @@ class ExtractedFact(BaseModel):
                     "ExtractedFact with extraction_method='llm_structured_output' "
                     "must have confidence set (ADR 0004)"
                 )
-        return self
-
-    @model_validator(mode="after")
-    def _require_valid_disclosure_state(self) -> ExtractedFact:
-        """ADR 0006: "not disclosed" is a groundable claim, not a default
-        inferred from silence -- both invalid states below are rejected
-        at construction, not just documented as a convention:
-          - disclosure_status="not_disclosed" together with a non-null
-            value -- contradictory: a fact can't simultaneously state a
-            value and claim none was given.
-          - disclosure_status="not_disclosed" without grounded evidence
-            (a non-empty quoted_span citing the actual non-disclosure
-            statement) -- the same evidence requirement ADR 0004
-            established for a disclosed value applies here too; "not
-            disclosed" needs a citation, not a default. Required
-            regardless of extraction_method -- unlike
-            _require_evidence_for_llm_facts above, ADR 0006 draws no
-            deterministic-vs-LLM distinction here.
-          - disclosure_status="disclosed" (the default) without a real,
-            non-empty value -- the "normal" case's own invariant, now
-            enforced at the model level now that `value` is Optional at
-            the type level."""
-        if self.disclosure_status == "not_disclosed":
-            if self.value is not None:
-                raise ValueError(
-                    "ExtractedFact with disclosure_status='not_disclosed' must have "
-                    "value=None (ADR 0006) -- a fact can't state a value and also "
-                    "claim none was given"
-                )
-            if not self.quoted_span:
-                raise ValueError(
-                    "ExtractedFact with disclosure_status='not_disclosed' must have a "
-                    "non-empty quoted_span citing the actual non-disclosure statement "
-                    "(ADR 0006) -- 'not disclosed' is a groundable claim, not a "
-                    "default inferred from silence"
-                )
-        elif not self.value:
-            raise ValueError(
-                "ExtractedFact with disclosure_status='disclosed' (the default) must "
-                "have a non-empty value"
-            )
         return self
 
 

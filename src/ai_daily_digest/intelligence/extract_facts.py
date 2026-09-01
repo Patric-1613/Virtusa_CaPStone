@@ -4,21 +4,14 @@ DocumentSnapshot's text into zero or more ExtractedFact records against
 the closed field list (shared/attributes.py). See
 docs/LLM_AGENT_SPECS.md#extract_facts for the full contract.
 
-Five guardrails enforced in code, not just requested in the prompt:
+Four guardrails enforced in code, not just requested in the prompt:
   1. quoted_span must actually appear in the snapshot text (grounding
      check) -- a model that paraphrases instead of quoting produces a
-     fact that gets silently dropped, not silently stored. Applies
-     regardless of disclosure_status -- an explicit non-disclosure
-     statement needs a real citation exactly the same as a value does
-     (ADR 0006).
-  2. for a DISCLOSED candidate, value must actually be supported by
-     quoted_span itself -- a real, grounded quote can still have an
-     invented value attached to it (e.g. quoting a real sentence but
-     reporting a different number than it states); check #1 alone can't
-     catch that, see grounding.py. A NOT_DISCLOSED candidate has no
-     value to check support for and skips this check -- its quote being
-     real (checked in #1) is the only evidence a non-disclosure
-     statement needs or has.
+     fact that gets silently dropped, not silently stored.
+  2. value must actually be supported by quoted_span itself -- a real,
+     grounded quote can still have an invented value attached to it
+     (e.g. quoting a real sentence but reporting a different number than
+     it states); check #1 alone can't catch that, see grounding.py.
   3. field must be in the closed list -- an invented field is dropped.
   4. a quote shared across two different fields' candidates in the SAME
      extraction response is ambiguous evidence -- e.g. "Input costs 5
@@ -32,12 +25,6 @@ Five guardrails enforced in code, not just requested in the prompt:
      docs/DESIGN_PROPOSAL_comparison_and_grounding.md point (e), not yet
      built. Until then, BOTH candidates sharing ambiguous evidence are
      dropped rather than guessing which one is right.
-  5. disclosure_status="not_disclosed" and a real value are mutually
-     exclusive, and disclosure_status="disclosed" (the default) requires
-     a real value -- enforced at the model level on both FactCandidate
-     here and ExtractedFact itself (shared/schemas.py), per ADR 0006, so
-     a malformed candidate is rejected before it ever reaches the checks
-     above, not silently coerced into one state or the other.
 
 The accepted quoted_span and confidence are kept on the resulting
 ExtractedFact (not discarded) so the evidence a fact was built from can
@@ -49,9 +36,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from ai_daily_digest.intelligence.facts import normalise_name
 from ai_daily_digest.intelligence.grounding import numbers_in, value_supported_by_quote
@@ -68,17 +54,8 @@ PROMPT_VERSION = "extract-facts-v1"
 
 
 class FactCandidate(BaseModel):
-    """disclosure_status/value: ADR 0006's "unknown" vs. "not disclosed"
-    distinction, mirrored from ExtractedFact (shared/schemas.py) here so
-    a malformed candidate (e.g. not_disclosed with a value attached)
-    fails call_structured's own validate -> retry-once -> fail-loudly
-    loop, the same protection FactCandidate.confidence already gets from
-    the shared Confidence type -- not just caught later in
-    extract_facts()'s own post-processing."""
-
     field: str
-    value: str | None = None
-    disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
+    value: str
     quoted_span: str
     # Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
     # -- rejects confidence=NaN at parse time (see shared/schemas.py's
@@ -87,22 +64,6 @@ class FactCandidate(BaseModel):
     # False. A malformed response now fails call_structured's own
     # validation instead, triggering its retry-once-then-fail-loudly path.
     confidence: Confidence
-
-    @model_validator(mode="after")
-    def _require_consistent_disclosure_state(self) -> FactCandidate:
-        """Same contradiction ExtractedFact's own validator rejects
-        (shared/schemas.py) -- catching it here too, on the raw model
-        response, means a malformed candidate triggers call_structured's
-        retry-with-the-validation-error loop instead of silently
-        reaching this module's post-processing only to be dropped
-        without the model ever getting a chance to correct itself."""
-        if self.disclosure_status == "not_disclosed" and self.value is not None:
-            raise ValueError(
-                "a candidate with disclosure_status='not_disclosed' must not also report a value"
-            )
-        if self.disclosure_status == "disclosed" and not self.value:
-            raise ValueError("a candidate with disclosure_status='disclosed' must report a value")
-        return self
 
 
 class FactExtractionResponse(BaseModel):
@@ -147,13 +108,6 @@ def _cross_contaminated_indices(candidates: list[FactCandidate]) -> set[int]:
         quote_numbers = numbers_in(candidate.quoted_span)
         for other in candidates:
             if other.field == candidate.field:
-                continue
-            # A not_disclosed candidate has no value to be confused with
-            # -- nothing to compare against, so it can never make ANOTHER
-            # candidate ambiguous (though it can still itself be flagged
-            # by a sibling's real value appearing in its own quote, via
-            # the outer loop above).
-            if other.value is None:
                 continue
             other_value_numbers = numbers_in(other.value)
             if other_value_numbers and other_value_numbers <= quote_numbers:
@@ -237,15 +191,8 @@ def extract_facts(
         # The quote itself is real (checked above), but that doesn't mean
         # the *value* the model reported actually came from it -- a model
         # can quote a real sentence and still attach a fabricated number
-        # to it. This is the check that catches that specific case. Only
-        # applies when there IS a value to check -- a not_disclosed
-        # candidate's value is None (enforced by FactCandidate's own
-        # validator, ADR 0006), so this branch is skipped for it: the
-        # quote-grounding check above is the only evidence a non-
-        # disclosure statement needs.
-        if candidate.value is not None and not value_supported_by_quote(
-            candidate.value, candidate.quoted_span
-        ):
+        # to it. This is the check that catches that specific case.
+        if not value_supported_by_quote(candidate.value, candidate.quoted_span):
             logger.warning(
                 "extraction_rejected reason=value_not_in_quote snapshot_id=%s field=%s "
                 "value=%r quoted_span=%r",
@@ -262,7 +209,6 @@ def extract_facts(
                 snapshot_id=snapshot.id,
                 field=candidate.field,
                 value=candidate.value,
-                disclosure_status=candidate.disclosure_status,
                 extraction_method="llm_structured_output",
                 extraction_model=SONNET,
                 prompt_version=PROMPT_VERSION,
@@ -271,10 +217,9 @@ def extract_facts(
             )
         )
         logger.info(
-            "extraction_accepted snapshot_id=%s field=%s disclosure_status=%s confidence=%s",
+            "extraction_accepted snapshot_id=%s field=%s confidence=%s",
             snapshot.id,
             candidate.field,
-            candidate.disclosure_status,
             candidate.confidence,
         )
 

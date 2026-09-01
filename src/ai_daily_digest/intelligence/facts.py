@@ -45,7 +45,7 @@ def normalise_name(name: str) -> str:
     return _WHITESPACE_RE.sub(" ", stripped).strip()
 
 
-def _values_are_equivalent(previous_value: str | None, current_value: str | None) -> bool:
+def _values_are_equivalent(previous_value: str, current_value: str) -> bool:
     """True if two extracted values represent the same underlying fact
     despite different formatting. extract_facts.py's own acceptance
     check (grounding.py::value_supported_by_quote) already tolerates
@@ -55,17 +55,7 @@ def _values_are_equivalent(previous_value: str | None, current_value: str | None
     phrased the same real-world value differently between two
     extractions. Numeric values are compared as floats after stripping
     formatting; everything else falls back to normalise_name's
-    case/punctuation/whitespace-insensitive comparison.
-
-    None is ADR 0006's "not disclosed" (never "unknown" -- see
-    ExtractedFact's own docstring, shared/schemas.py). Two not_disclosed
-    observations in a row are equivalent (nothing changed); a disclosed
-    value on one side and None on the other are never equivalent -- that
-    IS a real disclosure-status change, just one update_fact() below
-    doesn't currently turn into a reportable Change (see its own
-    docstring)."""
-    if previous_value is None or current_value is None:
-        return previous_value == current_value
+    case/punctuation/whitespace-insensitive comparison."""
     if previous_value == current_value:
         return True
     try:
@@ -198,22 +188,12 @@ class FactStore:
         not a change — see this project's second review: nothing
         downstream currently turns a first observation into its own
         digest content either; "reported elsewhere" was aspirational,
-        not a real path, and is corrected here to say so), an identical
-        value, or a disclosure-status transition (ADR 0006 — either side
-        of the comparison has value=None, meaning it's a "not disclosed"
-        observation, not a real value): the fact IS still recorded (so
-        get_current_fact()/build_fact_table() see the new disclosure
-        state right away), it just doesn't become a Change/DigestClaim
-        here — the same treatment a first observation already gets, and
-        for the same reason: nothing downstream has an agreed wording
-        yet for "X stopped/started disclosing Y" as a single-subject
-        sentence, and this ADR's scope is compare_subjects.py's
-        cross-subject rendering, not draft_claims.py's. An identical
-        value still refreshes the stored provenance (snapshot/source/
-        observed_at) to this newer confirmation, so a fact re-confirmed
-        many times doesn't keep citing its original, increasingly stale
-        snapshot — it's a no-op for Change purposes, not a no-op for
-        "what's the freshest evidence for this fact"."""
+        not a real path, and is corrected here to say so) or an identical
+        value. An identical value still refreshes the stored provenance
+        (snapshot/source/observed_at) to this newer confirmation, so a
+        fact re-confirmed many times doesn't keep citing its original,
+        increasingly stale snapshot — it's a no-op for Change purposes,
+        not a no-op for "what's the freshest evidence for this fact"."""
         self.register_subject(subject)
         key = (*_subject_key(subject), fact.field)
         record = self._fields.setdefault(key, _FieldRecord())
@@ -244,13 +224,6 @@ class FactStore:
 
         if previous is None:
             return None  # first observation, not a change
-        if fact.value is None or previous.value is None:
-            # A disclosure-status transition (ADR 0006), either
-            # direction -- recorded above, not reported as a Change here
-            # (see this method's own docstring for why). Guarding on
-            # nullness directly, not `disclosure_status`, matches
-            # ExtractedFact's own invariant that the two always agree.
-            return None
 
         resolved_change_type = (
             change_type

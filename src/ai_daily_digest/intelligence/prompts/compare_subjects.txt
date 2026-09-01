@@ -9,9 +9,8 @@ only to propose WHICH two subjects and WHICH field are worth comparing.
 
 Rules:
 - Propose only (subject_a, subject_b, field) triples where BOTH subjects
-  show a real value for that field in the table below — never a row
-  marked "unknown" (nothing was ever recorded) or "not disclosed" (the
-  source explicitly withheld it); neither side has a value to compare.
+  have a disclosed (non-"not disclosed") value for that field in the
+  table below.
 - Never propose comparing a subject to itself.
 - Never write comparison text, numbers, or say which side is "better" —
   code computes the relation from the table's real values. Proposing a

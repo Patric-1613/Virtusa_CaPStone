@@ -4,7 +4,6 @@
     "snapshot_id": "b1000000-0000-4000-8000-000000000001",
     "field": "context_window_tokens",
     "value": "256000",
-    "disclosure_status": "disclosed",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
     "prompt_version": "fact-extraction-v1",
@@ -16,7 +15,6 @@
     "snapshot_id": "b1000000-0000-4000-8000-000000000002",
     "field": "context_window_tokens",
     "value": "256000",
-    "disclosure_status": "disclosed",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
     "prompt_version": "fact-extraction-v1",
@@ -28,7 +26,6 @@
     "snapshot_id": "b1000000-0000-4000-8000-000000000003",
     "field": "context_window_tokens",
     "value": "128000",
-    "disclosure_status": "disclosed",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
     "prompt_version": "fact-extraction-v1",
@@ -40,23 +37,10 @@
     "snapshot_id": "b1000000-0000-4000-8000-000000000004",
     "field": "benchmark_scores",
     "value": "71.2",
-    "disclosure_status": "disclosed",
     "extraction_method": "llm_structured_output",
     "extraction_model": "claude-sonnet-5",
     "prompt_version": "fact-extraction-v1",
     "quoted_span": "scoring 71.2 on the ReasonBench suite",
     "confidence": 0.93
-  },
-  {
-    "id": "g1000000-0000-4000-8000-000000000005",
-    "snapshot_id": "b1000000-0000-4000-8000-000000000004",
-    "field": "context_window_tokens",
-    "value": null,
-    "disclosure_status": "not_disclosed",
-    "extraction_method": "llm_structured_output",
-    "extraction_model": "claude-sonnet-5",
-    "prompt_version": "fact-extraction-v1",
-    "quoted_span": "context window details are not yet published in this update",
-    "confidence": 0.9
   }
 ]

@@ -8,23 +8,9 @@ Rules:
   Include the exact supporting sentence or phrase as `quoted_span` — do
   not paraphrase it. This is checked in code: a fact whose quoted_span
   does not actually appear in the text is discarded before storage.
-- If a field from the closed list is not mentioned in this text AT ALL,
-  omit it entirely — do not include an entry with a null or guessed
-  value, and do not infer a value from general knowledge. An absent
-  fact is a true gap, not something to report.
-- If the text EXPLICITLY states that a field's value is being withheld
-  or has not yet been announced (e.g. "pricing has not yet been
-  announced", "context window details are not disclosed in this
-  release"), report it with `"disclosure_status": "not_disclosed"` and
-  `"value": null` — never invent a value for it, and never report this
-  unless the text actually says so in those terms. This is itself a
-  real, citable fact: include the exact sentence stating the
-  non-disclosure as `quoted_span`, the same as any other fact. Do NOT
-  use `not_disclosed` just because a field happens to be unmentioned —
-  that case is the "omit it entirely" rule above, not this one.
-- Every other fact (the normal case) uses `"disclosure_status":
-  "disclosed"` (the default — you may omit the key) with a real,
-  non-null `value`.
+- If a field from the closed list is not mentioned in this text, omit it
+  entirely — do not include an entry with a null or guessed value, and do
+  not infer a value from general knowledge. An absent fact is a true gap.
 - confidence reflects how directly the quoted span supports the value
   (1.0 = stated in exact terms, lower = some interpretation was needed).
   Facts below a confidence threshold are discarded in code, not stored.
@@ -36,13 +22,11 @@ Closed field list:
 Output schema:
 {
   "facts": [
-    { "field": "<field key from the closed list>", "value": "<string>", "disclosure_status": "disclosed", "quoted_span": "<exact text from the snapshot>", "confidence": <float 0.0-1.0> },
-    { "field": "<field key from the closed list>", "value": null, "disclosure_status": "not_disclosed", "quoted_span": "<exact text stating the non-disclosure>", "confidence": <float 0.0-1.0> }
+    { "field": "<field key from the closed list>", "value": "<string>", "quoted_span": "<exact text from the snapshot>", "confidence": <float 0.0-1.0> }
   ]
 }
-Only include entries for fields actually found, disclosed or explicitly
-not_disclosed — an empty "facts" list is the correct output when nothing
-in the closed list is mentioned, disclosed or otherwise.
+Only include entries for fields actually found — an empty "facts" list is
+the correct output when nothing in the closed list is mentioned.
 
 USER TEMPLATE
 Subject: {{subject_company}}: {{subject_product}}
