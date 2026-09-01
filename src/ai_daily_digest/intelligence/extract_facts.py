@@ -43,17 +43,21 @@ Six guardrails enforced in code, not just requested in the prompt:
   6. a NOT_DISCLOSED candidate's quote must actually SUPPORT a
      non-disclosure claim about THAT field, not merely exist in the text
      -- see _quote_supports_non_disclosure's own docstring: no real
-     number anywhere in the quote, and the SAME CLAUSE (not just
-     somewhere in the whole quote) must carry both an approved
-     withholding phrase and a concept pattern matching the candidate's
-     own field -- e.g. "The model features a large context window.
-     Pricing details have not been released." must not support a
-     context_window_tokens non-disclosure just because both halves
-     appear somewhere in the quote; they're about different clauses.
-     Per review: quote existence alone conflates "this text is real"
-     with "this text means what the candidate claims it means" -- the
-     same gap check #2 already closes for a disclosed value's number,
-     now closed for a non-disclosure claim too.
+     number anywhere in the quote; the SAME CLAUSE (split on sentence
+     punctuation AND compound-sentence joins -- a comma+conjunction, a
+     bare contrast conjunction, or a dash, not just a period) must carry
+     both an approved withholding phrase and a concept pattern matching
+     the candidate's own field; and that clause must not ALSO name a
+     different field's concept family -- e.g. neither "The model
+     features a large context window. Pricing details have not been
+     released." (two sentences) nor "Benchmark scores are strong and
+     pricing has not been announced" (one compound clause naming two
+     unrelated concepts) may support a non-disclosure claim for the
+     field whose concept happens to appear first. Per review: quote
+     existence alone conflates "this text is real" with "this text
+     means what the candidate claims it means" -- the same gap check #2
+     already closes for a disclosed value's number, now closed for a
+     non-disclosure claim too.
 
 The accepted quoted_span and confidence are kept on the resulting
 ExtractedFact (not discarded) so the evidence a fact was built from can
@@ -106,58 +110,64 @@ _WITHHOLDING_PHRASE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Field-matching patterns a genuine non-disclosure quote for THIS field
-# should satisfy -- catches a real withholding statement about one field
-# being misattributed to another (e.g. a pricing non-disclosure
-# statement reported against context_window_tokens). Whole-word/whole-
-# phrase boundaries throughout: a loose substring match would let e.g.
-# "rate" match inside "corporate", a single word like "limit" or "token"
-# stand in for the whole context_window_tokens concept (a "rate limit"
-# is not a context window), or "terms" alone match an unrelated "payment
-# terms" sentence for licence_terms. Matched against the raw quote
-# (case-insensitive), not normalise_name()'d, so a symbol like "$"
-# survives -- normalise_name() strips punctuation entirely; "$" has no
-# natural word boundary of its own, so it's its own alternative rather
-# than wrapped in `\b`.
-#
-# input_price_usd / output_price_usd share the exact same pattern,
-# deliberately: "input"/"output" are optional qualifiers, never
-# independent evidence of pricing on their own (per review) -- a quote
-# needs an actual pricing concept (price/cost/rate/fee/... or "$")
-# regardless of which of the two price fields the candidate names.
-_FIELD_CONCEPT_PATTERNS: dict[str, re.Pattern[str]] = {
-    "input_price_usd": re.compile(
-        r"\b(?:price|pricing|cost|costs|rate|rates|fee|fees|dollar|dollars|cent|cents"
-        r"|currency|currencies|usd)\b|\$",
-        re.IGNORECASE,
-    ),
-    "output_price_usd": re.compile(
+# Which broader concept FAMILY each comparable field belongs to.
+# input_price_usd/output_price_usd are deliberately the same family --
+# "input"/"output" are optional qualifiers, never independent evidence
+# of pricing on their own (per review) -- a quote needs an actual
+# pricing concept (price/cost/rate/fee/... or "$") regardless of which
+# of the two price fields the candidate names, and a clause naming both
+# ("Input and output pricing have not been announced") must never be
+# treated as cross-family-contaminated just because it mentions both.
+_FIELD_TO_FAMILY: dict[str, str] = {
+    "input_price_usd": "pricing",
+    "output_price_usd": "pricing",
+    "context_window_tokens": "context_window",
+    "benchmark_scores": "benchmarks",
+    "availability_regions": "regions",
+    "licence_terms": "licence",
+    "modalities": "modalities",
+}
+
+# One concept pattern per family -- catches a real withholding statement
+# about one field being misattributed to another (e.g. a pricing
+# non-disclosure statement reported against context_window_tokens).
+# Whole-word/whole-phrase boundaries throughout: a loose substring match
+# would let e.g. "rate" match inside "corporate", a single word like
+# "limit" or "token" stand in for the whole context_window concept (a
+# "rate limit" is not a context window), or "terms" alone match an
+# unrelated "payment terms" sentence for licence. Matched against the
+# raw quote (case-insensitive), not normalise_name()'d, so a symbol like
+# "$" survives -- normalise_name() strips punctuation entirely; "$" has
+# no natural word boundary of its own, so it's its own alternative
+# rather than wrapped in `\b`.
+_FAMILY_CONCEPT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "pricing": re.compile(
         r"\b(?:price|pricing|cost|costs|rate|rates|fee|fees|dollar|dollars|cent|cents"
         r"|currency|currencies|usd)\b|\$",
         re.IGNORECASE,
     ),
     # Never "limit" or "token" alone -- "Rate limits have not been
     # announced" must not read as a context-window non-disclosure.
-    "context_window_tokens": re.compile(
+    "context_window": re.compile(
         r"\b(?:context\s+(?:window|length|size|limit|capacity)"
         r"|token\s+(?:window|limit|capacity)"
         r"|(?:max|maximum)\s+context)\b",
         re.IGNORECASE,
     ),
     # Never "result" or "score" alone.
-    "benchmark_scores": re.compile(
+    "benchmarks": re.compile(
         r"\b(?:benchmark(?:s)?(?:\s+(?:score|scores|result|results|eval|evals"
         r"|evaluation|evaluations))?)\b",
         re.IGNORECASE,
     ),
     # Never bare "available"/"availability" alone.
-    "availability_regions": re.compile(
+    "regions": re.compile(
         r"\b(?:region|regions|country|countries|geographic\s+availability"
         r"|geographies|geography|regional\s+availability)\b",
         re.IGNORECASE,
     ),
     # Never "terms" alone -- avoids matching an unrelated "payment terms".
-    "licence_terms": re.compile(r"\b(?:licen[sc]e|licen[sc]ing)(?:\s+terms)?\b", re.IGNORECASE),
+    "licence": re.compile(r"\b(?:licen[sc]e|licen[sc]ing)(?:\s+terms)?\b", re.IGNORECASE),
     "modalities": re.compile(
         r"\b(?:modalit(?:y|ies)|multimodal|input\s+(?:types?|formats?)"
         r"|output\s+(?:types?|formats?))\b",
@@ -167,8 +177,23 @@ _FIELD_CONCEPT_PATTERNS: dict[str, re.Pattern[str]] = {
 
 # Splits a quote into clause/sentence segments -- see
 # _quote_supports_non_disclosure's own docstring for why a single
-# combined check across the whole quote isn't enough.
-_CLAUSE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+# combined check across the whole quote isn't enough. Per review: plain
+# sentence punctuation (`. ! ? ; \n`) alone missed a COMPOUND sentence
+# joining two unrelated clauses with a comma+conjunction, a bare
+# contrast conjunction, or a dash -- "The model has a large context
+# window, but pricing details have not been released" is one sentence,
+# no terminal punctuation between its two halves, yet they're about
+# different facts. Also splits on "--"/"—" (an em dash, not a hyphen --
+# a single ASCII "-" as in "GPT-4o" does NOT match either alternative,
+# verified deliberately so a compound product name is never mistaken
+# for a clause boundary).
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[.!?;\n]+"
+    r"|,\s*(?:but|and|while|whereas|although|however|yet)\b"
+    r"|\b(?:but|while|whereas|although|however)\b"
+    r"|--|—",
+    re.IGNORECASE,
+)
 
 
 class FactCandidate(BaseModel):
@@ -283,26 +308,45 @@ def _quote_supports_non_disclosure(field: str, quote: str) -> bool:
        states an actual value ("$5 per million tokens") is a disclosed
        fact mislabeled not_disclosed, not a genuine non-disclosure;
        reject rather than guess which label is right.
-    2. At least one CLAUSE of the quote (split on `. ! ? ; \\n` --
-       _CLAUSE_SPLIT_RE) must contain BOTH an approved explicit-
-       withholding phrase (_WITHHOLDING_PHRASE_RE) AND THIS field's own
-       concept pattern (_FIELD_CONCEPT_PATTERNS). Checking the two
-       patterns against the whole quote independently (rather than the
-       same clause) would accept e.g. "The model features a large
-       context window. Pricing details have not been released." for
-       context_window_tokens -- the withholding phrase and the field
-       concept are both present SOMEWHERE in the quote, but not about
-       the same fact; that must be rejected. A field with no registered
-       concept pattern fails closed too."""
+    2. At least one CLAUSE of the quote (split on sentence punctuation
+       AND compound-sentence joins -- see _CLAUSE_SPLIT_RE's own comment
+       for why a period alone isn't enough) must contain an approved
+       explicit-withholding phrase (_WITHHOLDING_PHRASE_RE), AND that
+       same clause's set of matching concept FAMILIES
+       (_FAMILY_CONCEPT_PATTERNS) must be EXACTLY the candidate's own
+       family -- not a superset, not a different one, not empty.
+       Checking the field concept against the whole quote independently
+       of the withholding phrase (rather than the same clause) would
+       accept e.g. "The model features a large context window. Pricing
+       details have not been released." for context_window_tokens -- the
+       withholding phrase and the field concept are both present
+       SOMEWHERE in the quote, but not about the same fact; that must be
+       rejected. Requiring the matching-family set to be exactly one
+       family (not just "contains the candidate's own") is what rejects
+       e.g. "Benchmark scores are strong and pricing has not been
+       announced" for benchmark_scores -- that clause's own concept
+       AND a withholding phrase are both present, but the SAME clause
+       ALSO names pricing, so which fact is actually being withheld is
+       ambiguous; it must not count as support for either. A field with
+       no registered family fails closed too. Same-family siblings
+       (input_price_usd/output_price_usd) never trigger this against
+       each other -- they map to the one "pricing" family, so a clause
+       naming both still has a matching-family set of exactly
+       `{"pricing"}`."""
     if numbers_in(quote):
         return False
-    pattern = _FIELD_CONCEPT_PATTERNS.get(field)
-    if pattern is None:
+    target_family = _FIELD_TO_FAMILY.get(field)
+    if target_family is None:
         return False
-    return any(
-        _WITHHOLDING_PHRASE_RE.search(clause) and pattern.search(clause)
-        for clause in _CLAUSE_SPLIT_RE.split(quote)
-    )
+    for clause in _CLAUSE_SPLIT_RE.split(quote):
+        if not _WITHHOLDING_PHRASE_RE.search(clause):
+            continue
+        matching_families = {
+            family for family, pattern in _FAMILY_CONCEPT_PATTERNS.items() if pattern.search(clause)
+        }
+        if matching_families == {target_family}:
+            return True
+    return False
 
 
 def _default_call(system: str, prompt: str) -> FactExtractionResponse:

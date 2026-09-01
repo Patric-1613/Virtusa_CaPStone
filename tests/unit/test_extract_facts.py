@@ -567,3 +567,83 @@ def test_modalities_accepts_input_output_modalities_quote() -> None:
     assert _quote_supports_non_disclosure(
         "modalities", "Supported input and output modalities have not been revealed"
     )
+
+
+# --- Compound-clause false positives (ADR 0006 revision requested by
+# Person C, third round) -- a comma+conjunction or a bare contrast
+# conjunction can join two unrelated facts into one grammatical sentence
+# with no terminal punctuation between them; splitting only on
+# `. ! ? ; \n` (round 2) missed this. Fixed with a wider clause split
+# (_CLAUSE_SPLIT_RE) plus a same-clause cross-field-family guard
+# (_clause_names_a_different_family) for the case a comma doesn't even
+# separate (a bare "and" with no leading comma). ---
+
+
+def test_context_window_rejects_comma_but_compound_clause() -> None:
+    """The withholding phrase and the context-window concept are each
+    real, but about different halves of a comma+"but"-joined compound
+    sentence -- the clause split must separate them, same as two
+    sentences would."""
+    assert not _quote_supports_non_disclosure(
+        "context_window_tokens",
+        "The model has a large context window, but pricing details have not been released",
+    )
+
+
+def test_benchmark_scores_rejects_bare_and_compound_clause() -> None:
+    """No comma before "and" here -- the clause split alone does not
+    separate this into two clauses, so the cross-field-family guard is
+    what catches it: the one remaining clause satisfies
+    benchmark_scores's own concept and a withholding phrase, but also
+    plainly names pricing in the same clause."""
+    assert not _quote_supports_non_disclosure(
+        "benchmark_scores", "Benchmark scores are strong and pricing has not been announced"
+    )
+
+
+def test_context_window_rejects_two_families_in_one_clause() -> None:
+    """Both context_window_tokens's own concept AND a different family
+    (benchmarks) appear in the SAME clause -- the matching-family set is
+    {"context_window", "benchmarks"}, not exactly {"context_window"}, so
+    this must fail closed even though the candidate's own field concept
+    really is present."""
+    assert not _quote_supports_non_disclosure(
+        "context_window_tokens", "Context window and benchmark scores have not been disclosed"
+    )
+
+
+def test_input_price_accepts_combined_input_output_pricing_quote() -> None:
+    """input_price_usd and output_price_usd share one "pricing" family
+    -- a clause naming both sides of the pricing story is still exactly
+    one matching family, not treated as cross-contaminated."""
+    assert _quote_supports_non_disclosure(
+        "input_price_usd", "Input and output pricing have not been announced"
+    )
+
+
+def test_output_price_accepts_combined_input_output_pricing_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "output_price_usd", "Input and output pricing have not been announced"
+    )
+
+
+def test_end_to_end_cross_family_clause_candidate_is_dropped() -> None:
+    """Integration proof that the cross-family guard is actually wired
+    into extract_facts(), not just correct in isolation."""
+    text = "Context window and benchmark scores have not been disclosed for this release."
+
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value=None,
+                    disclosure_status="not_disclosed",
+                    quoted_span="Context window and benchmark scores have not been disclosed",
+                    confidence=0.9,
+                )
+            ]
+        )
+
+    facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
+    assert facts == []

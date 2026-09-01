@@ -133,3 +133,31 @@ false positives through:
 
 All four gaps were verified against concrete false-positive/true-positive phrase pairs before
 relying on the fix — see `tests/unit/test_extract_facts.py`'s clause-bounded-matching test section.
+
+## Revisions requested by Person C (2026-09-01, third round)
+
+Person C found the second round's clause-bounded check itself still too narrow: it only split
+clauses on plain sentence punctuation (`. ! ? ; \n`), missing a COMPOUND sentence that joins two
+unrelated facts with a comma+conjunction, a bare contrast conjunction, or a dash and has no
+terminal punctuation between the two halves — e.g. `"The model has a large context window, but
+pricing details have not been released"` is one sentence, yet its two halves are about different
+facts.
+
+Fixed with two changes, `extract_facts.py`:
+
+1. **`_CLAUSE_SPLIT_RE` widened** to also split on `,\s*(?:but|and|while|whereas|although|however
+   |yet)\b`, a bare `\b(?:but|while|whereas|although|however)\b`, and an em dash (`--`/`—` — a
+   single ASCII hyphen, as in `"GPT-4o"`, deliberately does not match either alternative).
+2. **A same-clause cross-field-family guard**, for the case a comma doesn't even separate the two
+   halves (a bare `"and"` with no leading comma isn't split, by design — `"Input and output
+   pricing have not been announced"` must still pass for either price field). Fields are grouped
+   into concept families (`_FIELD_TO_FAMILY`/`_FAMILY_CONCEPT_PATTERNS`) — `input_price_usd` and
+   `output_price_usd` share one `"pricing"` family — and a clause only counts as support when its
+   set of matching families is EXACTLY the candidate's own family, not a superset. This is what
+   rejects `"Benchmark scores are strong and pricing has not been announced"` for
+   `benchmark_scores`: that clause's own concept and a withholding phrase are both present, but
+   the same clause also names pricing, so which fact is actually being withheld is ambiguous.
+
+Verified against concrete phrase pairs for every field family, including the combined-pricing
+positive case and a deliberately multi-family negative case, before relying on the fix — see
+`tests/unit/test_extract_facts.py`'s compound-clause test section.
