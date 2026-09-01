@@ -271,6 +271,120 @@ def test_change_snapshot_ids_treats_empty_string_as_absent() -> None:
     assert change_snapshot_ids(change) == (None, None)
 
 
+def _not_disclosed_fact(field: str, snapshot_id: str, fact_id: str = "fact_nd") -> ExtractedFact:
+    return ExtractedFact(
+        id=fact_id,
+        snapshot_id=snapshot_id,
+        field=field,
+        value=None,
+        disclosure_status="not_disclosed",
+        extraction_method="llm_structured_output",
+        extraction_model="claude-sonnet-5",
+        prompt_version="fact-extraction-v1",
+        quoted_span="pricing has not yet been announced",
+        confidence=0.9,
+    )
+
+
+# --- ADR 0006: disclosure-status transitions must not crash update_fact()
+# and are recorded but not reported as a Change (same treatment a first
+# observation already gets) -- see update_fact()'s own docstring. ---
+
+
+def test_first_observation_of_a_not_disclosed_fact_is_not_a_change() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    change = store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", "snap_1"),
+        source_url="https://openai.com/pricing",
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    assert change is None
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.value is None
+    assert current.disclosure_status == "not_disclosed"
+
+
+def test_disclosed_to_not_disclosed_transition_is_recorded_but_not_a_change() -> None:
+    """A real disclosure-status flip -- previously a real value, now
+    explicitly withheld. FactStore records the new state (so
+    get_current_fact()/build_fact_table() see it right away) but doesn't
+    turn it into a Change/DigestClaim -- see update_fact()'s own
+    docstring for why."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert change is None
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.value is None
+    assert current.disclosure_status == "not_disclosed"
+    assert current.snapshot_id == "snap_2"
+
+
+def test_not_disclosed_to_disclosed_transition_is_recorded_but_not_a_change() -> None:
+    """The reverse flip -- a value now disclosed for the first time after
+    an explicit non-disclosure. Same treatment: recorded, not a Change."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert change is None
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.value == "5"
+    assert current.disclosure_status == "disclosed"
+
+
+def test_repeated_not_disclosed_observation_is_a_silent_no_op_but_refreshes_provenance() -> None:
+    """Two not_disclosed observations in a row for the same field are
+    equivalent (nothing actually changed) -- provenance still refreshes
+    to the newer confirming snapshot, the same as a repeated disclosed
+    value already does (test_identical_value_is_a_silent_no_op)."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", "snap_1", "fact_1"),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", "snap_2", "fact_2"),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert change is None
+    assert store.field_history(subject, "input_price_usd") == []
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.snapshot_id == "snap_2"
+
+
 def test_known_subjects_accumulates_across_updates() -> None:
     store = FactStore()
     a = Subject(company="OpenAI", product="GPT-4o")

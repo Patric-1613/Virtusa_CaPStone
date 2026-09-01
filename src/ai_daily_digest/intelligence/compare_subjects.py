@@ -20,6 +20,13 @@ Phase 1 (ADR 0005 point 2): only `context_window_tokens` has a
 registered `ComparisonRule` (`shared/attributes.py::COMPARISON_RULES`).
 Every other field is excluded from comparison until its own
 representation is designed — a deliberate scope limit, not a bug.
+
+ADR 0006 (docs/adr/0006-disclosure-status-semantics.md): a row with
+nothing ever recorded ("unknown") and a row with a real, grounded
+non-disclosure statement ("not_disclosed") are different claims, not the
+same "no value" case — see `FactRow`'s own docstring. Both still abstain
+from comparison here (neither has a real value), but `_resolve_assertion`
+surfaces which one it was in its rejection reason.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -47,11 +55,26 @@ SubjectKey = tuple[str, str]
 class FactRow(BaseModel):
     """One cell of the fact table handed to the model — the value AND
     its snapshot id, so a resolved comparison has a real citation to
-    attach. value=None means "not disclosed", never "unknown"."""
+    attach.
+
+    disclosure_status (ADR 0006 — "unknown" vs. "not disclosed" are
+    different claims):
+      - "unknown" (the default): no ExtractedFact has ever been recorded
+        for this (subject, field). The silent, default absence of
+        information — nothing should be claimed about it, and it has no
+        snapshot_id to cite.
+      - "not_disclosed": a real, grounded ExtractedFact exists stating
+        the source explicitly withholds this fact. This IS a groundable
+        claim with a real citation — value is still None (there's no
+        value), but snapshot_id is real.
+      - "disclosed": a real value, with a real citation.
+    value is None for both "unknown" and "not_disclosed" — check
+    disclosure_status, not value, to tell them apart."""
 
     subject: Subject
     field: str
     value: str | None = None
+    disclosure_status: Literal["disclosed", "not_disclosed", "unknown"] = "unknown"
     snapshot_id: str | None = None
 
 
@@ -72,19 +95,30 @@ class ComparisonResponse(BaseModel):
 
 def build_fact_table(store: FactStore, subjects: list[Subject], fields: list[str]) -> list[FactRow]:
     """Read-only view of FactStore's current state for the given subjects
-    and fields — the only thing compare_subjects() is allowed to see."""
+    and fields — the only thing compare_subjects() is allowed to see.
+
+    ADR 0006: no ExtractedFact recorded at all -> disclosure_status
+    "unknown" (the FactRow default) -- a true, silent gap, nothing to
+    claim. A recorded ExtractedFact's own disclosure_status ("disclosed"
+    or "not_disclosed") carries straight through -- "not_disclosed" is a
+    real, grounded claim with a real snapshot_id, not the same as
+    "unknown" just because both happen to have value=None."""
     rows: list[FactRow] = []
     for subject in subjects:
         for field in fields:
             fact = store.get_current_fact(subject, field)
-            rows.append(
-                FactRow(
-                    subject=subject,
-                    field=field,
-                    value=fact.value if fact else None,
-                    snapshot_id=fact.snapshot_id if fact else None,
+            if fact is None:
+                rows.append(FactRow(subject=subject, field=field))
+            else:
+                rows.append(
+                    FactRow(
+                        subject=subject,
+                        field=field,
+                        value=fact.value,
+                        disclosure_status=fact.disclosure_status,
+                        snapshot_id=fact.snapshot_id,
+                    )
                 )
-            )
     return rows
 
 
@@ -97,8 +131,10 @@ def _format_table(rows: list[FactRow]) -> str:
         lines.append(f"{company}: {product}")
         for row in subject_rows:
             label = COMPARABLE_FIELDS.get(row.field, row.field)
-            if row.value is None:
-                lines.append(f"  {label}: not disclosed")
+            if row.disclosure_status == "unknown":
+                lines.append(f"  {label}: unknown")
+            elif row.disclosure_status == "not_disclosed":
+                lines.append(f"  {label}: not disclosed (snapshot {row.snapshot_id})")
             else:
                 lines.append(f"  {label}: {row.value} (snapshot {row.snapshot_id})")
     return "\n".join(lines)
@@ -190,8 +226,26 @@ def _resolve_assertion(  # pylint: disable=too-many-return-statements
 
     row_a = index.row_by_subject_field.get((_subject_key(assertion.subject_a), assertion.field))
     row_b = index.row_by_subject_field.get((_subject_key(assertion.subject_b), assertion.field))
-    if row_a is None or row_b is None or row_a.value is None or row_b.value is None:
+    # ADR 0006: "unknown" (no row / never recorded) and "not_disclosed"
+    # (a real, grounded non-disclosure claim) are different rejection
+    # reasons, even though a comparison can't proceed either way -- there
+    # is still no real value on at least one side to compare.
+    if (
+        row_a is None
+        or row_b is None
+        or row_a.disclosure_status == "unknown"
+        or row_b.disclosure_status == "unknown"
+    ):
+        return None, "value_unknown"
+    if row_a.disclosure_status == "not_disclosed" or row_b.disclosure_status == "not_disclosed":
         return None, "value_not_disclosed"
+    if row_a.value is None or row_b.value is None:
+        # Unreachable given ExtractedFact's own invariant
+        # (disclosure_status="disclosed" implies a real value, ADR 0006)
+        # -- defensive only, mirrors this module's existing style of
+        # guarding against a contract violation reaching here via some
+        # future/unexpected construction path.
+        return None, "value_unknown"
     if row_a.snapshot_id is None or row_b.snapshot_id is None:
         return None, "ungrounded_citation"
 

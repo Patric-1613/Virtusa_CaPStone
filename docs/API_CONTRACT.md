@@ -161,17 +161,44 @@ because deterministic facts don't always have a natural quote; LLM-extracted fac
 both, and this is enforced at the model level (not just by extraction code) — see
 [ADR 0004](adr/0004-extracted-fact-keeps-evidence.md).
 
+`disclosure_status` (`"disclosed"` | `"not_disclosed"`, default `"disclosed"`) distinguishes an
+explicit non-disclosure statement ("pricing has not yet been announced") from the silent, default
+absence of any fact at all — the latter is represented by no `ExtractedFact` existing, never by one
+with a null `value`. When `disclosure_status` is `"not_disclosed"`, `value` MUST be `null` and
+`quoted_span` MUST cite the actual non-disclosure statement — "not disclosed" is itself a groundable
+claim needing its own evidence, not a default. Enforced at the model level, not just documented —
+see [ADR 0006](adr/0006-disclosure-status-semantics.md).
+
 ```json
 {
   "id": "7a5bbb61-d20d-4bd3-93cf-e31236b98f0d",
   "snapshot_id": "96377473-b3ac-4133-9f7d-63f28edbdc39",
   "field": "context_window_tokens",
   "value": "256000",
+  "disclosure_status": "disclosed",
   "extraction_method": "llm_structured_output",
   "extraction_model": "provider/model-version",
   "prompt_version": "fact-extraction-v1",
   "quoted_span": "context window has been increased to 256,000 tokens",
   "confidence": 0.95
+}
+```
+
+A `"not_disclosed"` fact looks like this instead — `value` null, `quoted_span` citing the
+non-disclosure statement itself:
+
+```json
+{
+  "id": "7a5bbb61-d20d-4bd3-93cf-e31236b98f0e",
+  "snapshot_id": "96377473-b3ac-4133-9f7d-63f28edbdc40",
+  "field": "input_price_usd",
+  "value": null,
+  "disclosure_status": "not_disclosed",
+  "extraction_method": "llm_structured_output",
+  "extraction_model": "provider/model-version",
+  "prompt_version": "fact-extraction-v1",
+  "quoted_span": "pricing has not yet been announced",
+  "confidence": 0.9
 }
 ```
 

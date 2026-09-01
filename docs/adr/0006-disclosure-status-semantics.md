@@ -1,6 +1,6 @@
 # 0006 — "Unknown" vs. "not disclosed" are different claims
 
-Status: Proposed
+Status: Accepted by Persons A and B; Person C confirmation pending
 Date: 2026-08-27
 
 ## Context
@@ -25,7 +25,7 @@ this distinction is not required for Phase 1 of that ADR (comparison scoped to
 correctly, but not urgently blocking) and deserves its own focused decision rather than expanding
 0005's scope.
 
-## Decision (proposed, not yet implemented or approved)
+## Decision
 
 "Not disclosed" becomes its own extractable, groundable fact state rather than a default inferred
 from silence:
@@ -52,13 +52,20 @@ nothing about this side" from "row says `disclosure_status="not_disclosed"` with
 render the explicit non-disclosure sentence." Only the latter may ever produce "has not disclosed"
 text.
 
-## Consequences (anticipated — this ADR is not yet accepted)
+## Consequences
 
-- Requires enumerating every call site that currently treats `value is None` as "not disclosed"
-  and updating each to the unknown/not-disclosed distinction — at minimum
-  `compare_subjects.py::build_fact_table()`/`_format_table()` and any future comparison-rendering
-  code from ADR 0005.
-- `ExtractedFact` gains a field (additive, same discipline as ADR 0004) — needs its own contract
-  test updates and fixture updates.
-- Blocked on this ADR being reviewed and accepted before implementation, per the team's
-  contract-change process (`docs/API_CONTRACT.md`) — same gate as ADR 0004 and ADR 0005.
+- Every call site that previously treated `value is None` as "not disclosed" is updated to the
+  unknown/not-disclosed distinction — `compare_subjects.py::build_fact_table()`/`_format_table()`/
+  `_resolve_assertion()` (ADR 0005's comparison-rendering code). `intelligence/facts.py::FactStore`
+  and `draft_claims.py` are deliberately NOT extended with new disclosure-transition wording as
+  part of this ADR: a "not disclosed" `ExtractedFact` is now recorded (so `get_current_fact()`/
+  `build_fact_table()` can see it), but `FactStore.update_fact()` does not turn a disclosure-status
+  transition (either side lacking a value) into a `Change`/`DigestClaim` — the same treatment a
+  first observation already gets, and for the same reason: nothing downstream has an agreed wording
+  for that sentence yet, and inventing one silently here would be exactly the kind of ungrounded-by-
+  default rendering this ADR exists to prevent. That remains open for its own follow-up.
+- `ExtractedFact` gains a field (additive, same discipline as ADR 0004) — contract tests, fixtures,
+  and `docs/API_CONTRACT.md` updated accordingly.
+- Accepted by Persons A and B; Person C's confirmation is still pending, per the team's
+  contract-change process (`docs/API_CONTRACT.md`) — same gate as ADR 0004 and ADR 0005. Not
+  blocked on that confirmation before implementation starts, matching how ADR 0005 was handled.
