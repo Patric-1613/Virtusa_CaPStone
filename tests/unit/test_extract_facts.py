@@ -456,3 +456,114 @@ def test_end_to_end_disclosed_value_mislabeled_not_disclosed_is_rejected() -> No
 
     facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
     assert facts == []
+
+
+# --- Clause-bounded field-concept matching (ADR 0006 revision requested
+# by Persons A and C, second round) -- tightens the field-concept
+# patterns to whole PHRASES, not single words ("rate limit"/"context
+# window", never bare "limit"/"token"/"terms"/"available"), and requires
+# the withholding phrase and the field concept to appear in the SAME
+# clause of the quote, not just somewhere in the whole quote. Tested
+# directly against every phrase the review specifies. ---
+
+
+def test_input_price_rejects_modalities_quote() -> None:
+    assert not _quote_supports_non_disclosure(
+        "input_price_usd", "Input modalities have not been announced"
+    )
+
+
+def test_output_price_rejects_modalities_quote() -> None:
+    assert not _quote_supports_non_disclosure(
+        "output_price_usd", "Output modalities have not been published"
+    )
+
+
+def test_input_price_rejects_rate_hiding_inside_corporate() -> None:
+    """ "rate" must not match as a substring inside "corporate" -- whole-
+    word/whole-phrase matching, not a loose substring check."""
+    assert not _quote_supports_non_disclosure(
+        "input_price_usd", "Corporate benchmark results have not been published"
+    )
+
+
+def test_context_window_rejects_rate_limits_quote() -> None:
+    """ "limit" alone must not stand in for the context-window concept --
+    "Rate limits" is a pricing/throttling concept, not a context window."""
+    assert not _quote_supports_non_disclosure(
+        "context_window_tokens", "Rate limits have not been announced"
+    )
+
+
+def test_licence_terms_rejects_payment_terms_quote() -> None:
+    """ "terms" alone must not stand in for the licence_terms concept --
+    "Payment terms" has nothing to do with licensing."""
+    assert not _quote_supports_non_disclosure(
+        "licence_terms", "Payment terms have not been published"
+    )
+
+
+def test_availability_regions_rejects_plain_service_availability_quote() -> None:
+    """ "is not available" alone is a plain feature/service-availability
+    statement, not a claim that REGIONS specifically are being withheld
+    -- must not be read as a non-disclosure claim at all."""
+    assert not _quote_supports_non_disclosure(
+        "availability_regions", "The model is not available in Europe"
+    )
+
+
+def test_availability_regions_rejects_benchmark_availability_quote() -> None:
+    assert not _quote_supports_non_disclosure(
+        "availability_regions", "Benchmark results are not available"
+    )
+
+
+def test_context_window_rejects_field_concept_and_withholding_in_different_clauses() -> None:
+    """The withholding phrase and the field concept both appear
+    SOMEWHERE in the quote, but about different clauses/topics -- must
+    be rejected, not accepted just because both patterns match the whole
+    quote independently."""
+    assert not _quote_supports_non_disclosure(
+        "context_window_tokens",
+        "The model features a large context window. Pricing details have not been released.",
+    )
+
+
+def test_input_price_accepts_pricing_quote() -> None:
+    assert _quote_supports_non_disclosure("input_price_usd", "Input pricing has not been announced")
+
+
+def test_output_price_accepts_cost_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "output_price_usd", "Cost per output token is undisclosed"
+    )
+
+
+def test_context_window_accepts_context_window_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "context_window_tokens", "Context window details are not published"
+    )
+
+
+def test_benchmark_scores_accepts_benchmark_scores_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "benchmark_scores", "Benchmark scores have not yet been released"
+    )
+
+
+def test_availability_regions_accepts_countries_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "availability_regions", "Supported countries have not been announced"
+    )
+
+
+def test_licence_terms_accepts_licensing_terms_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "licence_terms", "Commercial licensing terms are undisclosed"
+    )
+
+
+def test_modalities_accepts_input_output_modalities_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "modalities", "Supported input and output modalities have not been revealed"
+    )

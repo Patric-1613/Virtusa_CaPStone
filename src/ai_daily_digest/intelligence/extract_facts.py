@@ -42,13 +42,18 @@ Six guardrails enforced in code, not just requested in the prompt:
      the other.
   6. a NOT_DISCLOSED candidate's quote must actually SUPPORT a
      non-disclosure claim about THAT field, not merely exist in the text
-     -- see _quote_supports_non_disclosure's own docstring for its three
-     independent requirements (an approved withholding phrase, a
-     field-matching keyword, and no real number in the quote). Per
-     review: quote existence alone conflates "this text is real" with
-     "this text means what the candidate claims it means" -- the same
-     gap check #2 already closes for a disclosed value's number, now
-     closed for a non-disclosure claim too.
+     -- see _quote_supports_non_disclosure's own docstring: no real
+     number anywhere in the quote, and the SAME CLAUSE (not just
+     somewhere in the whole quote) must carry both an approved
+     withholding phrase and a concept pattern matching the candidate's
+     own field -- e.g. "The model features a large context window.
+     Pricing details have not been released." must not support a
+     context_window_tokens non-disclosure just because both halves
+     appear somewhere in the quote; they're about different clauses.
+     Per review: quote existence alone conflates "this text is real"
+     with "this text means what the candidate claims it means" -- the
+     same gap check #2 already closes for a disclosed value's number,
+     now closed for a non-disclosure claim too.
 
 The accepted quoted_span and confidence are kept on the resulting
 ExtractedFact (not discarded) so the evidence a fact was built from can
@@ -81,38 +86,89 @@ PROMPT_VERSION = "extract-facts-v1"
 # Approved explicit-withholding wording -- deliberately narrow (per
 # review): vague absence ("we tested multiple models") must NOT match,
 # only a phrase that actually says the fact is being withheld. Case-
-# insensitive. Extends the reviewer-specified pattern with an optional
-# "been" ("has not yet BEEN announced") -- without it, the pattern
-# rejects its own worked examples ("pricing has not been announced",
-# "pricing has not yet been announced"); verified against every
-# acceptance example in this module's own tests before relying on it.
+# insensitive. Includes an optional "been" ("has not yet BEEN
+# announced") -- without it, the pattern rejects its own worked examples
+# ("pricing has not been announced"); verified against every
+# acceptance-test phrase before relying on it. "available"/"public" are
+# NOT bare verbs here (unlike an earlier revision) -- "is not available"
+# alone is a plain service/feature-availability statement (e.g. "The
+# model is not available in Europe"), not a non-disclosure claim; only
+# counted when it follows one of a small set of nouns that actually name
+# a withheld FACT ("pricing/details/... are not available").
 _WITHHOLDING_PHRASE_RE = re.compile(
-    r"\b(?:not\s+(?:yet\s+)?(?:been\s+)?"
-    r"(?:disclosed|announced|published|revealed|released|available|provided|stated)"
+    r"\b(?:"
+    r"not\s+(?:yet\s+)?(?:been\s+)?"
+    r"(?:disclosed|announced|published|revealed|released|stated|detailed|shared|provided)"
     r"|withheld|unannounced|undisclosed|tbd|to\s+be\s+announced"
-    r"|details\s+(?:are|is)\s+not\s+(?:yet\s+)?public)\b",
+    r"|(?:details|information|pricing|scores|terms)\s+(?:are|is)\s+not\s+"
+    r"(?:yet\s+)?(?:public|available)"
+    r")\b",
     re.IGNORECASE,
 )
 
-# Keywords a genuine non-disclosure quote for THIS field should contain
-# -- catches a real withholding statement about one field being
-# misattributed to another (e.g. a pricing non-disclosure statement
-# reported against context_window_tokens). Matched as a loose
-# case-insensitive substring against the raw quote (not
-# normalise_name()'d) so a symbol like "$" survives -- normalise_name()
-# strips punctuation entirely. Every COMPARABLE_FIELDS key has an entry;
-# a field with none would fail closed via `.get(field, ())` below
-# regardless, but every real field is covered explicitly rather than
-# relying on that fallback silently.
-_NON_DISCLOSURE_FIELD_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "context_window_tokens": ("context", "token", "window", "length", "limit"),
-    "input_price_usd": ("price", "pricing", "cost", "rate", "fee", "$", "dollar", "input"),
-    "output_price_usd": ("price", "pricing", "cost", "rate", "fee", "$", "dollar", "output"),
-    "benchmark_scores": ("benchmark", "score", "result", "suite"),
-    "availability_regions": ("region", "availability", "available", "countr"),
-    "licence_terms": ("licence", "license", "terms"),
-    "modalities": ("modalit", "input type", "output type", "multimodal"),
+# Field-matching patterns a genuine non-disclosure quote for THIS field
+# should satisfy -- catches a real withholding statement about one field
+# being misattributed to another (e.g. a pricing non-disclosure
+# statement reported against context_window_tokens). Whole-word/whole-
+# phrase boundaries throughout: a loose substring match would let e.g.
+# "rate" match inside "corporate", a single word like "limit" or "token"
+# stand in for the whole context_window_tokens concept (a "rate limit"
+# is not a context window), or "terms" alone match an unrelated "payment
+# terms" sentence for licence_terms. Matched against the raw quote
+# (case-insensitive), not normalise_name()'d, so a symbol like "$"
+# survives -- normalise_name() strips punctuation entirely; "$" has no
+# natural word boundary of its own, so it's its own alternative rather
+# than wrapped in `\b`.
+#
+# input_price_usd / output_price_usd share the exact same pattern,
+# deliberately: "input"/"output" are optional qualifiers, never
+# independent evidence of pricing on their own (per review) -- a quote
+# needs an actual pricing concept (price/cost/rate/fee/... or "$")
+# regardless of which of the two price fields the candidate names.
+_FIELD_CONCEPT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "input_price_usd": re.compile(
+        r"\b(?:price|pricing|cost|costs|rate|rates|fee|fees|dollar|dollars|cent|cents"
+        r"|currency|currencies|usd)\b|\$",
+        re.IGNORECASE,
+    ),
+    "output_price_usd": re.compile(
+        r"\b(?:price|pricing|cost|costs|rate|rates|fee|fees|dollar|dollars|cent|cents"
+        r"|currency|currencies|usd)\b|\$",
+        re.IGNORECASE,
+    ),
+    # Never "limit" or "token" alone -- "Rate limits have not been
+    # announced" must not read as a context-window non-disclosure.
+    "context_window_tokens": re.compile(
+        r"\b(?:context\s+(?:window|length|size|limit|capacity)"
+        r"|token\s+(?:window|limit|capacity)"
+        r"|(?:max|maximum)\s+context)\b",
+        re.IGNORECASE,
+    ),
+    # Never "result" or "score" alone.
+    "benchmark_scores": re.compile(
+        r"\b(?:benchmark(?:s)?(?:\s+(?:score|scores|result|results|eval|evals"
+        r"|evaluation|evaluations))?)\b",
+        re.IGNORECASE,
+    ),
+    # Never bare "available"/"availability" alone.
+    "availability_regions": re.compile(
+        r"\b(?:region|regions|country|countries|geographic\s+availability"
+        r"|geographies|geography|regional\s+availability)\b",
+        re.IGNORECASE,
+    ),
+    # Never "terms" alone -- avoids matching an unrelated "payment terms".
+    "licence_terms": re.compile(r"\b(?:licen[sc]e|licen[sc]ing)(?:\s+terms)?\b", re.IGNORECASE),
+    "modalities": re.compile(
+        r"\b(?:modalit(?:y|ies)|multimodal|input\s+(?:types?|formats?)"
+        r"|output\s+(?:types?|formats?))\b",
+        re.IGNORECASE,
+    ),
 }
+
+# Splits a quote into clause/sentence segments -- see
+# _quote_supports_non_disclosure's own docstring for why a single
+# combined check across the whole quote isn't enough.
+_CLAUSE_SPLIT_RE = re.compile(r"[.!?;\n]+")
 
 
 class FactCandidate(BaseModel):
@@ -221,30 +277,32 @@ def _quote_supports_non_disclosure(field: str, quote: str) -> bool:
     specific field is being withheld". Mirrors what
     grounding.py::value_supported_by_quote() does for a disclosed
     value's number -- a real, grounded quote can still be attached to
-    the wrong claim. Three independent requirements, ALL must hold, and
-    any ambiguous or non-matching quote fails closed (returns False):
+    the wrong claim.
 
-    1. The quote contains an approved explicit-withholding phrase (see
-       _WITHHOLDING_PHRASE_RE) -- vague absence wording ("we tested
-       multiple models across tasks") does not imply withholding and
-       must not pass.
-    2. The quote contains at least one keyword associated with THIS
-       field (see _NON_DISCLOSURE_FIELD_KEYWORDS) -- a genuine
-       non-disclosure statement about one field (e.g. pricing)
-       misattributed to a different field (e.g. context_window_tokens)
-       is rejected, the same class of error value_supported_by_quote()
-       catches for a disclosed value's number.
-    3. The quote does NOT itself contain a real number -- a quote that
+    1. The quote must not contain a real number anywhere -- a quote that
        states an actual value ("$5 per million tokens") is a disclosed
        fact mislabeled not_disclosed, not a genuine non-disclosure;
-       reject rather than guess which label is right."""
-    if not _WITHHOLDING_PHRASE_RE.search(quote):
+       reject rather than guess which label is right.
+    2. At least one CLAUSE of the quote (split on `. ! ? ; \\n` --
+       _CLAUSE_SPLIT_RE) must contain BOTH an approved explicit-
+       withholding phrase (_WITHHOLDING_PHRASE_RE) AND THIS field's own
+       concept pattern (_FIELD_CONCEPT_PATTERNS). Checking the two
+       patterns against the whole quote independently (rather than the
+       same clause) would accept e.g. "The model features a large
+       context window. Pricing details have not been released." for
+       context_window_tokens -- the withholding phrase and the field
+       concept are both present SOMEWHERE in the quote, but not about
+       the same fact; that must be rejected. A field with no registered
+       concept pattern fails closed too."""
+    if numbers_in(quote):
         return False
-    keywords = _NON_DISCLOSURE_FIELD_KEYWORDS.get(field, ())
-    lowered_quote = quote.lower()
-    if not any(keyword in lowered_quote for keyword in keywords):
+    pattern = _FIELD_CONCEPT_PATTERNS.get(field)
+    if pattern is None:
         return False
-    return not numbers_in(quote)
+    return any(
+        _WITHHOLDING_PHRASE_RE.search(clause) and pattern.search(clause)
+        for clause in _CLAUSE_SPLIT_RE.split(quote)
+    )
 
 
 def _default_call(system: str, prompt: str) -> FactExtractionResponse:

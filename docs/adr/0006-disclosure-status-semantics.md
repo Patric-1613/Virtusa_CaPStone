@@ -1,7 +1,6 @@
 # 0006 — "Unknown" vs. "not disclosed" are different claims
 
-Status: Proposed for peer review — revisions requested by Person A on 2026-09-01; Person C initial
-review completed
+Status: Proposed for peer review — revisions requested by Persons A and C on 2026-09-01
 Date: 2026-08-27
 
 ## Context
@@ -85,7 +84,8 @@ addressed in this revision:
    real, not that it actually supports "this specific field is being withheld." Fixed with a
    deterministic check (`extract_facts.py::_quote_supports_non_disclosure`) requiring an approved
    explicit-withholding phrase, a field-matching keyword, and no real number in the quote — mirrors
-   `grounding.py::value_supported_by_quote()`'s role for a disclosed value's number.
+   `grounding.py::value_supported_by_quote()`'s role for a disclosed value's number. Further
+   tightened in the next revision round below — see "Revisions requested by Persons A and C".
 2. **`value: str | None` must have no default.** A construction site that forgot the field entirely
    previously fell back to `None`, silently indistinguishable from an explicit not-disclosed value.
    Both `ExtractedFact` (`shared/schemas.py`) and `FactCandidate` (`extract_facts.py`) now require
@@ -97,3 +97,39 @@ addressed in this revision:
 4. **This ADR's status previously overstated its own acceptance.** "Accepted by Persons A and B;
    Person C confirmation pending" read as though implementation proceeding was itself a form of
    acceptance, and understated that Person C's sign-off is required, not optional. Corrected above.
+
+## Revisions requested by Persons A and C (2026-09-01, second round)
+
+The first revision's `_quote_supports_non_disclosure` check was itself found under-specified —
+loose substring keyword matching and whole-quote (not clause-scoped) checking let several real
+false positives through:
+
+1. **Loose substring matching let a keyword match inside an unrelated word** — `"rate"` (part of
+   `input_price_usd`'s pricing concept) matched inside `"corporate"`; `"terms"` alone
+   (`licence_terms`) matched an unrelated `"payment terms"` sentence; `"limit"`/`"token"` alone
+   (`context_window_tokens`) matched `"Rate limits"`, a pricing/throttling concept, not a context
+   window. Fixed by replacing single-word substring checks with whole-word/whole-phrase compiled
+   regexes (`_FIELD_CONCEPT_PATTERNS`) per field — `context_window_tokens` now requires a combined
+   phrase (`"context window"`, `"token limit"`, `"max context"`, ...), never a bare word alone;
+   `licence_terms` requires the word `"licence"`/`"license"`/`"licensing"` itself, `"terms"` alone
+   is insufficient.
+2. **`input`/`output` were accepted as pricing evidence on their own.** Corrected: both price
+   fields now share one pattern requiring an actual pricing concept (`price`, `cost`, `rate`,
+   `fee`, `dollar`, `cent`, `currency`, `usd`, or `$`) — `"input"`/`"output"` are optional
+   qualifiers only, never sufficient by themselves.
+3. **Bare `"available"`/`"public"` over-matched plain feature/service-availability statements** —
+   `"The model is not available in Europe"` is a normal availability statement, not a claim that a
+   *fact* is being withheld, but the withholding-phrase pattern treated `"not available"` as
+   equivalent to `"not disclosed"`. Fixed: `_WITHHOLDING_PHRASE_RE` no longer accepts bare
+   `"available"`/`"public"` as verbs — only when preceded by a noun that actually names a withheld
+   fact (`"pricing/details/information/scores/terms are/is not available"`).
+4. **Checking the withholding phrase and the field concept against the WHOLE quote independently
+   let two unrelated clauses satisfy both requirements together** — e.g. `"The model features a
+   large context window. Pricing details have not been released."` would satisfy
+   `context_window_tokens`'s concept pattern (first clause) and the withholding pattern (second
+   clause) even though neither clause is itself a context-window non-disclosure statement. Fixed:
+   `_quote_supports_non_disclosure` now splits the quote into clauses (`. ! ? ; \n`) and requires
+   both patterns to match the SAME clause.
+
+All four gaps were verified against concrete false-positive/true-positive phrase pairs before
+relying on the fix — see `tests/unit/test_extract_facts.py`'s clause-bounded-matching test section.
