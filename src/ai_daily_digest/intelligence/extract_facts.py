@@ -53,11 +53,16 @@ Six guardrails enforced in code, not just requested in the prompt:
      released." (two sentences) nor "Benchmark scores are strong and
      pricing has not been announced" (one compound clause naming two
      unrelated concepts) may support a non-disclosure claim for the
-     field whose concept happens to appear first. Per review: quote
-     existence alone conflates "this text is real" with "this text
-     means what the candidate claims it means" -- the same gap check #2
-     already closes for a disclosed value's number, now closed for a
-     non-disclosure claim too.
+     field whose concept happens to appear first. WITHIN the pricing
+     family specifically, an input/output qualifier must also match the
+     candidate's own price field -- "Output pricing has not been
+     announced" must not support input_price_usd just because the two
+     price fields share one family (see
+     _pricing_qualifiers_support_field). Per review: quote existence
+     alone conflates "this text is real" with "this text means what the
+     candidate claims it means" -- the same gap check #2 already closes
+     for a disclosed value's number, now closed for a non-disclosure
+     claim too.
 
 The accepted quoted_span and confidence are kept on the resulting
 ExtractedFact (not discarded) so the evidence a fact was built from can
@@ -118,6 +123,11 @@ _WITHHOLDING_PHRASE_RE = re.compile(
 # of the two price fields the candidate names, and a clause naming both
 # ("Input and output pricing have not been announced") must never be
 # treated as cross-family-contaminated just because it mentions both.
+# Within the pricing family specifically, input/output qualifiers DO
+# still matter for a second, narrower check -- see
+# _pricing_qualifiers_support_field below -- to stop an input-only
+# non-disclosure quote ("Output pricing has not been announced")
+# supporting the WRONG price field.
 _FIELD_TO_FAMILY: dict[str, str] = {
     "input_price_usd": "pricing",
     "output_price_usd": "pricing",
@@ -194,6 +204,40 @@ _CLAUSE_SPLIT_RE = re.compile(
     r"|--|—",
     re.IGNORECASE,
 )
+
+# Directional qualifiers within the pricing family -- a clause already
+# confirmed to be a pricing-family non-disclosure statement (per
+# _quote_supports_non_disclosure's main check) can still name the WRONG
+# price field: "Output pricing has not been announced" is real pricing
+# non-disclosure, but it says nothing about input_price_usd.
+_INPUT_QUALIFIER_RE = re.compile(r"\b(?:input|prompt|ingress)\b", re.IGNORECASE)
+_OUTPUT_QUALIFIER_RE = re.compile(r"\b(?:output|completion|generation|egress)\b", re.IGNORECASE)
+
+
+def _pricing_qualifiers_support_field(field: str, clause: str) -> bool:
+    """Within the pricing family, ensure directional qualifiers match
+    the field:
+      - Input-only wording ("Input pricing...") supports ONLY
+        input_price_usd.
+      - Output-only wording ("Output pricing...") supports ONLY
+        output_price_usd.
+      - Both qualifiers present ("Input and output pricing...") support
+        BOTH input_price_usd and output_price_usd -- the same siblings-
+        share-a-family reasoning _FIELD_TO_FAMILY's own comment
+        describes for the family-match check itself.
+      - General, unqualified pricing wording ("Pricing has not been
+        announced", no "input"/"output" at all) supports BOTH -- a
+        candidate is not required to specify a qualifier that the
+        source text itself never mentioned."""
+    has_input = bool(_INPUT_QUALIFIER_RE.search(clause))
+    has_output = bool(_OUTPUT_QUALIFIER_RE.search(clause))
+    if (has_input and has_output) or (not has_input and not has_output):
+        return True
+    if has_input:
+        return field == "input_price_usd"
+    if has_output:
+        return field == "output_price_usd"
+    return True
 
 
 class FactCandidate(BaseModel):
@@ -332,7 +376,13 @@ def _quote_supports_non_disclosure(field: str, quote: str) -> bool:
        (input_price_usd/output_price_usd) never trigger this against
        each other -- they map to the one "pricing" family, so a clause
        naming both still has a matching-family set of exactly
-       `{"pricing"}`."""
+       `{"pricing"}`.
+    3. WITHIN the pricing family specifically, a clause that names the
+       WRONG price field is still rejected --
+       _pricing_qualifiers_support_field's own docstring for the exact
+       rule -- "Output pricing has not been announced" is real pricing
+       non-disclosure, but must not support input_price_usd just
+       because both fields share one family and one concept pattern."""
     if numbers_in(quote):
         return False
     target_family = _FIELD_TO_FAMILY.get(field)
@@ -345,6 +395,8 @@ def _quote_supports_non_disclosure(field: str, quote: str) -> bool:
             family for family, pattern in _FAMILY_CONCEPT_PATTERNS.items() if pattern.search(clause)
         }
         if matching_families == {target_family}:
+            if target_family == "pricing" and not _pricing_qualifiers_support_field(field, clause):
+                continue
             return True
     return False
 

@@ -647,3 +647,79 @@ def test_end_to_end_cross_family_clause_candidate_is_dropped() -> None:
 
     facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
     assert facts == []
+
+
+# --- Pricing qualifier attribution (ADR 0006 revision, fourth round) --
+# input_price_usd and output_price_usd share one "pricing" family
+# (correctly -- a clause naming both sides of the pricing story is
+# still exactly one matching family, not cross-contaminated), but a
+# clause naming ONLY one direction ("Output pricing has not been
+# announced") must not support the OTHER price field just because they
+# share a family. See _pricing_qualifiers_support_field. ---
+
+
+def test_input_price_rejects_output_only_pricing_quote() -> None:
+    assert not _quote_supports_non_disclosure(
+        "input_price_usd", "Output pricing has not been announced"
+    )
+
+
+def test_output_price_rejects_input_only_pricing_quote() -> None:
+    assert not _quote_supports_non_disclosure(
+        "output_price_usd", "Input pricing has not been announced"
+    )
+
+
+def test_input_price_accepts_input_only_pricing_quote() -> None:
+    assert _quote_supports_non_disclosure("input_price_usd", "Input pricing has not been announced")
+
+
+def test_output_price_accepts_output_only_pricing_quote() -> None:
+    assert _quote_supports_non_disclosure(
+        "output_price_usd", "Output pricing has not been announced"
+    )
+
+
+def test_input_price_accepts_combined_input_output_pricing_quote_exact_phrase() -> None:
+    assert _quote_supports_non_disclosure(
+        "input_price_usd", "Input and output pricing have not been announced"
+    )
+
+
+def test_output_price_accepts_combined_input_output_pricing_quote_exact_phrase() -> None:
+    assert _quote_supports_non_disclosure(
+        "output_price_usd", "Input and output pricing have not been announced"
+    )
+
+
+def test_input_price_accepts_general_unqualified_pricing_quote() -> None:
+    """No "input"/"output" qualifier at all -- a candidate is not
+    required to specify a direction the source text itself never
+    mentioned."""
+    assert _quote_supports_non_disclosure("input_price_usd", "Pricing has not been announced")
+
+
+def test_output_price_accepts_general_unqualified_pricing_quote() -> None:
+    assert _quote_supports_non_disclosure("output_price_usd", "Pricing has not been announced")
+
+
+def test_end_to_end_input_price_candidate_citing_output_only_quote_is_dropped() -> None:
+    """Integration proof that the pricing-qualifier guard is actually
+    wired into extract_facts(), not just correct in isolation."""
+    text = "Output pricing has not been announced for this release."
+
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="input_price_usd",
+                    value=None,
+                    disclosure_status="not_disclosed",
+                    quoted_span="Output pricing has not been announced",
+                    confidence=0.9,
+                )
+            ]
+        )
+
+    facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
+    assert facts == []
