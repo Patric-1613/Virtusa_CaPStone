@@ -107,3 +107,95 @@ def test_deterministic_fact_without_evidence_is_still_allowed() -> None:
     )
     assert fact.quoted_span is None
     assert fact.confidence is None
+
+
+# --- ADR 0006: "unknown" vs. "not disclosed" are different claims --
+# disclosure_status/value invariants on ExtractedFact. ---
+
+
+def test_not_disclosed_fact_with_grounded_evidence_is_accepted() -> None:
+    fact = ExtractedFact(
+        id="f1",
+        snapshot_id="snap_1",
+        field="input_price_usd",
+        value=None,
+        disclosure_status="not_disclosed",
+        extraction_method="llm_structured_output",
+        extraction_model="claude-sonnet-5",
+        prompt_version="v1",
+        quoted_span="pricing has not yet been announced",
+        confidence=0.9,
+    )
+    assert fact.value is None
+    assert fact.disclosure_status == "not_disclosed"
+
+
+def test_not_disclosed_fact_with_a_value_is_rejected() -> None:
+    """A fact can't simultaneously state a value and claim none was
+    given -- the exact contradiction this ADR calls out."""
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="input_price_usd",
+            value="5",
+            disclosure_status="not_disclosed",
+            extraction_method="llm_structured_output",
+            extraction_model="claude-sonnet-5",
+            prompt_version="v1",
+            quoted_span="pricing has not yet been announced",
+            confidence=0.9,
+        )
+
+
+def test_not_disclosed_fact_without_quoted_span_is_rejected() -> None:
+    """ "Not disclosed" is a groundable claim, not a default inferred from
+    silence -- it needs a citation the same as any other extracted fact,
+    regardless of extraction_method (unlike the LLM-only evidence
+    requirement above)."""
+    with pytest.raises(ValidationError, match="quoted_span"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="input_price_usd",
+            value=None,
+            disclosure_status="not_disclosed",
+            extraction_method="deterministic",
+        )
+
+
+def test_not_disclosed_fact_with_empty_quoted_span_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="quoted_span"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="input_price_usd",
+            value=None,
+            disclosure_status="not_disclosed",
+            extraction_method="deterministic",
+            quoted_span="",
+        )
+
+
+def test_disclosed_fact_without_a_value_is_rejected() -> None:
+    """disclosure_status="disclosed" is the default -- constructing a
+    fact with no value at all must not silently produce a fact that
+    claims to be disclosed while stating nothing."""
+    with pytest.raises(ValidationError, match="disclosed"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="context_window_tokens",
+            extraction_method="deterministic",
+        )
+
+
+def test_disclosed_fact_with_empty_string_value_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="disclosed"):
+        ExtractedFact(
+            id="f1",
+            snapshot_id="snap_1",
+            field="context_window_tokens",
+            value="",
+            extraction_method="deterministic",
+        )

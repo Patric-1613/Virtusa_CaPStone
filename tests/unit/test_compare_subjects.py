@@ -44,6 +44,21 @@ def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "f1") -> Extr
     )
 
 
+def _not_disclosed_fact(field: str, snapshot_id: str, fact_id: str = "f_nd") -> ExtractedFact:
+    return ExtractedFact(
+        id=fact_id,
+        snapshot_id=snapshot_id,
+        field=field,
+        value=None,
+        disclosure_status="not_disclosed",
+        extraction_method="llm_structured_output",
+        extraction_model="claude-sonnet-5",
+        prompt_version="v1",
+        quoted_span="has not yet been announced",
+        confidence=0.9,
+    )
+
+
 def _store_with_data() -> FactStore:
     store = FactStore()
     store.update_fact(
@@ -84,19 +99,42 @@ def _one_assertion_response(
     )
 
 
-def test_build_fact_table_marks_missing_fields_not_disclosed() -> None:
+def test_build_fact_table_marks_missing_fields_unknown() -> None:
+    """ADR 0006: a (subject, field) with no ExtractedFact ever recorded
+    is "unknown", not "not disclosed" -- the silent, default gap, never
+    a claim in its own right."""
     rows = _rows()
     openai_bench = next(
         r for r in rows if r.subject == OPENAI_GPT4O and r.field == "benchmark_scores"
     )
     assert openai_bench.value is None
+    assert openai_bench.disclosure_status == "unknown"
     assert openai_bench.snapshot_id is None
 
     openai_ctx = next(
         r for r in rows if r.subject == OPENAI_GPT4O and r.field == "context_window_tokens"
     )
     assert openai_ctx.value == "256000"
+    assert openai_ctx.disclosure_status == "disclosed"
     assert openai_ctx.snapshot_id == "snap_openai_ctx"
+
+
+def test_build_fact_table_carries_through_a_real_not_disclosed_fact() -> None:
+    """A row backed by a real, grounded non-disclosure ExtractedFact is
+    "not_disclosed" -- a real citation, not the same silent gap as
+    "unknown" just because both happen to have value=None."""
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _not_disclosed_fact("input_price_usd", "snap_openai_price_nd"),
+        source_url="https://openai.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O], ["input_price_usd"])
+    row = rows[0]
+    assert row.value is None
+    assert row.disclosure_status == "not_disclosed"
+    assert row.snapshot_id == "snap_openai_price_nd"
 
 
 def test_well_grounded_comparison_is_accepted_and_deterministically_rendered() -> None:
@@ -210,10 +248,11 @@ def test_subject_compared_to_itself_is_rejected() -> None:
     assert compare_subjects(_rows(), call_fn=fake_call) == []
 
 
-def test_value_not_disclosed_on_either_side_is_rejected() -> None:
-    """The field DOES have a registered ComparisonRule (unlike the
-    previous test) but one side's row is genuinely undisclosed -- there
-    is no real value to look up, so the assertion is rejected."""
+def test_value_unknown_on_either_side_is_rejected(caplog: pytest.LogCaptureFixture) -> None:
+    """ADR 0006: the field DOES have a registered ComparisonRule (unlike
+    the previous test) but one side's row was never recorded at all --
+    "unknown", not "not disclosed" -- there is no real value to look up,
+    so the assertion is rejected with that specific reason."""
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
@@ -227,7 +266,68 @@ def test_value_not_disclosed_on_either_side_is_rejected() -> None:
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens")
 
-    assert compare_subjects(rows, call_fn=fake_call) == []
+    with caplog.at_level(logging.WARNING):
+        claims = compare_subjects(rows, call_fn=fake_call)
+    assert claims == []
+    assert "reason=value_unknown" in caplog.text
+
+
+def test_value_explicitly_not_disclosed_on_either_side_is_rejected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0006: a real, grounded non-disclosure fact is a DIFFERENT
+    rejection reason from "unknown" -- there is still no real value to
+    compare, but it's not a silent gap; the log should say so."""
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("context_window_tokens", "256000", "snap_openai_ctx"),
+        source_url="https://openai.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _not_disclosed_fact("context_window_tokens", "snap_anthropic_ctx_nd"),
+        source_url="https://anthropic.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens")
+
+    with caplog.at_level(logging.WARNING):
+        claims = compare_subjects(rows, call_fn=fake_call)
+    assert claims == []
+    assert "reason=value_not_disclosed" in caplog.text
+
+
+def test_fact_table_prompt_distinguishes_unknown_from_not_disclosed() -> None:
+    """ADR 0006: the rendered fact table text (what the model actually
+    sees) must use different wording for "unknown" (nothing ever
+    recorded) vs. "not disclosed" (a real, grounded non-disclosure
+    fact) -- not the same "not disclosed" label for both, which is
+    exactly the conflation this ADR exists to fix."""
+    store = FactStore()
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _not_disclosed_fact("context_window_tokens", "snap_anthropic_ctx_nd"),
+        source_url="https://anthropic.com/a",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    # OpenAI's context_window_tokens is never recorded -- "unknown".
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
+
+    captured_prompt = ""
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        nonlocal captured_prompt
+        captured_prompt = prompt
+        return ComparisonResponse(assertions=[])
+
+    compare_subjects(rows, call_fn=fake_call)
+    assert "unknown" in captured_prompt
+    assert "not disclosed" in captured_prompt
 
 
 def test_malformed_stored_value_drops_only_that_candidate(
