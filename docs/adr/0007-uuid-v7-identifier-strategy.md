@@ -1,25 +1,18 @@
 # 0007 — Project-wide UUID v7 identifier policy
 
-Status: Proposed for peer review — UUID v7 selected by Person A on 2026-09-01
+Status: Accepted by Persons A and B; Person C confirmation pending
 Date: 2026-09-01
 
 ## Status detail
 
-Person A has selected UUID v7 as the identifier strategy and drafted this ADR. **This is not yet a
-team decision.** Per `docs/adr/README.md` and this repository's own contract-change process
-(`docs/API_CONTRACT.md`'s "Contract-change process"), a shared-contract decision needs review from
-at least one other module owner before it is Accepted — this ADR has not received that review yet.
+Person A selected UUID v7 as the identifier strategy and drafted this ADR. Person B reviewed the
+design and accepted it on PR #16 on 2026-09-01.
 
-- **Person B** must review and approve this ADR before it can move to Accepted.
-- **Person C's confirmation remains required before any delivery/API implementation depends on this
-  decision** — the same deferred-but-not-skipped posture already established for ADR 0004 and ADR
-  0005 (see their own "pending Person C's confirmation" status lines), since UUID formatting is a
-  cross-cutting concern that will directly shape the delivery module's request/response handling.
-- Once Person B approves, the status line changes to
-  `Accepted by Persons A and B; Person C confirmation pending`, in a commit that itself requires a
-  fresh approval — a status-changing commit is not exempt from review just because the surrounding
-  text already went through it once; this repository's branch protection dismisses stale approvals
-  on new pushes for exactly this reason.
+- **Person C's confirmation remains pending.** Delivery/API implementation must not depend on this
+  ADR until Person C confirms it — the same deferred-but-not-skipped posture already established
+  for ADR 0004 and ADR 0005 (see their own "pending Person C's confirmation" status lines), since
+  UUID formatting is a cross-cutting concern that will directly shape the delivery module's
+  request/response handling.
 
 **This ADR is documentation-only and touches no `docs/API_CONTRACT.md` content in this PR.**
 `docs/API_CONTRACT.md` still states UUID v4, unchanged, on this branch. This is deliberate, not an
