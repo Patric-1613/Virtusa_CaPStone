@@ -1,6 +1,7 @@
 # 0006 — "Unknown" vs. "not disclosed" are different claims
 
-Status: Accepted by Persons A and B; Person C confirmation pending
+Status: Proposed for peer review — revisions requested by Person A on 2026-09-01; Person C initial
+review completed
 Date: 2026-08-27
 
 ## Context
@@ -66,6 +67,33 @@ text.
   default rendering this ADR exists to prevent. That remains open for its own follow-up.
 - `ExtractedFact` gains a field (additive, same discipline as ADR 0004) — contract tests, fixtures,
   and `docs/API_CONTRACT.md` updated accordingly.
-- Accepted by Persons A and B; Person C's confirmation is still pending, per the team's
-  contract-change process (`docs/API_CONTRACT.md`) — same gate as ADR 0004 and ADR 0005. Not
-  blocked on that confirmation before implementation starts, matching how ADR 0005 was handled.
+- Per the team's contract-change process (`docs/API_CONTRACT.md`), this ADR requires all three
+  module owners' sign-off — Persons A, B, **and** C — before its status becomes `Accepted by
+  Persons A, B, and C`. Person A's first pass raised the revisions below, requested 2026-09-01;
+  Person C's initial review is complete but has not yet re-reviewed this revision. None of this
+  ADR's implementation is to be treated as unconditionally accepted or as a precedent for skipping
+  any reviewer's sign-off on a future ADR.
+
+## Revisions requested by Person A (2026-09-01)
+
+Person A's review of the first implementation found the design sound but flagged four gaps,
+addressed in this revision:
+
+1. **Quote existence is not semantic support for a non-disclosure claim.** The original
+   implementation accepted any `not_disclosed` candidate whose `quoted_span` merely appeared in the
+   snapshot text (the same grounding check every candidate goes through) — that proves the quote is
+   real, not that it actually supports "this specific field is being withheld." Fixed with a
+   deterministic check (`extract_facts.py::_quote_supports_non_disclosure`) requiring an approved
+   explicit-withholding phrase, a field-matching keyword, and no real number in the quote — mirrors
+   `grounding.py::value_supported_by_quote()`'s role for a disclosed value's number.
+2. **`value: str | None` must have no default.** A construction site that forgot the field entirely
+   previously fell back to `None`, silently indistinguishable from an explicit not-disclosed value.
+   Both `ExtractedFact` (`shared/schemas.py`) and `FactCandidate` (`extract_facts.py`) now require
+   every caller to state `value` explicitly.
+3. **`FactRow`'s three disclosure states need their own enforced invariants,** not just a
+   documented convention: `"unknown"` requires `value=None` and `snapshot_id=None`; `"not_disclosed"`
+   requires `value=None` and a real `snapshot_id`; `"disclosed"` requires both a real `value` and a
+   real `snapshot_id`. Enforced via a `FactRow` model validator (`compare_subjects.py`).
+4. **This ADR's status previously overstated its own acceptance.** "Accepted by Persons A and B;
+   Person C confirmation pending" read as though implementation proceeding was itself a form of
+   acceptance, and understated that Person C's sign-off is required, not optional. Corrected above.

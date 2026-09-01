@@ -25,6 +25,9 @@ Rules:
 - Every other fact (the normal case) uses `"disclosure_status":
   "disclosed"` (the default — you may omit the key) with a real,
   non-null `value`.
+- Always include the `value` key on every entry — a real, non-empty
+  string for a disclosed fact, or `null` for an explicit non-disclosure.
+  Never omit the key.
 - confidence reflects how directly the quoted span supports the value
   (1.0 = stated in exact terms, lower = some interpretation was needed).
   Facts below a confidence threshold are discarded in code, not stored.

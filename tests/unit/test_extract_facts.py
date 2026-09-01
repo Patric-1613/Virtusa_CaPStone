@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from ai_daily_digest.intelligence.extract_facts import (
     FactCandidate,
     FactExtractionResponse,
+    _quote_supports_non_disclosure,
     extract_facts,
 )
 from ai_daily_digest.shared.schemas import DocumentSnapshot, Subject
@@ -225,6 +226,7 @@ def test_well_grounded_not_disclosed_candidate_is_accepted() -> None:
             facts=[
                 FactCandidate(
                     field="input_price_usd",
+                    value=None,
                     disclosure_status="not_disclosed",
                     quoted_span="has not yet announced pricing",
                     confidence=0.9,
@@ -240,22 +242,24 @@ def test_well_grounded_not_disclosed_candidate_is_accepted() -> None:
 
 
 def test_not_disclosed_candidate_skips_the_value_support_check() -> None:
-    """There is no value to check support for -- the quote-grounding
-    check (the quoted_span actually appears in the text) is the only
-    evidence a non-disclosure statement needs. Proven by a quote that
-    contains no number at all -- value_supported_by_quote() would have
-    nothing to match against if it ran, but this candidate is still
-    accepted because that check never runs for a not_disclosed
-    candidate."""
-    text = "Pricing details for GPT-4o have not been shared publicly."
+    """There is no value to check support for -- value_supported_by_quote()
+    never runs for a not_disclosed candidate (nothing to check it
+    against). Proven by a quote that contains no number at all -- it
+    would have nothing to match if that check ran, but this candidate is
+    still accepted because the check that DOES run for a not_disclosed
+    candidate (_quote_supports_non_disclosure) only requires an approved
+    withholding phrase, a field-matching keyword, and no real number --
+    all satisfied here without needing a value at all."""
+    text = "Pricing details for GPT-4o have not been announced."
 
     def fake_call(system: str, prompt: str) -> FactExtractionResponse:
         return FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="input_price_usd",
+                    value=None,
                     disclosure_status="not_disclosed",
-                    quoted_span="have not been shared publicly",
+                    quoted_span="Pricing details for GPT-4o have not been announced",
                     confidence=0.9,
                 )
             ]
@@ -277,6 +281,7 @@ def test_ungrounded_not_disclosed_quoted_span_is_rejected() -> None:
             facts=[
                 FactCandidate(
                     field="input_price_usd",
+                    value=None,
                     disclosure_status="not_disclosed",
                     quoted_span="this exact non-disclosure sentence does not appear anywhere",
                     confidence=0.9,
@@ -296,6 +301,7 @@ def test_low_confidence_not_disclosed_candidate_is_rejected() -> None:
             facts=[
                 FactCandidate(
                     field="input_price_usd",
+                    value=None,
                     disclosure_status="not_disclosed",
                     quoted_span="has not yet been announced",
                     confidence=0.3,
@@ -327,6 +333,7 @@ def test_disclosed_and_not_disclosed_candidates_coexist_in_one_response() -> Non
                 ),
                 FactCandidate(
                     field="input_price_usd",
+                    value=None,
                     disclosure_status="not_disclosed",
                     quoted_span="Pricing has not yet been announced",
                     confidence=0.9,
@@ -357,10 +364,95 @@ def test_not_disclosed_candidate_with_a_value_is_rejected_at_construction() -> N
         )
 
 
-def test_disclosed_candidate_without_a_value_is_rejected_at_construction() -> None:
+def test_disclosed_candidate_with_explicit_none_value_is_rejected_at_construction() -> None:
     with pytest.raises(ValidationError, match="disclosed"):
         FactCandidate(
             field="input_price_usd",
+            value=None,
             quoted_span="some quote",
             confidence=0.9,
         )
+
+
+# --- value has no default on either model (ADR 0006 revision) -- a
+# construction site that omits it entirely must be rejected, never
+# silently fall back to a value that means something specific
+# (previously None, i.e. "not disclosed"). ---
+
+
+def test_factcandidate_omitting_value_entirely_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        FactCandidate(  # type: ignore[call-arg]
+            field="input_price_usd",
+            disclosure_status="not_disclosed",
+            quoted_span="pricing has not been announced",
+            confidence=0.9,
+        )
+
+
+# --- _quote_supports_non_disclosure: deterministic semantic-support
+# check for a not_disclosed candidate's quote (ADR 0006 revision
+# requested by Person A) -- quote existence alone is not proof the quote
+# actually supports a non-disclosure claim about the right field. Tested
+# directly against the phrases the review specifies. ---
+
+
+def test_disclosed_value_mislabeled_not_disclosed_is_rejected() -> None:
+    """The quote states a real value ("$5 per million tokens") -- this
+    is a disclosed fact mislabeled not_disclosed, not a genuine
+    non-disclosure. Fails closed rather than trusting the label."""
+    assert not _quote_supports_non_disclosure(
+        "input_price_usd",
+        "pricing has not been announced, though early testers report $5 per million tokens",
+    )
+
+
+def test_genuine_non_disclosure_quote_assigned_to_the_wrong_field_is_rejected() -> None:
+    """A real pricing non-disclosure statement, but reported against
+    context_window_tokens -- the field the quote actually supports and
+    the field the candidate claims don't match."""
+    assert not _quote_supports_non_disclosure(
+        "context_window_tokens", "Pricing has not yet been announced"
+    )
+
+
+def test_vague_absence_wording_without_explicit_withholding_is_rejected() -> None:
+    """No approved withholding phrase at all -- vague absence must not
+    be read as an explicit non-disclosure statement."""
+    assert not _quote_supports_non_disclosure(
+        "context_window_tokens", "We tested multiple models across tasks"
+    )
+
+
+def test_accepted_explicit_withholding_phrases_are_supported() -> None:
+    assert _quote_supports_non_disclosure("input_price_usd", "pricing has not been announced")
+    assert _quote_supports_non_disclosure(
+        "context_window_tokens", "context window details are not published"
+    )
+
+
+def test_end_to_end_disclosed_value_mislabeled_not_disclosed_is_rejected() -> None:
+    """Integration proof that _quote_supports_non_disclosure is actually
+    wired into extract_facts(), not just correct in isolation."""
+    text = (
+        "GPT-4o pricing has not been announced, though early testers report $5 per million tokens."
+    )
+
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="input_price_usd",
+                    value=None,
+                    disclosure_status="not_disclosed",
+                    quoted_span=(
+                        "pricing has not been announced, though early testers "
+                        "report $5 per million tokens"
+                    ),
+                    confidence=0.9,
+                )
+            ]
+        )
+
+    facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
+    assert facts == []

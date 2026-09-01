@@ -124,13 +124,17 @@ class ExtractedFact(BaseModel):
     states this is being withheld" (disclosure_status="not_disclosed"),
     itself a groundable claim needing its own citation -- NOT "no
     extraction ever found a value", which is represented by no
-    ExtractedFact existing at all, never by one with a null value. See
+    ExtractedFact existing at all, never by one with a null value. `value`
+    has no default (unlike the truly optional fields below) precisely so
+    every caller must decide and state which of those two cases applies
+    -- a construction site that forgets `value` entirely is rejected at
+    construction, never silently defaulted into "not disclosed". See
     docs/adr/0006-disclosure-status-semantics.md."""
 
     id: str  # UUID v4
     snapshot_id: str
     field: str
-    value: str | None = None
+    value: str | None
     disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
     extraction_method: str  # "deterministic" | "llm_structured_output"
     extraction_model: str | None = None

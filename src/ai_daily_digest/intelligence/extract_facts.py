@@ -4,7 +4,7 @@ DocumentSnapshot's text into zero or more ExtractedFact records against
 the closed field list (shared/attributes.py). See
 docs/LLM_AGENT_SPECS.md#extract_facts for the full contract.
 
-Five guardrails enforced in code, not just requested in the prompt:
+Six guardrails enforced in code, not just requested in the prompt:
   1. quoted_span must actually appear in the snapshot text (grounding
      check) -- a model that paraphrases instead of quoting produces a
      fact that gets silently dropped, not silently stored. Applies
@@ -15,10 +15,9 @@ Five guardrails enforced in code, not just requested in the prompt:
      quoted_span itself -- a real, grounded quote can still have an
      invented value attached to it (e.g. quoting a real sentence but
      reporting a different number than it states); check #1 alone can't
-     catch that, see grounding.py. A NOT_DISCLOSED candidate has no
-     value to check support for and skips this check -- its quote being
-     real (checked in #1) is the only evidence a non-disclosure
-     statement needs or has.
+     catch that, see grounding.py. For a NOT_DISCLOSED candidate, quote
+     existence (#1) alone is not semantic support either -- see #6 below,
+     _quote_supports_non_disclosure's own real check for this case.
   3. field must be in the closed list -- an invented field is dropped.
   4. a quote shared across two different fields' candidates in the SAME
      extraction response is ambiguous evidence -- e.g. "Input costs 5
@@ -37,7 +36,19 @@ Five guardrails enforced in code, not just requested in the prompt:
      a real value -- enforced at the model level on both FactCandidate
      here and ExtractedFact itself (shared/schemas.py), per ADR 0006, so
      a malformed candidate is rejected before it ever reaches the checks
-     above, not silently coerced into one state or the other.
+     above, not silently coerced into one state or the other. `value`
+     has no default on either model -- a candidate/fact that omits it
+     entirely is rejected too, never silently treated as one state or
+     the other.
+  6. a NOT_DISCLOSED candidate's quote must actually SUPPORT a
+     non-disclosure claim about THAT field, not merely exist in the text
+     -- see _quote_supports_non_disclosure's own docstring for its three
+     independent requirements (an approved withholding phrase, a
+     field-matching keyword, and no real number in the quote). Per
+     review: quote existence alone conflates "this text is real" with
+     "this text means what the candidate claims it means" -- the same
+     gap check #2 already closes for a disclosed value's number, now
+     closed for a non-disclosure claim too.
 
 The accepted quoted_span and confidence are kept on the resulting
 ExtractedFact (not discarded) so the evidence a fact was built from can
@@ -48,6 +59,7 @@ docs/adr/0004-extracted-fact-keeps-evidence.md.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from typing import Literal
 
@@ -66,6 +78,42 @@ logger = logging.getLogger("intelligence.extract_facts")
 CONFIDENCE_THRESHOLD = 0.6
 PROMPT_VERSION = "extract-facts-v1"
 
+# Approved explicit-withholding wording -- deliberately narrow (per
+# review): vague absence ("we tested multiple models") must NOT match,
+# only a phrase that actually says the fact is being withheld. Case-
+# insensitive. Extends the reviewer-specified pattern with an optional
+# "been" ("has not yet BEEN announced") -- without it, the pattern
+# rejects its own worked examples ("pricing has not been announced",
+# "pricing has not yet been announced"); verified against every
+# acceptance example in this module's own tests before relying on it.
+_WITHHOLDING_PHRASE_RE = re.compile(
+    r"\b(?:not\s+(?:yet\s+)?(?:been\s+)?"
+    r"(?:disclosed|announced|published|revealed|released|available|provided|stated)"
+    r"|withheld|unannounced|undisclosed|tbd|to\s+be\s+announced"
+    r"|details\s+(?:are|is)\s+not\s+(?:yet\s+)?public)\b",
+    re.IGNORECASE,
+)
+
+# Keywords a genuine non-disclosure quote for THIS field should contain
+# -- catches a real withholding statement about one field being
+# misattributed to another (e.g. a pricing non-disclosure statement
+# reported against context_window_tokens). Matched as a loose
+# case-insensitive substring against the raw quote (not
+# normalise_name()'d) so a symbol like "$" survives -- normalise_name()
+# strips punctuation entirely. Every COMPARABLE_FIELDS key has an entry;
+# a field with none would fail closed via `.get(field, ())` below
+# regardless, but every real field is covered explicitly rather than
+# relying on that fallback silently.
+_NON_DISCLOSURE_FIELD_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "context_window_tokens": ("context", "token", "window", "length", "limit"),
+    "input_price_usd": ("price", "pricing", "cost", "rate", "fee", "$", "dollar", "input"),
+    "output_price_usd": ("price", "pricing", "cost", "rate", "fee", "$", "dollar", "output"),
+    "benchmark_scores": ("benchmark", "score", "result", "suite"),
+    "availability_regions": ("region", "availability", "available", "countr"),
+    "licence_terms": ("licence", "license", "terms"),
+    "modalities": ("modalit", "input type", "output type", "multimodal"),
+}
+
 
 class FactCandidate(BaseModel):
     """disclosure_status/value: ADR 0006's "unknown" vs. "not disclosed"
@@ -74,10 +122,13 @@ class FactCandidate(BaseModel):
     fails call_structured's own validate -> retry-once -> fail-loudly
     loop, the same protection FactCandidate.confidence already gets from
     the shared Confidence type -- not just caught later in
-    extract_facts()'s own post-processing."""
+    extract_facts()'s own post-processing. `value` has no default, same
+    reasoning as ExtractedFact's own field -- the model's structured
+    response must explicitly say `null` for a not_disclosed candidate,
+    never silently omit the key."""
 
     field: str
-    value: str | None = None
+    value: str | None
     disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
     quoted_span: str
     # Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
@@ -162,6 +213,40 @@ def _cross_contaminated_indices(candidates: list[FactCandidate]) -> set[int]:
     return ambiguous
 
 
+def _quote_supports_non_disclosure(field: str, quote: str) -> bool:
+    """Deterministic semantic-support check for a not_disclosed
+    candidate, per review: the quote actually appearing in the snapshot
+    text (checked separately -- the same grounding check every candidate
+    goes through) proves the quote is real, not that it SUPPORTS "this
+    specific field is being withheld". Mirrors what
+    grounding.py::value_supported_by_quote() does for a disclosed
+    value's number -- a real, grounded quote can still be attached to
+    the wrong claim. Three independent requirements, ALL must hold, and
+    any ambiguous or non-matching quote fails closed (returns False):
+
+    1. The quote contains an approved explicit-withholding phrase (see
+       _WITHHOLDING_PHRASE_RE) -- vague absence wording ("we tested
+       multiple models across tasks") does not imply withholding and
+       must not pass.
+    2. The quote contains at least one keyword associated with THIS
+       field (see _NON_DISCLOSURE_FIELD_KEYWORDS) -- a genuine
+       non-disclosure statement about one field (e.g. pricing)
+       misattributed to a different field (e.g. context_window_tokens)
+       is rejected, the same class of error value_supported_by_quote()
+       catches for a disclosed value's number.
+    3. The quote does NOT itself contain a real number -- a quote that
+       states an actual value ("$5 per million tokens") is a disclosed
+       fact mislabeled not_disclosed, not a genuine non-disclosure;
+       reject rather than guess which label is right."""
+    if not _WITHHOLDING_PHRASE_RE.search(quote):
+        return False
+    keywords = _NON_DISCLOSURE_FIELD_KEYWORDS.get(field, ())
+    lowered_quote = quote.lower()
+    if not any(keyword in lowered_quote for keyword in keywords):
+        return False
+    return not numbers_in(quote)
+
+
 def _default_call(system: str, prompt: str) -> FactExtractionResponse:
     return call_structured(
         model=SONNET,
@@ -234,27 +319,38 @@ def extract_facts(
                 candidate.quoted_span,
             )
             continue
-        # The quote itself is real (checked above), but that doesn't mean
-        # the *value* the model reported actually came from it -- a model
-        # can quote a real sentence and still attach a fabricated number
-        # to it. This is the check that catches that specific case. Only
-        # applies when there IS a value to check -- a not_disclosed
-        # candidate's value is None (enforced by FactCandidate's own
-        # validator, ADR 0006), so this branch is skipped for it: the
-        # quote-grounding check above is the only evidence a non-
-        # disclosure statement needs.
-        if candidate.value is not None and not value_supported_by_quote(
-            candidate.value, candidate.quoted_span
-        ):
-            logger.warning(
-                "extraction_rejected reason=value_not_in_quote snapshot_id=%s field=%s "
-                "value=%r quoted_span=%r",
-                snapshot.id,
-                candidate.field,
-                candidate.value,
-                candidate.quoted_span,
-            )
-            continue
+        if candidate.value is not None:
+            # The quote itself is real (checked above), but that doesn't
+            # mean the *value* the model reported actually came from it
+            # -- a model can quote a real sentence and still attach a
+            # fabricated number to it. This is the check that catches
+            # that specific case.
+            if not value_supported_by_quote(candidate.value, candidate.quoted_span):
+                logger.warning(
+                    "extraction_rejected reason=value_not_in_quote snapshot_id=%s field=%s "
+                    "value=%r quoted_span=%r",
+                    snapshot.id,
+                    candidate.field,
+                    candidate.value,
+                    candidate.quoted_span,
+                )
+                continue
+        else:
+            # not_disclosed candidate -- no value to check support for,
+            # but per review, quote EXISTENCE (checked above) is not the
+            # same as quote SUPPORT for a non-disclosure claim about
+            # THIS field: it must actually say so explicitly, about the
+            # right field, and not itself contain a real value. See
+            # _quote_supports_non_disclosure's own docstring.
+            if not _quote_supports_non_disclosure(candidate.field, candidate.quoted_span):
+                logger.warning(
+                    "extraction_rejected reason=non_disclosure_not_supported "
+                    "snapshot_id=%s field=%s quoted_span=%r",
+                    snapshot.id,
+                    candidate.field,
+                    candidate.quoted_span,
+                )
+                continue
 
         facts.append(
             ExtractedFact(
