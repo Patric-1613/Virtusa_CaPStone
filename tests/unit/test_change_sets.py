@@ -33,13 +33,17 @@ def _change(
     build_change_sets() to backfill. Callers of this test helper supply
     the (already-allocated) change_set_id explicitly, the same way the
     real batch-scoped allocator (get_or_create_change_set_id(), used via
-    FactStore.update_fact()'s change_set_id_factory) does in production."""
+    FactStore.update_fact()'s change_set_id_factory) does in production.
+    change_type follows previous_snap -- Change's own invariant validator
+    only allows previous=None for change_type="disclosed" (a genuine
+    first disclosure); build_change_sets() itself doesn't care which
+    change_type it groups, only the snapshot ids."""
     return Change(
         id=change_id if change_id is not None else new_id(),
         change_set_id=change_set_id,
         subject=subject,
         field=field,
-        change_type="changed",
+        change_type="changed" if previous_snap else "disclosed",
         previous=(
             FactObservation(value="old", snapshot_id=previous_snap) if previous_snap else None
         ),

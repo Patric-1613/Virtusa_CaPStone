@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
-from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1, SNAPSHOT_1
+from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1, SNAPSHOT_1, SNAPSHOT_2, SNAPSHOT_3
 
 SUBJECT = Subject(company="OpenAI", product="GPT-4o")
 
@@ -35,7 +35,8 @@ def _change(confidence: float) -> Change:
         subject=SUBJECT,
         field="context_window_tokens",
         change_type="changed",
-        current=FactObservation(value="256000"),
+        previous=FactObservation(value="128000", snapshot_id=SNAPSHOT_1),
+        current=FactObservation(value="256000", snapshot_id=SNAPSHOT_2),
         confidence=confidence,
     )
 
@@ -295,3 +296,147 @@ def test_malformed_uuid_is_rejected_by_a_uuid7_typed_field_as_a_parse_failure() 
     error_types = {error["type"] for error in exc_info.value.errors()}
     assert error_types == {"uuid_parsing"}
     assert "uuid_version" not in error_types
+
+
+# --- Change's own invariant validator (ADR 0006 follow-up, reviewed) --
+# the exact required observation shape per change_type, enforced at
+# construction on ANY Change, not just ones FactStore.update_fact()
+# happens to build. ---
+
+
+def _valid_change(**overrides: object) -> Change:
+    """A baseline "changed" Change with a fully valid shape -- tests
+    below override just the field(s) under test."""
+    defaults: dict[str, object] = {
+        "id": CHANGE_1,
+        "change_set_id": CHANGE_SET_1,
+        "subject": SUBJECT,
+        "field": "input_price_usd",
+        "change_type": "changed",
+        "previous": FactObservation(value="10", snapshot_id=SNAPSHOT_1),
+        "current": FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+        "confidence": 0.9,
+    }
+    defaults.update(overrides)
+    return Change(**defaults)  # type: ignore[arg-type]
+
+
+def test_valid_not_disclosed_change_passes_validation() -> None:
+    change = _valid_change(
+        change_type="not_disclosed",
+        previous=FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+        current=FactObservation(value=None, snapshot_id=SNAPSHOT_3),
+    )
+    assert change.change_type == "not_disclosed"
+    assert change.current.value is None
+
+
+def test_invalid_not_disclosed_change_fails_validation() -> None:
+    # current.value is not None
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        _valid_change(
+            change_type="not_disclosed",
+            previous=FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+            current=FactObservation(value="5", snapshot_id=SNAPSHOT_3),
+        )
+    # previous is None
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        _valid_change(
+            change_type="not_disclosed",
+            previous=None,
+            current=FactObservation(value=None, snapshot_id=SNAPSHOT_3),
+        )
+    # previous.value is None
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        _valid_change(
+            change_type="not_disclosed",
+            previous=FactObservation(value=None, snapshot_id=SNAPSHOT_2),
+            current=FactObservation(value=None, snapshot_id=SNAPSHOT_3),
+        )
+    # missing snapshot_id on previous
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        _valid_change(
+            change_type="not_disclosed",
+            previous=FactObservation(value="5", snapshot_id=None),
+            current=FactObservation(value=None, snapshot_id=SNAPSHOT_3),
+        )
+    # missing snapshot_id on current
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        _valid_change(
+            change_type="not_disclosed",
+            previous=FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+            current=FactObservation(value=None, snapshot_id=None),
+        )
+
+
+def test_valid_disclosed_change_passes_validation() -> None:
+    # first disclosure -- previous is None entirely
+    first = _valid_change(
+        change_type="disclosed",
+        previous=None,
+        current=FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+    )
+    assert first.previous is None
+
+    # transition from not_disclosed -- previous exists with value=None
+    transition = _valid_change(
+        change_type="disclosed",
+        previous=FactObservation(value=None, snapshot_id=SNAPSHOT_3),
+        current=FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+    )
+    assert transition.previous is not None
+    assert transition.previous.value is None
+
+
+def test_invalid_disclosed_change_fails_validation() -> None:
+    # current.value is None
+    with pytest.raises(ValidationError, match="disclosed"):
+        _valid_change(
+            change_type="disclosed",
+            previous=None,
+            current=FactObservation(value=None, snapshot_id=SNAPSHOT_2),
+        )
+    # previous.value is not None (a real transition must come from
+    # not_disclosed, i.e. previous.value=None -- a previous with a real
+    # value belongs to "increased"/"decreased"/"changed", not "disclosed")
+    with pytest.raises(ValidationError, match="disclosed"):
+        _valid_change(
+            change_type="disclosed",
+            previous=FactObservation(value="3", snapshot_id=SNAPSHOT_1),
+            current=FactObservation(value="5", snapshot_id=SNAPSHOT_2),
+        )
+
+
+def test_invalid_numeric_change_fails_when_observation_missing_or_none() -> None:
+    for change_type in ("increased", "decreased", "changed"):
+        with pytest.raises(ValidationError, match=change_type):
+            _valid_change(change_type=change_type, previous=None)
+        with pytest.raises(ValidationError, match=change_type):
+            _valid_change(
+                change_type=change_type,
+                current=FactObservation(value=None, snapshot_id=SNAPSHOT_2),
+            )
+
+
+def test_unrecognised_change_type_still_gets_generic_shape_validation() -> None:
+    """The validator's final branch is a catch-all `else`, not a closed
+    `elif change_type in ("increased", "decreased", "changed")` -- an
+    open/unknown change_type string (a typo, or a legitimate future
+    change_type this model doesn't know about yet) must still be held to
+    the generic "both sides are real observations" shape, not silently
+    skip validation because it matched none of the named branches."""
+    valid = _valid_change(change_type="unsupported_type")
+    assert valid.change_type == "unsupported_type"
+
+    with pytest.raises(ValidationError, match="unsupported_type"):
+        _valid_change(change_type="unsupported_type", previous=None)
+    with pytest.raises(ValidationError, match="unsupported_type"):
+        _valid_change(
+            change_type="unsupported_type",
+            current=FactObservation(value=None, snapshot_id=SNAPSHOT_2),
+        )
+    with pytest.raises(ValidationError, match="unsupported_type"):
+        _valid_change(
+            change_type="unsupported_type",
+            previous=FactObservation(value="10", snapshot_id=None),
+        )

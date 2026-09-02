@@ -67,6 +67,11 @@ TDR_SNAP_FROM_A_PREVIOUS_RUN = uuid.UUID("01a01299-bb60-7680-a8eb-eb8abc6ffb35")
 TDR_FACT_SEED_OPENAI = uuid.UUID("019e80ea-9dc0-7fd0-ae5e-3e5417994010")
 TDR_FACT_SEED_ANTHROPIC = uuid.UUID("019e80ea-a1a8-7400-8b12-c32efea1184c")
 TDR_FACT_SEED = uuid.UUID("01a01ce7-6590-7752-b47a-3191db7228dd")
+TDR_ITEM_PRICE_WITHHELD = uuid.UUID("01a0627c-d1c0-78f3-85b3-d9ca2134d302")
+TDR_SNAP_PRICE_WITHHELD = uuid.UUID("01a0627c-d1c0-78f3-85b3-d9daad3ad57c")
+TDR_FACT_PRICE_WITHHELD = uuid.UUID("01a0627c-d1c1-7e32-a155-f03173402ee9")
+TDR_ITEM_PRICE_DISCLOSED = uuid.UUID("01a0627c-d1c1-7e32-a155-f04a6b9f5fac")
+TDR_SNAP_PRICE_DISCLOSED = uuid.UUID("01a0627c-d1c1-7e32-a155-f05321a1db2b")
 
 
 def _item(
@@ -110,6 +115,23 @@ def _fact(
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
         quoted_span=f"quote containing {value}",
+        confidence=0.9,
+    )
+
+
+def _not_disclosed_fact(
+    field: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = TDR_FACT_SEED
+) -> ExtractedFact:
+    return ExtractedFact(
+        id=fact_id,
+        snapshot_id=snapshot_id,
+        field=field,
+        value=None,
+        disclosure_status="not_disclosed",
+        extraction_method="llm_structured_output",
+        extraction_model="claude-sonnet-5",
+        prompt_version="v1",
+        quoted_span="pricing has not been announced",
         confidence=0.9,
     )
 
@@ -1018,3 +1040,86 @@ def test_recurring_subject_gets_a_new_change_set_id_on_a_later_run() -> None:
     )
     assert len(second_run_result.change_sets) == 1
     assert second_run_result.change_sets[0].id != first_change_set_id
+# --- ADR 0006/0007: a genuine disclosure-status transition flows all
+# the way through run_daily() as a real Change/DigestClaim, dual-cited
+# against both the withheld and the disclosing snapshot. ---
+
+
+def test_disclosure_transition_integrated_pipeline_run() -> None:
+    """End-to-end proof that a genuine not_disclosed -> disclosed
+    transition flows all the way through run_daily(): FactStore seeded
+    with an existing withheld price, a new batch item discloses it for
+    the first time, and the resulting digest carries a real,
+    content-grounded, dual-cited DigestClaim for the transition."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    store.update_fact(
+        OPENAI_GPT4O,
+        _not_disclosed_fact("input_price_usd", TDR_SNAP_PRICE_WITHHELD, TDR_FACT_PRICE_WITHHELD),
+        source_url="https://openai.com/news/pricing-tbd",
+        observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+    )
+    known_snapshot_ids: set[uuid.UUID] = {TDR_SNAP_PRICE_WITHHELD}
+    resolver = InMemorySnapshotResolver(
+        {
+            TDR_SNAP_PRICE_WITHHELD: _snapshot(
+                TDR_SNAP_PRICE_WITHHELD,
+                TDR_ITEM_PRICE_WITHHELD,
+                "OpenAI's GPT-4o pricing has not been announced yet.",
+                datetime(2026, 6, 1, tzinfo=UTC),
+            )
+        }
+    )
+
+    def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="input_price_usd",
+                    value="5.00",
+                    quoted_span="Input pricing is $5.00 per million tokens.",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    batch = [
+        BatchItem(
+            _item(TDR_ITEM_PRICE_DISCLOSED, "GPT-4o pricing disclosed"),
+            _snapshot(
+                TDR_SNAP_PRICE_DISCLOSED,
+                TDR_ITEM_PRICE_DISCLOSED,
+                "OpenAI's GPT-4o: Input pricing is $5.00 per million tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        )
+    ]
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        "2026-08-20",
+        alias_table=[],
+        snapshot_resolver=resolver,
+        extract_call_fn=extract_fake,
+    )
+
+    assert len(result.change_sets) == 1
+    change_set = result.change_sets[0]
+    assert len(change_set.changes) == 1
+    assert change_set.changes[0].change_type == "disclosed"
+    assert change_set.changes[0].current.value == "5.00"
+    assert change_set.changes[0].previous is not None
+    assert change_set.changes[0].previous.value is None
+
+    assert len(result.digest.claims) == 1
+    claim = result.digest.claims[0]
+    # NOTE: field_label("input_price_usd") renders COMPARABLE_FIELDS's
+    # own curated label ("Input price (USD)" -> "input price (USD)"),
+    # not the shorter "input price" -- asserting the real rendered text,
+    # verified directly against shared/attributes.py, not assumed.
+    assert claim.text == "OpenAI's GPT-4o's input price (USD) is now disclosed as 5.00."
+    assert set(claim.citation_snapshot_ids) == {TDR_SNAP_PRICE_DISCLOSED, TDR_SNAP_PRICE_WITHHELD}
+    assert claim.validation_status == "supported"

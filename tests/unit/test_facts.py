@@ -144,6 +144,14 @@ def test_change_type_falls_back_to_changed_for_non_numeric_values() -> None:
 
 
 def test_explicit_change_type_overrides_auto_inference() -> None:
+    """Both sides here are real, disclosed values -- auto-inference would
+    say "increased". "changed" is used as the override instead of the
+    numerically-accurate one, specifically to prove update_fact() really
+    used the caller-supplied value rather than the auto-inferred one
+    (identical strings would prove nothing). Not "disclosed" -- Change's
+    own invariant validator requires a "disclosed" Change's previous
+    side to have value=None (a real not_disclosed -> disclosed
+    transition), which this fixture's previous=128000 is not."""
     store = FactStore()
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
@@ -158,11 +166,11 @@ def test_explicit_change_type_overrides_auto_inference() -> None:
         _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
-        change_type="disclosed",
+        change_type="changed",
         change_set_id_factory=_factory(),
     )
     assert change is not None
-    assert change.change_type == "disclosed"
+    assert change.change_type == "changed"
 
 
 def test_changed_value_emits_a_change_with_correct_previous_and_current() -> None:
@@ -277,13 +285,15 @@ def test_genuinely_different_numeric_value_still_registers_as_a_change() -> None
     assert change.change_type == "decreased"
 
 
-def _change(previous_snap: uuid.UUID | None, current_snap: uuid.UUID | None) -> Change:
+def _change(
+    previous_snap: uuid.UUID | None, current_snap: uuid.UUID | None, change_type: str = "changed"
+) -> Change:
     return Change(
         id=CHANGE_1,
         change_set_id=CHANGE_SET_1,
         subject=Subject(company="OpenAI", product="GPT-4o"),
         field="context_window_tokens",
-        change_type="changed",
+        change_type=change_type,
         previous=(
             FactObservation(value="old", snapshot_id=previous_snap) if previous_snap else None
         ),
@@ -297,15 +307,23 @@ def test_change_snapshot_ids_with_both_present() -> None:
 
 
 def test_change_snapshot_ids_with_no_previous() -> None:
-    assert change_snapshot_ids(_change(None, TF_SNAP_2)) == (TF_SNAP_2, None)
+    # "disclosed" -- the only change_type Change's own invariant
+    # validator allows a genuinely absent (not just empty) previous for.
+    assert change_snapshot_ids(_change(None, TF_SNAP_2, change_type="disclosed")) == (
+        TF_SNAP_2,
+        None,
+    )
 
 
 def test_malformed_snapshot_id_is_rejected_at_construction_not_silently_treated_as_absent() -> None:
     """Superseded behavior, ADR 0007: FactObservation.snapshot_id used to
-    accept an empty string and treat it the same as absent (None).
-    Uuid7Id validation now makes that state unconstructible in the first
-    place -- a malformed value is rejected outright, not silently
-    normalised."""
+    accept an empty string and treat it the same as absent (None), and
+    change_snapshot_ids() used to defensively re-normalise an empty
+    string back to None on top of that. Uuid7Id validation now makes an
+    empty-string snapshot_id unconstructible in the first place -- a
+    malformed value is rejected outright, not silently normalised -- so
+    change_snapshot_ids() no longer needs (or has) that defensive
+    fallback; see its own docstring in facts.py."""
     with pytest.raises(ValidationError):
         FactObservation(value="old", snapshot_id="")  # type: ignore[arg-type]
 

@@ -1,6 +1,6 @@
 # 0006 — "Unknown" vs. "not disclosed" are different claims
 
-Status: Proposed for peer review — revisions requested by Persons A and C on 2026-09-01
+Status: Accepted by Persons A, B, and C
 Date: 2026-08-27
 
 ## Context
@@ -64,12 +64,14 @@ text.
   since shipped — see "Disclosure transition claims" below.
 - `ExtractedFact` gains a field (additive, same discipline as ADR 0004) — contract tests, fixtures,
   and `docs/API_CONTRACT.md` updated accordingly.
-- Per the team's contract-change process (`docs/API_CONTRACT.md`), this ADR requires all three
-  module owners' sign-off — Persons A, B, **and** C — before its status becomes `Accepted by
-  Persons A, B, and C`. Person A's first pass raised the revisions below, requested 2026-09-01;
-  Person C's initial review is complete but has not yet re-reviewed this revision. None of this
-  ADR's implementation is to be treated as unconditionally accepted or as a precedent for skipping
-  any reviewer's sign-off on a future ADR.
+- Per the team's contract-change process (`docs/API_CONTRACT.md`), this ADR required all three
+  module owners' sign-off — Persons A, B, **and** C — before its status could become `Accepted by
+  Persons A, B, and C`. That sign-off is now complete: Person A's review raised the revisions
+  recorded below (requested 2026-09-01, addressed across several follow-up rounds); Person C's
+  review is likewise reflected in those same rounds and in the model-level `Change` invariants
+  and integrated pipeline test in "Disclosure transition claims" below (PR #25). This is not a
+  precedent for skipping any reviewer's sign-off on a future ADR — it reflects that this one
+  genuinely completed the process.
 
 ## Revisions requested by Person A (2026-09-01)
 
@@ -187,12 +189,13 @@ Verified against concrete phrase pairs (including the exact `"image generation"`
 caching"` false-co-occurrence cases) before relying on the fix — see
 `tests/unit/test_extract_facts.py`'s pricing-qualifier test sections.
 
-## Disclosure transition claims (2026-09-02)
+## Disclosure transition claims (2026-09-02, PR #25)
 
-The follow-up flagged as open in this ADR's own Consequences section (above) has shipped: a
-genuine disclosure-status TRANSITION — one side of a `Change` has a real value, the other is
-`None` — now produces its own single-subject `DigestClaim`, the same way any other field-level
-change already does, instead of being recorded in `FactStore` but silently producing no claim.
+The follow-up flagged as open in this ADR's own Consequences section (above) has shipped, in
+PR #25: a genuine disclosure-status TRANSITION — one side of a `Change` has a real value, the
+other is `None` — now produces its own single-subject `DigestClaim`, the same way any other
+field-level change already does, instead of being recorded in `FactStore` but silently producing
+no claim.
 
 - `intelligence/facts.py::_infer_change_type` gains two new outcomes ahead of the existing
   increased/decreased/changed inference: `"disclosed"` (previous value `None`, current value real)
@@ -215,3 +218,22 @@ change already does, instead of being recorded in `FactStore` but silently produ
 - This is scoped to `draft_claims.py`'s single-subject rendering only — `compare_subjects.py`'s
   cross-subject rendering (ADR 0005) is unaffected and still abstains from comparing a
   `not_disclosed`/`unknown` row rather than rendering prose about it.
+- **`shared/schemas.py::Change` gained its own `@model_validator`** (`_require_valid_change_shape`,
+  Person C's review) enforcing the exact required observation shape per `change_type` at
+  construction, on ANY `Change` regardless of what builds it — not just documented as a
+  convention `FactStore.update_fact()` happens to follow. `"not_disclosed"` requires a real
+  `previous` (value + snapshot_id) and a value-less `current`; `"disclosed"` requires a real
+  `current`, and — when `previous` is present at all — a value-less `previous` (a genuine
+  first-ever disclosure, `previous=None` entirely, is separately valid and unconstrained);
+  `"increased"`/`"decreased"`/`"changed"` require both sides real. Verified by hand against
+  every `FactStore`-built `Change` (all structurally satisfy it) before relying on it, and it
+  caught one existing test (`test_explicit_change_type_overrides_auto_inference`,
+  `tests/unit/test_facts.py`) that had been using `change_type="disclosed"` as an arbitrary
+  override label on a Change whose values were both real — fixed to use `"changed"` instead,
+  which still proves the override mechanism works without violating the new invariant.
+- **An integrated, pipeline-level test** (`test_disclosure_transition_integrated_pipeline_run`,
+  `tests/unit/test_daily_run.py`) proves the whole path end to end: a `FactStore` seeded with an
+  existing `not_disclosed` fact, a new batch item disclosing it for the first time, `run_daily()`
+  producing a `ChangeSet` with a `change_type="disclosed"` `Change`, a `DigestClaim` citing both
+  the new and the previous snapshot, and that claim validating as `"supported"` through the real
+  `InMemorySnapshotResolver`-backed content-grounding check — not just each piece in isolation.

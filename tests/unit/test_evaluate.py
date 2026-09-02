@@ -55,12 +55,17 @@ def _digest(claims: list[DigestClaim]) -> Digest:
 
 
 def _change(company: str, product: str, field: str, snap_id: uuid.UUID = SNAPSHOT_1) -> Change:
+    # change_type="disclosed" (not "changed") -- this helper never sets
+    # a previous observation, and Change's own invariant validator only
+    # allows previous=None for a genuine first disclosure. change_recall()
+    # itself only reads (subject, field), so the exact change_type here
+    # is otherwise immaterial to what these tests check.
     return Change(
         id=CHANGE_1,
         change_set_id=CHANGE_SET_1,
         subject=Subject(company=company, product=product),
         field=field,
-        change_type="changed",
+        change_type="disclosed",
         previous=None,
         current=FactObservation(value="x", snapshot_id=snap_id),
         confidence=0.9,
