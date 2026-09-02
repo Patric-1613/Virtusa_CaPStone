@@ -327,9 +327,13 @@ def _not_disclosed_fact(
     )
 
 
-# --- ADR 0006: disclosure-status transitions must not crash update_fact()
-# and are recorded but not reported as a Change (same treatment a first
-# observation already gets) -- see update_fact()'s own docstring. ---
+# --- ADR 0006: disclosure-status transitions. A first observation of a
+# not_disclosed fact, or two not_disclosed observations in a row, are
+# recorded but not a Change (same treatment a first observation/unchanged
+# value already gets). A genuine flip across the disclosure boundary
+# (disclosed -> not_disclosed or the reverse) IS a real, reportable
+# Change (change_type "disclosed"/"not_disclosed") -- see update_fact()'s
+# own docstring. ---
 
 
 def test_first_observation_of_a_not_disclosed_fact_is_not_a_change() -> None:
@@ -349,12 +353,10 @@ def test_first_observation_of_a_not_disclosed_fact_is_not_a_change() -> None:
     assert current.disclosure_status == "not_disclosed"
 
 
-def test_disclosed_to_not_disclosed_transition_is_recorded_but_not_a_change() -> None:
+def test_disclosed_to_not_disclosed_transition_emits_change() -> None:
     """A real disclosure-status flip -- previously a real value, now
-    explicitly withheld. FactStore records the new state (so
-    get_current_fact()/build_fact_table() see it right away) but doesn't
-    turn it into a Change/DigestClaim -- see update_fact()'s own
-    docstring for why."""
+    explicitly withheld. FactStore records the new state and emits a Change
+    with change_type='not_disclosed' citing both snapshots."""
     store = FactStore()
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
@@ -371,7 +373,20 @@ def test_disclosed_to_not_disclosed_transition_is_recorded_but_not_a_change() ->
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
     )
-    assert change is None
+    assert change is not None
+    assert change.subject == subject
+    assert change.field == "input_price_usd"
+    assert change.change_type == "not_disclosed"
+    assert change.previous is not None
+    assert change.previous.value == "5"
+    assert change.previous.snapshot_id == TF_SNAP_1
+    assert change.current.value is None
+    assert change.current.snapshot_id == TF_SNAP_2
+
+    history = store.field_history(subject, "input_price_usd")
+    assert len(history) == 1
+    assert history[0].value == "5"
+
     current = store.get_current_fact(subject, "input_price_usd")
     assert current is not None
     assert current.value is None
@@ -379,9 +394,9 @@ def test_disclosed_to_not_disclosed_transition_is_recorded_but_not_a_change() ->
     assert current.snapshot_id == TF_SNAP_2
 
 
-def test_not_disclosed_to_disclosed_transition_is_recorded_but_not_a_change() -> None:
+def test_not_disclosed_to_disclosed_transition_emits_change() -> None:
     """The reverse flip -- a value now disclosed for the first time after
-    an explicit non-disclosure. Same treatment: recorded, not a Change."""
+    an explicit non-disclosure. Emits a Change with change_type='disclosed'."""
     store = FactStore()
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
@@ -398,11 +413,26 @@ def test_not_disclosed_to_disclosed_transition_is_recorded_but_not_a_change() ->
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
     )
-    assert change is None
+    assert change is not None
+    assert change.subject == subject
+    assert change.field == "input_price_usd"
+    assert change.change_type == "disclosed"
+    assert change.previous is not None
+    assert change.previous.value is None
+    assert change.previous.snapshot_id == TF_SNAP_1
+    assert change.current.value == "5"
+    assert change.current.snapshot_id == TF_SNAP_2
+
+    history = store.field_history(subject, "input_price_usd")
+    assert len(history) == 1
+    assert history[0].value is None
+    assert history[0].disclosure_status == "not_disclosed"
+
     current = store.get_current_fact(subject, "input_price_usd")
     assert current is not None
     assert current.value == "5"
     assert current.disclosure_status == "disclosed"
+    assert current.snapshot_id == TF_SNAP_2
 
 
 def test_repeated_not_disclosed_observation_is_a_silent_no_op_but_refreshes_provenance() -> None:
@@ -493,12 +523,54 @@ def test_factory_is_not_called_for_an_unchanged_value() -> None:
     factory.assert_not_called()
 
 
-def test_factory_is_not_called_for_a_disclosure_status_transition() -> None:
+def test_factory_is_called_exactly_once_for_a_disclosure_status_transition() -> None:
+    """A disclosure-status transition IS a real Change (see the ADR 0006
+    section above), so -- unlike a first observation or an unchanged
+    value -- it DOES consume a change_set_id."""
     store = FactStore()
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
         _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+    factory = _factory()
+    change = store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    assert change is not None
+    factory.assert_called_once()
+
+
+def test_factory_is_not_called_for_a_first_observation_of_a_not_disclosed_fact() -> None:
+    """A first-ever observation is never a Change, disclosed or not."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    factory = _factory()
+    store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    factory.assert_not_called()
+
+
+def test_factory_is_not_called_for_a_repeated_not_disclosed_observation() -> None:
+    """Two not_disclosed observations in a row are equivalent -- no
+    Change, so no change_set_id is spent."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
@@ -512,6 +584,93 @@ def test_factory_is_not_called_for_a_disclosure_status_transition() -> None:
         change_set_id_factory=factory,
     )
     factory.assert_not_called()
+
+
+def test_same_subject_transitions_share_one_change_set_id_per_batch() -> None:
+    """Two Changes for the same subject in the same batch (i.e. sharing
+    one caller-owned change_set_id_factory closure) must reuse the same
+    change_set_id -- the batch-scoped get-or-create allocator this
+    factory represents (change_sets.py::get_or_create_change_set_id),
+    not a fresh id per Change."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    change_set_ids: dict[Subject, uuid.UUID] = {}
+
+    def factory() -> uuid.UUID:
+        existing = change_set_ids.get(subject)
+        if existing is not None:
+            return existing
+        allocated = CHANGE_SET_1
+        change_set_ids[subject] = allocated
+        return allocated
+
+    store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+    first_change = store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    second_change = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", TF_SNAP_3, TF_FACT_3),
+        source_url=None,
+        observed_at=datetime(2026, 8, 21, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    assert first_change is not None
+    assert second_change is not None
+    assert first_change.change_set_id == second_change.change_set_id == CHANGE_SET_1
+
+
+def test_different_subjects_get_different_change_set_ids() -> None:
+    """The reverse: two subjects sharing one batch's allocator dict must
+    each get their own change_set_id, not collide on one."""
+    store = FactStore()
+    subject_a = Subject(company="OpenAI", product="GPT-4o")
+    subject_b = Subject(company="Anthropic", product="Claude")
+    change_set_ids: dict[Subject, uuid.UUID] = {}
+
+    def factory_for(subject: Subject) -> uuid.UUID:
+        existing = change_set_ids.get(subject)
+        if existing is not None:
+            return existing
+        allocated = uuid.uuid4()
+        change_set_ids[subject] = allocated
+        return allocated
+
+    for subject in (subject_a, subject_b):
+        store.update_fact(
+            subject,
+            _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
+            source_url=None,
+            observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+            change_set_id_factory=_factory(),
+        )
+    change_a = store.update_fact(
+        subject_a,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: factory_for(subject_a),
+    )
+    change_b = store.update_fact(
+        subject_b,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: factory_for(subject_b),
+    )
+    assert change_a is not None
+    assert change_b is not None
+    assert change_a.change_set_id != change_b.change_set_id
 
 
 def test_factory_is_called_exactly_once_for_a_real_change() -> None:
