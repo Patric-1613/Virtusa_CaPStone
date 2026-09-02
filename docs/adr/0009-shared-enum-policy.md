@@ -29,7 +29,17 @@ maintained.
 
 ## Decision
 
-### 1. Technology: Standard Library `enum.StrEnum`
+### 1. Governing Rule for Enum Usage
+
+The project adopts a single governing rule across all modules:
+
+> **Use an Enum only when the application owns a complete, deliberately closed set of values and
+> application behavior directly depends on the value.**
+> Values that are externally controlled, unbounded, or naturally expanding must remain plain strings.
+
+---
+
+### 2. Technology: Standard Library `enum.StrEnum`
 
 We select Python 3.12 standard-library `enum.StrEnum` (`from enum import StrEnum`).
 
@@ -41,7 +51,7 @@ We select Python 3.12 standard-library `enum.StrEnum` (`from enum import StrEnum
 
 ---
 
-### 2. Phase 1 Shared Enums (`shared/schemas.py`)
+### 3. Phase 1 Shared Enums (`shared/schemas.py`)
 
 Phase 1 introduces four shared `StrEnum` definitions, placed directly in
 `src/ai_daily_digest/shared/schemas.py` beside their owning Pydantic models:
@@ -63,29 +73,28 @@ Phase 1 introduces four shared `StrEnum` definitions, placed directly in
 
 ---
 
-### 3. ChangeType Decision: Keep `Change.change_type` Open (`str`)
+### 4. ChangeType Decision: Keep `Change.change_type` Open (`str`)
 
 `Change.change_type` in `shared/schemas.py` remains typed as **`str`** (open set).
 
-- **Rationale**: Change detection is an evolving area. While core inference produces known change
-  types, external adapters, future plugins, or manual overrides may introduce new change categories
-  without requiring a breaking shared schema migration.
-- **Invariant Safety**: `validate_change_shape()` in `shared/schemas.py` continues to enforce
-  observation-shape invariants for both known and unknown change types (ensuring any unrecognized
-  string still receives strict evidence validation).
-- **Intelligence-Local Enum**: Intelligence may define a module-local `InferredChangeType(StrEnum)` in
-  `src/ai_daily_digest/intelligence/facts.py` covering values produced by `_infer_change_type()`:
+- **Rationale**: `validate_change_shape()` in `shared/schemas.py` and its regression tests
+  deliberately support future unknown change types, enforcing generic evidence and observation-shape
+  invariants regardless of the specific change string.
+- **Intelligence-Local Enum**: Intelligence will define a module-local `InferredChangeType(StrEnum)`
+  in `src/ai_daily_digest/intelligence/facts.py` covering the five values produced by
+  `_infer_change_type()`:
   - `INCREASED = "increased"`
   - `DECREASED = "decreased"`
   - `CHANGED = "changed"`
   - `DISCLOSED = "disclosed"`
   - `NOT_DISCLOSED = "not_disclosed"`
-- Closing `Change.change_type` globally in `shared` is explicitly deferred and would require a future
-  ADR amendment.
+- Arbitrary caller overrides remain possible on `Change` and will continue to pass generic shape
+  validation. Closing `Change.change_type` globally in `shared` is explicitly deferred and would
+  require a future ADR amendment.
 
 ---
 
-### 4. Explicit Deferrals (Values that Remain Strings for Now)
+### 5. Explicit Deferrals (Values that Remain Strings for Now)
 
 The following fields remain `str` and are NOT converted to Enums in Phase 1:
 
@@ -101,9 +110,9 @@ The following fields remain `str` and are NOT converted to Enums in Phase 1:
 
 ---
 
-### 5. Values that Must Permanently Remain Open Strings
+### 6. Values Remaining Open in Phase 1
 
-The following fields must never become Enums:
+The following fields remain plain strings:
 
 - `publisher`, `company`, `product`
 - `source_id` (slug in `sources.yaml`)
@@ -112,9 +121,12 @@ The following fields must never become Enums:
 - fact/change field names (`field`)
 - `tags`, `url`, `language`, external model identifiers (`extraction_model`)
 
+Any future proposal to convert one of these open taxonomies into a closed Enum requires an ADR
+amendment and backwards-compatibility review.
+
 ---
 
-### 6. Code Placement Policy
+### 7. Code Placement Policy
 
 - **No Miscellaneous Dumping Grounds**: Shared Enums must live directly in
   `src/ai_daily_digest/shared/schemas.py` next to the Pydantic models that own them.
@@ -127,7 +139,7 @@ The following fields must never become Enums:
 
 ---
 
-### 7. Compatibility & Wire Format Guarantees
+### 8. Compatibility & Wire Format Guarantees
 
 Implementation of this policy must preserve:
 
@@ -139,21 +151,46 @@ Implementation of this policy must preserve:
    during validation.
 4. **`model_copy` Invariant**: `model_copy(update=...)` does not re-validate inputs; callers must pass
    Enum members rather than raw unvalidated strings.
-5. **OpenAPI Generation**: FastAPI will generate `enum` schemas in the OpenAPI specification from
-   these shared types. Delivery must reuse these shared Enums and never duplicate equivalent Enum
-   definitions.
+5. **OpenAPI & Generated Clients**: FastAPI will generate `enum` schemas in the OpenAPI specification
+   from these shared types. Delivery must reuse these shared Enums and never duplicate equivalent Enum
+   definitions. Note that adding a future member to a response Enum can break exhaustive pattern
+   matches in generated clients (e.g. TypeScript / Rust), and therefore requires a compatibility
+   review.
+
+---
+
+## Consequences
+
+- **Stricter Boundary Rejection**: Pydantic models will immediately reject malformed, wrong-case, or
+  unrecognized strings at input boundaries across all modules.
+- **Type Safety in Python**: Python attributes on instantiated models become `StrEnum` members,
+  providing IDE autocompletion, type-checker verification, and elimination of typo-prone string
+  literals.
+- **Unchanged Wire JSON**: Wire serialization remains 100% backwards-compatible lowercase JSON
+  strings; existing clients and fixtures require zero migration.
+- **`model_copy` Invariant**: Because Pydantic `model_copy(update=...)` bypasses validation,
+  developers must explicitly pass `StrEnum` members rather than raw strings when updating model
+  fields.
+- **Zero Production Dependencies**: Uses standard library `enum.StrEnum` in Python 3.12 without adding
+  third-party packages.
+- **Client Evolution Governance**: Any future addition of response enum members requires deliberate
+  compatibility review to avoid breaking exhaustive generated clients.
 
 ---
 
 ## Future Implementation Scope (Separate PR)
 
-Once this ADR is accepted by Persons A, B, and C, the implementation PR will:
+Once this ADR is accepted by Persons A, B, and C, a follow-up implementation PR will:
 
 1. Add the four `StrEnum` definitions to `src/ai_daily_digest/shared/schemas.py`.
 2. Add `InferredChangeType` to `src/ai_daily_digest/intelligence/facts.py`.
 3. Update Pydantic model field annotations and defaults in `shared/schemas.py`.
-4. Update intelligence call sites, comparisons, and `model_copy` invocations.
-5. Add unit tests in `tests/unit/test_schemas.py` verifying:
+4. Re-use `DisclosureStatus` for `FactCandidate.disclosure_status` in `extract_facts.py` (or document
+   why a local Literal stays separate from `FactRow`'s three-state type).
+5. Update intelligence call sites, comparisons, and `model_copy` invocations.
+6. Coordinate updates to `docs/API_CONTRACT.md` schema references and examples (preserving exact wire
+   strings).
+7. Add unit and contract tests in `tests/unit/test_schemas.py` and `tests/contract/` verifying:
    - Valid member acceptance and rejection of invalid/misspelled/wrong-case strings.
    - JSON serialization and round-trip integrity.
    - Exact `model_json_schema()` enum members.
