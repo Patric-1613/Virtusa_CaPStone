@@ -1,6 +1,6 @@
 # 0007 — Project-wide UUID v7 identifier policy
 
-Status: Accepted by Persons A and B; Person C confirmation pending
+Status: Accepted by Persons A, B, and C
 Date: 2026-09-01
 
 ## Status detail
@@ -8,12 +8,12 @@ Date: 2026-09-01
 Person A selected UUID v7 as the identifier strategy and drafted this ADR. Person B reviewed the
 design and accepted it on PR #16 on 2026-09-01.
 
-- **Person C's confirmation remains pending.** Delivery/API implementation must not depend on this
-  ADR until Person C confirms it — the same deferred-but-not-skipped posture already established
-  for ADR 0004 and ADR 0005 (see their own "pending Person C's confirmation" status lines), since
-  UUID formatting is a cross-cutting concern that will directly shape the delivery module's
-  request/response handling. See "Amendment PR workflow — Person C acceptance sequence" below for
-  the exact steps this confirmation follows.
+- **Person C explicitly approved this ADR, as amended, on PR #19 on 2026-09-01.** The review
+  formally confirmed that all five Delivery concerns raised on PR #16 — the pagination tie-breaker,
+  the UUID factory/runtime representation, the ChangeSet ID lifecycle, the OpenAPI/TypeScript
+  compatibility gates, and compiled-dependency validation — are resolved by the amendment recorded
+  in "Batch-scoped ChangeSet ID allocation," "API implementation PR — mandatory acceptance gates,"
+  and the dependency-evaluation sections below. This ADR is Accepted by all three module owners.
 
 **This ADR is documentation-only and touches no `docs/API_CONTRACT.md` content in this PR.**
 `docs/API_CONTRACT.md` still states UUID v4, unchanged, on this branch. This is deliberate, not an
