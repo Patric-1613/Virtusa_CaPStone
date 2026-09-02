@@ -22,7 +22,18 @@ def draft_change_claim(change: Change) -> DigestClaim:
     subject_name = f"{change.subject.company}'s {change.subject.product}"
     label = _field_label_for(change.field)
 
-    if change.previous is None:
+    if change.change_type == "not_disclosed":
+        prev_value = change.previous.value if change.previous is not None else None
+        text = (
+            f"{subject_name}'s {label} is no longer disclosed (previously {prev_value})."
+            if prev_value is not None
+            else f"{subject_name}'s {label} is no longer disclosed."
+        )
+    elif (
+        change.change_type == "disclosed"
+        or change.previous is None
+        or change.previous.value is None
+    ):
         text = f"{subject_name}'s {label} is now disclosed as {change.current.value}."
     elif change.change_type == "increased":
         text = (
@@ -42,7 +53,7 @@ def draft_change_claim(change: Change) -> DigestClaim:
 
     current_id, previous_id = change_snapshot_ids(change)
     citation_ids = [current_id] if current_id else []
-    if previous_id:
+    if previous_id and previous_id not in citation_ids:
         citation_ids.append(previous_id)
 
     return DigestClaim(

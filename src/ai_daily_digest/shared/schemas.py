@@ -236,19 +236,127 @@ class FactObservation(BaseModel):
     source_url: HttpUrl | None = None
 
 
+def validate_change_shape(
+    change_type: str,
+    previous: FactObservation | None,
+    current: FactObservation,
+) -> None:
+    """Enforces mutually exclusive, valid observation shapes per
+    change_type — per review, this is FactStore.update_fact()'s own real
+    invariant (verified by hand against every code path that constructs a
+    Change there before relying on it). Standalone (not a method) so
+    update_fact() can call it directly, BEFORE new_id()/
+    change_set_id_factory() run, on the exact (change_type, previous,
+    current) triple it is about to construct a Change from — the same
+    check Change's own `_require_valid_change_shape` model_validator
+    below applies at construction, so no OTHER construction path (a
+    hand-built fixture, a future ingestion write path) can produce a
+    self-contradictory Change either. Raises ValueError if the shape is
+    contradictory; returns None (not the observations) since it never
+    needs to transform them, only judge them.
+      - "not_disclosed": `previous` must exist with a non-null value and
+        a real snapshot_id (the fact WAS disclosed before); `current`
+        must have value=None and a real snapshot_id (the citation for
+        the withholding statement itself).
+      - "disclosed": `current` must have a non-null value and a real
+        snapshot_id. `previous`, if present at all, must have
+        value=None and a real snapshot_id (a not_disclosed -> disclosed
+        transition) — `previous=None` entirely (a genuine first-ever
+        disclosure, no prior ExtractedFact of any kind) is also valid
+        and unconstrained here.
+      - Every other change_type -- "increased"/"decreased"/"changed",
+        and any other string a future caller introduces (open,
+        deliberately not a closed allowlist): both `previous` and
+        `current` must have a non-null value and a real snapshot_id.
+        "increased"/"decreased"/"changed" only ever arise from two real,
+        grounded observations differing, never from a disclosure
+        boundary (see _infer_change_type, facts.py) -- and an
+        unrecognised change_type gets the same, stricter "two real
+        observations" shape rather than silently skipping validation
+        entirely, since "disclosed"/"not_disclosed" are the only
+        change_types this model knows to relax that for."""
+    if change_type == "not_disclosed":
+        if previous is None or previous.value is None or previous.snapshot_id is None:
+            raise ValueError(
+                "Change with change_type='not_disclosed' requires previous observation "
+                "with non-null value and snapshot_id"
+            )
+        if current.value is not None or current.snapshot_id is None:
+            raise ValueError(
+                "Change with change_type='not_disclosed' requires current observation "
+                "with value=None and snapshot_id"
+            )
+    elif change_type == "disclosed":
+        if current.value is None or current.snapshot_id is None:
+            raise ValueError(
+                "Change with change_type='disclosed' requires current observation "
+                "with non-null value and snapshot_id"
+            )
+        if previous is not None and (previous.value is not None or previous.snapshot_id is None):
+            raise ValueError(
+                "Change with change_type='disclosed' having a previous observation "
+                "requires previous.value=None (transition from not_disclosed) and "
+                "snapshot_id"
+            )
+    else:
+        # Generic real-change shape -- "increased"/"decreased"/"changed"
+        # and any change_type this model doesn't otherwise recognise.
+        # Deliberately NOT `elif change_type in (...)`: a closed
+        # allowlist would let an unrecognised change_type string skip
+        # shape validation entirely, which is the one thing this
+        # function exists to prevent (any hand-built or future-caller-
+        # constructed Change must still prove both sides are real
+        # observations unless it's one of the two disclosure-boundary
+        # types explicitly relaxed above).
+        if previous is None or previous.value is None or previous.snapshot_id is None:
+            raise ValueError(
+                f"Change with change_type='{change_type}' requires previous "
+                "observation with non-null value and snapshot_id"
+            )
+        if current.value is None or current.snapshot_id is None:
+            raise ValueError(
+                f"Change with change_type='{change_type}' requires current "
+                "observation with non-null value and snapshot_id"
+            )
+
+
 class Change(BaseModel):
     """One field-level change. `previous` is null only when the absence
-    means "not previously disclosed" — never used to mean "unknown"."""
+    means "not previously disclosed" — never used to mean "unknown".
+
+    `previous.value`/`current.value` (FactObservation, not this field
+    itself) can independently be null too — ADR 0006's disclosure-status
+    transitions: change_type="disclosed" has previous.value=None,
+    current.value=real; change_type="not_disclosed" has the reverse.
+    Either way `previous`/`current` themselves (the FactObservation
+    objects) are always present when the transition is a real Change —
+    only their own `.value` goes null, carrying the citation for
+    whichever side lacks a value.
+
+    The exact required shape per change_type is enforced at construction
+    by _require_valid_change_shape below, not just documented as a
+    convention — see validate_change_shape's own docstring for the rules
+    themselves."""
 
     id: Uuid7Id
     change_set_id: Uuid7Id
     subject: Subject
     field: str
-    change_type: str  # e.g. "increased", "decreased", "disclosed", "changed"
+    change_type: str  # e.g. "increased", "decreased", "disclosed", "not_disclosed", "changed"
     previous: FactObservation | None = None
     current: FactObservation
     confidence: Confidence
     review_status: str = "pending"  # "pending" | "validated" | "rejected"
+
+    @model_validator(mode="after")
+    def _require_valid_change_shape(self) -> Change:
+        """Delegates to the standalone validate_change_shape() above, so
+        the exact same rule applies whether a Change is constructed
+        directly (here) or pre-checked by a caller like FactStore.
+        update_fact() before it spends any ids (see that function's own
+        comment for why) — one definition, not two that could drift."""
+        validate_change_shape(self.change_type, self.previous, self.current)
+        return self
 
 
 class ChangeSet(BaseModel):

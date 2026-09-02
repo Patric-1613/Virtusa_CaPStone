@@ -29,6 +29,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractedFact,
     FactObservation,
     Subject,
+    validate_change_shape,
 )
 
 # Compiled once at import time rather than inside normalise_name(): this
@@ -115,21 +116,27 @@ def _subject_key(subject: Subject) -> tuple[str, str]:
     return (normalise_name(subject.company), normalise_name(subject.product))
 
 
-def _infer_change_type(previous_value: str, current_value: str) -> str:
-    """ "increased"/"decreased" when both values parse as plain numbers
-    and differ that way; "changed" otherwise (non-numeric fields like
-    licence_terms, or values with units/formatting that don't parse).
+def _infer_change_type(previous_value: str | None, current_value: str | None) -> str:
+    """ "disclosed"/"not_disclosed" for transitions across disclosure
+    boundaries; "increased"/"decreased" when both values parse as plain
+    numbers and differ that way; "changed" otherwise (non-numeric fields
+    like licence_terms, or values with units/formatting that don't parse).
     Callers can still override via update_fact()'s change_type param for
     cases they know more about than a bare float comparison can."""
-    try:
-        previous_number = float(previous_value)
-        current_number = float(current_value)
-    except (TypeError, ValueError):
-        return "changed"
-    if current_number > previous_number:
-        return "increased"
-    if current_number < previous_number:
-        return "decreased"
+    if previous_value is None and current_value is not None:
+        return "disclosed"
+    if previous_value is not None and current_value is None:
+        return "not_disclosed"
+    if previous_value is not None and current_value is not None:
+        try:
+            previous_number = float(previous_value)
+            current_number = float(current_value)
+            if current_number > previous_number:
+                return "increased"
+            if current_number < previous_number:
+                return "decreased"
+        except (TypeError, ValueError):
+            pass
     return "changed"
 
 
@@ -230,13 +237,19 @@ class FactStore:
         allocation"): called exactly once, and only on the single path
         that returns a real Change -- after every value that could fail
         validation (both FactObservations, so a bad source_url; the
-        confidence bound) has already been checked, and before the store
-        is advanced. A first observation, an unchanged value, an ADR 0006
-        disclosure transition, or a validation failure on any of those
-        inputs all return None (or raise) without calling it and without
-        touching record.current or history, so no UUID is spent -- and no
-        partial write is left behind -- for an observation that never
-        becomes a Change. Callers pass a
+        confidence bound; and the resolved change_type's own observation-
+        shape invariant, validate_change_shape() in shared/schemas.py --
+        see the inline comment just above where it's called) has already
+        been checked, and before the store is advanced. A first
+        observation, an unchanged value, or a validation failure on any
+        of those inputs all return None (or raise) without calling it and
+        without touching record.current or history, so no UUID is spent
+        -- and no partial write is left behind -- for an observation that
+        never becomes a Change. An ADR 0006 disclosure-status transition
+        DOES call it: since this method's own guard was removed, a
+        transition is a real, reportable Change too (see below), not a
+        case that skips id allocation.
+        Callers pass a
         batch-scoped get-or-create closure (change_sets.py::
         get_or_create_change_set_id, closed over graph.py's per-run
         allocator) -- never a plain value, and never something FactStore
@@ -244,26 +257,27 @@ class FactStore:
         class docstring) while a change_set_id must be fresh every batch.
 
         Returns a Change if this differs from the currently known value —
-        returns None for a first-time observation (new information, but
-        not a change — see this project's second review: nothing
+        returns None only for a first-time observation (new information,
+        but not a change — see this project's second review: nothing
         downstream currently turns a first observation into its own
         digest content either; "reported elsewhere" was aspirational,
-        not a real path, and is corrected here to say so), an identical
-        value, or a disclosure-status transition (ADR 0006 — either side
-        of the comparison has value=None, meaning it's a "not disclosed"
-        observation, not a real value): the fact IS still recorded (so
-        get_current_fact()/build_fact_table() see the new disclosure
-        state right away), it just doesn't become a Change/DigestClaim
-        here — the same treatment a first observation already gets, and
-        for the same reason: nothing downstream has an agreed wording
-        yet for "X stopped/started disclosing Y" as a single-subject
-        sentence, and this ADR's scope is compare_subjects.py's
-        cross-subject rendering, not draft_claims.py's. An identical
-        value still refreshes the stored provenance (snapshot/source/
-        observed_at) to this newer confirmation, so a fact re-confirmed
-        many times doesn't keep citing its original, increasingly stale
-        snapshot — it's a no-op for Change purposes, not a no-op for
-        "what's the freshest evidence for this fact"."""
+        not a real path, and is corrected here to say so) or an identical
+        value (including two consecutive not_disclosed observations of
+        the same field — the disclosure STATE hasn't changed, even
+        though both sides have value=None). A genuine disclosure-status
+        TRANSITION (ADR 0006 — one side has a real value, the other is
+        None) DOES return a real Change, with change_type
+        "disclosed"/"not_disclosed" (_infer_change_type) —
+        draft_claims.py::draft_change_claim() renders it as its own
+        single-subject sentence ("X's Y is now disclosed as ..." / "X's Y
+        is no longer disclosed (previously ...)."), citing both the
+        snapshot proving the new state and the snapshot that recorded the
+        previous one. An identical value still refreshes the stored
+        provenance (snapshot/source/observed_at) to this newer
+        confirmation, so a fact re-confirmed many times doesn't keep
+        citing its original, increasingly stale snapshot — it's a no-op
+        for Change purposes, not a no-op for "what's the freshest
+        evidence for this fact"."""
         self.register_subject(subject)
         key = (*_subject_key(subject), fact.field)
         record = self._fields.setdefault(key, _FieldRecord())
@@ -276,10 +290,14 @@ class FactStore:
             record.advance_current(fact, source_url=source_url, observed_at=observed_at)
             return None
 
-        # `previous` exists and the value genuinely differs. Build the
-        # `previous` side now, at the same point the original code did --
-        # before the disclosure-transition check -- so that path's
-        # behaviour is unchanged.
+        # `previous` exists and the value genuinely differs -- including a
+        # disclosure-status transition (ADR 0006) in either direction,
+        # where one side of the comparison has value=None (change_type
+        # "disclosed"/"not_disclosed" -- see _infer_change_type above and
+        # this method's own docstring): that case is a real, reportable
+        # Change too, not silently absorbed into the store the way a
+        # first observation or an unchanged value is above. Build the
+        # `previous` side now, at the same point the original code did.
         previous_observation = FactObservation(
             value=previous.value,
             observed_at=record.current_observed_at,
@@ -289,23 +307,13 @@ class FactStore:
             source_url=record.current_source_url,  # type: ignore[arg-type]
         )
 
-        if fact.value is None or previous.value is None:
-            # A disclosure-status transition (ADR 0006), either direction --
-            # the superseded value moves to history and the new state is
-            # recorded, but it is not reported as a Change here (see this
-            # method's own docstring for why). Guarding on nullness
-            # directly, not `disclosure_status`, matches ExtractedFact's
-            # own invariant that the two always agree.
-            record.history.append(previous)
-            record.advance_current(fact, source_url=source_url, observed_at=observed_at)
-            return None
-
-        # A real changed value -> a Change. Everything that can fail
-        # validation -- the confidence bound and the `current`
-        # FactObservation's source_url -- is checked HERE, before new_id()
-        # and change_set_id_factory() run and before the store is touched,
-        # so a rejected input spends no UUID and leaves record.current and
-        # history exactly as they were (ADR 0007's failed-processing rule).
+        # Everything that can fail validation -- the confidence bound,
+        # the `current` FactObservation's source_url, and (below) the
+        # resolved change_type's own observation-shape invariant -- is
+        # checked HERE, before new_id() and change_set_id_factory() run
+        # and before the store is touched, so a rejected input spends no
+        # UUID and leaves record.current and history exactly as they were
+        # (ADR 0007's failed-processing rule).
         _CONFIDENCE_ADAPTER.validate_python(confidence)
         current_observation = FactObservation(
             value=fact.value,
@@ -318,6 +326,17 @@ class FactStore:
             if change_type is not None
             else _infer_change_type(previous.value, fact.value)
         )
+        # An explicit change_type override (the only way resolved_change_type
+        # can disagree with what the two observations actually look like --
+        # _infer_change_type's own output always matches by construction)
+        # must be checked BEFORE new_id()/change_set_id_factory() below: both
+        # are evaluated as call arguments to Change(...), i.e. BEFORE
+        # Change's own validator would ever get a chance to reject the same
+        # inconsistency, which would otherwise spend a real UUID and a real
+        # change_set_id on a Change that never gets returned. Same rule
+        # Change._require_valid_change_shape enforces at construction --
+        # see validate_change_shape's own docstring, shared/schemas.py.
+        validate_change_shape(resolved_change_type, previous_observation, current_observation)
         change = Change(
             id=new_id(),
             change_set_id=change_set_id_factory(),
