@@ -36,7 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.llm import SONNET, call_structured
@@ -76,6 +76,42 @@ class FactRow(BaseModel):
     value: str | None = None
     disclosure_status: Literal["disclosed", "not_disclosed", "unknown"] = "unknown"
     snapshot_id: str | None = None
+
+    @model_validator(mode="after")
+    def _require_consistent_disclosure_state(self) -> FactRow:
+        """Per review: (value, snapshot_id) must line up exactly with
+        disclosure_status -- three mutually exclusive states, each with
+        its own required shape, not just documented as a convention in
+        this class's own docstring above."""
+        if self.disclosure_status == "unknown":
+            if self.value is not None or self.snapshot_id is not None:
+                raise ValueError(
+                    "FactRow with disclosure_status='unknown' must have value=None "
+                    "and snapshot_id=None -- nothing was ever recorded for this row"
+                )
+        elif self.disclosure_status == "not_disclosed":
+            if self.value is not None:
+                raise ValueError(
+                    "FactRow with disclosure_status='not_disclosed' must have "
+                    "value=None -- there is no value, only a citation for the "
+                    "non-disclosure statement itself"
+                )
+            if not self.snapshot_id:
+                raise ValueError(
+                    "FactRow with disclosure_status='not_disclosed' must have a "
+                    "real snapshot_id -- a non-disclosure claim needs its own "
+                    "citation, the same as any other groundable claim"
+                )
+        else:  # "disclosed"
+            if not self.value:
+                raise ValueError(
+                    "FactRow with disclosure_status='disclosed' must have a non-empty value"
+                )
+            if not self.snapshot_id:
+                raise ValueError(
+                    "FactRow with disclosure_status='disclosed' must have a real snapshot_id"
+                )
+        return self
 
 
 class ComparisonAssertion(BaseModel):

@@ -1,6 +1,6 @@
 # 0006 — "Unknown" vs. "not disclosed" are different claims
 
-Status: Accepted by Persons A and B; Person C confirmation pending
+Status: Proposed for peer review — revisions requested by Persons A and C on 2026-09-01
 Date: 2026-08-27
 
 ## Context
@@ -66,6 +66,125 @@ text.
   default rendering this ADR exists to prevent. That remains open for its own follow-up.
 - `ExtractedFact` gains a field (additive, same discipline as ADR 0004) — contract tests, fixtures,
   and `docs/API_CONTRACT.md` updated accordingly.
-- Accepted by Persons A and B; Person C's confirmation is still pending, per the team's
-  contract-change process (`docs/API_CONTRACT.md`) — same gate as ADR 0004 and ADR 0005. Not
-  blocked on that confirmation before implementation starts, matching how ADR 0005 was handled.
+- Per the team's contract-change process (`docs/API_CONTRACT.md`), this ADR requires all three
+  module owners' sign-off — Persons A, B, **and** C — before its status becomes `Accepted by
+  Persons A, B, and C`. Person A's first pass raised the revisions below, requested 2026-09-01;
+  Person C's initial review is complete but has not yet re-reviewed this revision. None of this
+  ADR's implementation is to be treated as unconditionally accepted or as a precedent for skipping
+  any reviewer's sign-off on a future ADR.
+
+## Revisions requested by Person A (2026-09-01)
+
+Person A's review of the first implementation found the design sound but flagged four gaps,
+addressed in this revision:
+
+1. **Quote existence is not semantic support for a non-disclosure claim.** The original
+   implementation accepted any `not_disclosed` candidate whose `quoted_span` merely appeared in the
+   snapshot text (the same grounding check every candidate goes through) — that proves the quote is
+   real, not that it actually supports "this specific field is being withheld." Fixed with a
+   deterministic check (`extract_facts.py::_quote_supports_non_disclosure`) requiring an approved
+   explicit-withholding phrase, a field-matching keyword, and no real number in the quote — mirrors
+   `grounding.py::value_supported_by_quote()`'s role for a disclosed value's number. Further
+   tightened in the next revision round below — see "Revisions requested by Persons A and C".
+2. **`value: str | None` must have no default.** A construction site that forgot the field entirely
+   previously fell back to `None`, silently indistinguishable from an explicit not-disclosed value.
+   Both `ExtractedFact` (`shared/schemas.py`) and `FactCandidate` (`extract_facts.py`) now require
+   every caller to state `value` explicitly.
+3. **`FactRow`'s three disclosure states need their own enforced invariants,** not just a
+   documented convention: `"unknown"` requires `value=None` and `snapshot_id=None`; `"not_disclosed"`
+   requires `value=None` and a real `snapshot_id`; `"disclosed"` requires both a real `value` and a
+   real `snapshot_id`. Enforced via a `FactRow` model validator (`compare_subjects.py`).
+4. **This ADR's status previously overstated its own acceptance.** "Accepted by Persons A and B;
+   Person C confirmation pending" read as though implementation proceeding was itself a form of
+   acceptance, and understated that Person C's sign-off is required, not optional. Corrected above.
+
+## Revisions requested by Persons A and C (2026-09-01, second round)
+
+The first revision's `_quote_supports_non_disclosure` check was itself found under-specified —
+loose substring keyword matching and whole-quote (not clause-scoped) checking let several real
+false positives through:
+
+1. **Loose substring matching let a keyword match inside an unrelated word** — `"rate"` (part of
+   `input_price_usd`'s pricing concept) matched inside `"corporate"`; `"terms"` alone
+   (`licence_terms`) matched an unrelated `"payment terms"` sentence; `"limit"`/`"token"` alone
+   (`context_window_tokens`) matched `"Rate limits"`, a pricing/throttling concept, not a context
+   window. Fixed by replacing single-word substring checks with whole-word/whole-phrase compiled
+   regexes per field — `context_window_tokens` now requires a combined phrase (`"context window"`,
+   `"token limit"`, `"max context"`, ...), never a bare word alone; `licence_terms` requires the
+   word `"licence"`/`"license"`/`"licensing"` itself, `"terms"` alone is insufficient. (Named
+   `_FIELD_CONCEPT_PATTERNS` at the time; regrouped into `_FAMILY_CONCEPT_PATTERNS` — one pattern
+   per concept family rather than per field — in the third round below.)
+2. **`input`/`output` were accepted as pricing evidence on their own.** Corrected: both price
+   fields now share one pattern requiring an actual pricing concept (`price`, `cost`, `rate`,
+   `fee`, `dollar`, `cent`, `currency`, `usd`, or `$`) — `"input"`/`"output"` are optional
+   qualifiers only, never sufficient by themselves.
+3. **Bare `"available"`/`"public"` over-matched plain feature/service-availability statements** —
+   `"The model is not available in Europe"` is a normal availability statement, not a claim that a
+   *fact* is being withheld, but the withholding-phrase pattern treated `"not available"` as
+   equivalent to `"not disclosed"`. Fixed: `_WITHHOLDING_PHRASE_RE` no longer accepts bare
+   `"available"`/`"public"` as verbs — only when preceded by a noun that actually names a withheld
+   fact (`"pricing/details/information/scores/terms are/is not available"`).
+4. **Checking the withholding phrase and the field concept against the WHOLE quote independently
+   let two unrelated clauses satisfy both requirements together** — e.g. `"The model features a
+   large context window. Pricing details have not been released."` would satisfy
+   `context_window_tokens`'s concept pattern (first clause) and the withholding pattern (second
+   clause) even though neither clause is itself a context-window non-disclosure statement. Fixed:
+   `_quote_supports_non_disclosure` now splits the quote into clauses (`. ! ? ; \n`) and requires
+   both patterns to match the SAME clause.
+
+All four gaps were verified against concrete false-positive/true-positive phrase pairs before
+relying on the fix — see `tests/unit/test_extract_facts.py`'s clause-bounded-matching test section.
+
+## Revisions requested by Person C (2026-09-01, third round)
+
+Person C found the second round's clause-bounded check itself still too narrow: it only split
+clauses on plain sentence punctuation (`. ! ? ; \n`), missing a COMPOUND sentence that joins two
+unrelated facts with a comma+conjunction, a bare contrast conjunction, or a dash and has no
+terminal punctuation between the two halves — e.g. `"The model has a large context window, but
+pricing details have not been released"` is one sentence, yet its two halves are about different
+facts.
+
+Fixed with two changes, `extract_facts.py`:
+
+1. **`_CLAUSE_SPLIT_RE` widened** to also split on `,\s*(?:but|and|while|whereas|although|however
+   |yet)\b`, a bare `\b(?:but|while|whereas|although|however)\b`, and an em dash (`--`/`—` — a
+   single ASCII hyphen, as in `"GPT-4o"`, deliberately does not match either alternative).
+2. **A same-clause cross-field-family guard**, for the case a comma doesn't even separate the two
+   halves (a bare `"and"` with no leading comma isn't split, by design — `"Input and output
+   pricing have not been announced"` must still pass for either price field). Fields are grouped
+   into concept families (`_FIELD_TO_FAMILY`/`_FAMILY_CONCEPT_PATTERNS`) — `input_price_usd` and
+   `output_price_usd` share one `"pricing"` family — and a clause only counts as support when its
+   set of matching families is EXACTLY the candidate's own family, not a superset. This is what
+   rejects `"Benchmark scores are strong and pricing has not been announced"` for
+   `benchmark_scores`: that clause's own concept and a withholding phrase are both present, but
+   the same clause also names pricing, so which fact is actually being withheld is ambiguous.
+
+Verified against concrete phrase pairs for every field family, including the combined-pricing
+positive case and a deliberately multi-family negative case, before relying on the fix — see
+`tests/unit/test_extract_facts.py`'s compound-clause test section.
+
+## Revisions requested by Person A (2026-09-01/02, fourth and fifth rounds)
+
+Two further gaps in `_quote_supports_non_disclosure`, both scoped to the `"pricing"` family
+specifically (`input_price_usd`/`output_price_usd` sharing one family, per the third round above):
+
+1. **The pricing family match alone couldn't tell the two price fields apart.** `"Output pricing
+   has not been announced"` satisfied the family check for `input_price_usd` too, since both
+   fields resolve to the same `"pricing"` family. Fixed with a second, narrower check that runs
+   only within the pricing family — `_pricing_qualifiers_support_field`, gated on `_INPUT_QUALIFIER_RE`/
+   `_OUTPUT_QUALIFIER_RE`: input-only wording supports only `input_price_usd`; output-only wording
+   supports only `output_price_usd`; both qualifiers present, or neither (general unqualified
+   pricing wording), support both — a candidate is not required to name a direction the source
+   text itself never mentioned.
+2. **The qualifier words themselves were too broad.** The first version of `_INPUT_QUALIFIER_RE`/
+   `_OUTPUT_QUALIFIER_RE` matched synonyms beyond the literal words — `prompt`/`ingress` for input,
+   `completion`/`generation`/`egress` for output — which caused false co-occurrences: `"Output
+   pricing for prompt caching has not been announced"` is entirely about output pricing, but the
+   word `"prompt"` in `"prompt caching"` made the old pattern also read it as naming an INPUT
+   qualifier, silently letting the clause pass for `input_price_usd` too. Fixed: both patterns
+   restricted to the literal whole words `input`/`output` only —
+   `r"\binput\b"` / `r"\boutput\b"` — nothing else.
+
+Verified against concrete phrase pairs (including the exact `"image generation"`/`"prompt
+caching"` false-co-occurrence cases) before relying on the fix — see
+`tests/unit/test_extract_facts.py`'s pricing-qualifier test sections.

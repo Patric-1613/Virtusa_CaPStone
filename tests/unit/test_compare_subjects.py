@@ -14,6 +14,7 @@ import logging
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from ai_daily_digest.intelligence.compare_subjects import (
     ComparisonAssertion,
@@ -135,6 +136,71 @@ def test_build_fact_table_carries_through_a_real_not_disclosed_fact() -> None:
     assert row.value is None
     assert row.disclosure_status == "not_disclosed"
     assert row.snapshot_id == "snap_openai_price_nd"
+
+
+# --- FactRow state invariants (ADR 0006 revision requested by Person A)
+# -- (value, snapshot_id) must line up exactly with disclosure_status,
+# enforced at construction, not just documented as a convention. ---
+
+
+def test_unknown_row_with_a_value_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown"):
+        FactRow(
+            subject=OPENAI_GPT4O,
+            field="context_window_tokens",
+            value="256000",
+            disclosure_status="unknown",
+        )
+
+
+def test_unknown_row_with_a_snapshot_id_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown"):
+        FactRow(
+            subject=OPENAI_GPT4O,
+            field="context_window_tokens",
+            disclosure_status="unknown",
+            snapshot_id="snap_1",
+        )
+
+
+def test_not_disclosed_row_with_a_value_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        FactRow(
+            subject=OPENAI_GPT4O,
+            field="context_window_tokens",
+            value="256000",
+            disclosure_status="not_disclosed",
+            snapshot_id="snap_1",
+        )
+
+
+def test_not_disclosed_row_without_a_snapshot_id_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="not_disclosed"):
+        FactRow(
+            subject=OPENAI_GPT4O,
+            field="context_window_tokens",
+            disclosure_status="not_disclosed",
+        )
+
+
+def test_disclosed_row_without_a_value_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="disclosed"):
+        FactRow(
+            subject=OPENAI_GPT4O,
+            field="context_window_tokens",
+            disclosure_status="disclosed",
+            snapshot_id="snap_1",
+        )
+
+
+def test_disclosed_row_without_a_snapshot_id_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="disclosed"):
+        FactRow(
+            subject=OPENAI_GPT4O,
+            field="context_window_tokens",
+            value="256000",
+            disclosure_status="disclosed",
+        )
 
 
 def test_well_grounded_comparison_is_accepted_and_deterministically_rendered() -> None:

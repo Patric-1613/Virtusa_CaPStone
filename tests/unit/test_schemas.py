@@ -177,15 +177,16 @@ def test_not_disclosed_fact_with_empty_quoted_span_is_rejected() -> None:
         )
 
 
-def test_disclosed_fact_without_a_value_is_rejected() -> None:
-    """disclosure_status="disclosed" is the default -- constructing a
-    fact with no value at all must not silently produce a fact that
-    claims to be disclosed while stating nothing."""
+def test_disclosed_fact_with_explicit_none_value_is_rejected() -> None:
+    """disclosure_status="disclosed" is the default -- explicitly passing
+    value=None with it must not silently produce a fact that claims to
+    be disclosed while stating nothing."""
     with pytest.raises(ValidationError, match="disclosed"):
         ExtractedFact(
             id="f1",
             snapshot_id="snap_1",
             field="context_window_tokens",
+            value=None,
             extraction_method="deterministic",
         )
 
@@ -198,4 +199,48 @@ def test_disclosed_fact_with_empty_string_value_is_rejected() -> None:
             field="context_window_tokens",
             value="",
             extraction_method="deterministic",
+        )
+
+
+def test_disclosed_fact_with_a_real_value_is_accepted() -> None:
+    """A non-empty value is accepted for disclosure_status="disclosed"
+    (the default) -- the positive case the two rejections above are the
+    negative side of."""
+    fact = ExtractedFact(
+        id="f1",
+        snapshot_id="snap_1",
+        field="context_window_tokens",
+        value="256000",
+        extraction_method="deterministic",
+    )
+    assert fact.value == "256000"
+    assert fact.disclosure_status == "disclosed"
+
+
+# --- `value` has no default on ExtractedFact (ADR 0006 revision
+# requested by Person A) -- a construction site that omits it entirely
+# must be rejected, for either disclosure_status, never silently
+# defaulted to a value that means something specific (previously None,
+# i.e. "not disclosed"). ---
+
+
+def test_extracted_fact_omitting_value_entirely_is_rejected_when_disclosed() -> None:
+    with pytest.raises(ValidationError):
+        ExtractedFact(  # type: ignore[call-arg]
+            id="f1",
+            snapshot_id="snap_1",
+            field="context_window_tokens",
+            extraction_method="deterministic",
+        )
+
+
+def test_extracted_fact_omitting_value_entirely_is_rejected_when_not_disclosed() -> None:
+    with pytest.raises(ValidationError):
+        ExtractedFact(  # type: ignore[call-arg]
+            id="f1",
+            snapshot_id="snap_1",
+            field="context_window_tokens",
+            disclosure_status="not_disclosed",
+            extraction_method="deterministic",
+            quoted_span="pricing has not been announced",
         )
