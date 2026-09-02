@@ -2,19 +2,35 @@
 
 ## Ownership without silos
 
-| Area | Primary owner | Required reviewer |
+| Area | Review steward | Required reviewer |
 |---|---|---|
 | Ingestion | Person A (`@Patric-1613`) | B or C |
 | Intelligence and digest | Person B (`@SujinJK`) | A or C |
 | Delivery, frontend and deployment | Person C (`@chamath-wijayasundara`) | A or B |
 | Shared contracts, API schema, database migrations | Change author | At least one affected module owner |
 
-The primary owner coordinates design and keeps the module healthy. Anyone may contribute through a reviewed pull request.
+The review steward coordinates design and keeps the module healthy. The role does not reserve that
+module's implementation work: any teammate may author a focused change in any area through a
+reviewed pull request.
+
+## Parallel authorship policy
+
+- Any teammate may implement work in ingestion, intelligence, delivery, or shared code.
+- Before starting, claim a focused issue and record the active author, review steward, acceptance
+  criteria, and expected files.
+- Keep one active author per issue or overlapping file set. Split parallel work by concern and file
+  boundary rather than letting two branches independently rewrite the same implementation.
+- When the author is not the area's review steward, request that steward's review. When the steward
+  is the author, another teammate supplies the required non-author review.
+- Shared models, public API contracts, database migrations, and architecture decisions still follow
+  the ADR and cross-module review process. Flexible authorship does not bypass contract review.
+- CI, branch protection, required checks, and the non-author approval rule remain unchanged.
 
 ## How this maps to GitHub
 
-`.github/CODEOWNERS` encodes the primary-owner column above and automatically
-requests that person as a reviewer when a pull request touches their module.
+`.github/CODEOWNERS` encodes the review-steward column above and automatically
+requests that person as a reviewer when a pull request touches their module. It does not restrict
+which collaborator may create a branch, edit those files, or open the pull request.
 Shared files (contracts, architecture, ADRs, engineering policy, CI config)
 list all three owners; any one of the three can satisfy that review.
 
@@ -22,8 +38,8 @@ CODEOWNERS only routes review requests -- it does not by itself require
 code-owner approval to merge. The actual merge gate is branch protection:
 one approval from someone other than the author, on every pull request.
 This means the "Required reviewer" column above is enforced by the general
-approval rule, not by a hard-coded backup name in CODEOWNERS: if the primary
-owner is the PR author, any other teammate's approval satisfies the rule.
+approval rule, not by a hard-coded backup name in CODEOWNERS: if the review
+steward is the PR author, any other teammate's approval satisfies the rule.
 
 We are deliberately not enabling "Require review from Code Owners" yet.
 Revisit that setting only after the team has used the lightweight routing
@@ -66,7 +82,9 @@ on a test pull request after the file reaches the default branch.
 
 ```text
 Outcome: OpenAI RSS entries become normalized source items.
-Owner: Person A
+Active author: Person A
+Review steward: Person A (another teammate approves because the steward is the author)
+Expected files: sources.yaml and src/ai_daily_digest/ingestion/openai_feed.py
 Inputs: saved RSS fixture and source registry entry
 Outputs: SourceItem records and CollectionRun summary
 Acceptance:

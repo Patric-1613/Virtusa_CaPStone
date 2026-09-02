@@ -4,6 +4,9 @@
 # changed area. This file does NOT grant repository access and does NOT
 # by itself require code-owner approval to merge -- that depends on a
 # separate branch-protection setting (see docs/TEAM_WORKFLOW.md).
+# Every collaborator with repository write access may author changes under
+# any pattern below. These entries identify review stewards, not exclusive
+# editors or implementation permissions.
 #
 # GitHub uses the LAST matching pattern in this file, not the first. If a
 # broader fallback pattern is ever added, put it ABOVE these more specific
@@ -13,7 +16,7 @@
 # Person B = @SujinJK                (intelligence and agentic workflows)
 # Person C = @chamath-wijayasundara  (delivery: API, email, chat, frontend)
 
-# --- Module ownership ---
+# --- Module review routing ---
 /src/ai_daily_digest/ingestion/      @Patric-1613
 /src/ai_daily_digest/intelligence/   @SujinJK
 /src/ai_daily_digest/delivery/       @chamath-wijayasundara
