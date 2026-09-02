@@ -8,18 +8,26 @@ Build a traceable AI-industry update service that collects official sources, kee
 
 - Read the relevant architecture and standards documents before changing code.
 - Work only on the requested issue. Preserve unrelated and uncommitted work.
+- Any teammate may author a change in any module. Module owners are review stewards, not exclusive
+  implementers; ownership routes design questions and review responsibility rather than restricting
+  who may write code.
+- Claim an issue before starting and record the active author, review steward, and expected files.
+  Keep one active author per issue or overlapping file set so parallel work does not overwrite
+  another teammate's branch.
 - Use a short-lived branch for one concern; never push directly to `main`.
 - Prefer small, reviewable changes. Separate refactors from behavior changes.
-- Before editing shared contracts, database migrations, or public API schemas, write or update an ADR and request review from another module owner.
+- Before editing shared contracts, database migrations, or public API schemas, write or update an ADR and request review from another review steward.
 - Do not add a production dependency without explaining why an existing dependency or standard library cannot do the job.
 - Do not commit secrets, API keys, tokens, personal data, generated environments, or local agent memory.
 
 ## Architecture boundaries
 
-- `src/ai_daily_digest/ingestion/`: collection, normalization, provenance, snapshots, and duplicate detection. Owner: Person A.
-- `src/ai_daily_digest/intelligence/`: fact extraction, change detection, grounded digest generation, and evaluation. Owner: Person B.
-- `src/ai_daily_digest/delivery/`: HTTP API, subscriptions, email delivery, chat integration, and presentation adapters. Owner: Person C.
+- `src/ai_daily_digest/ingestion/`: collection, normalization, provenance, snapshots, and duplicate detection. Review steward: Person A.
+- `src/ai_daily_digest/intelligence/`: fact extraction, change detection, grounded digest generation, and evaluation. Review steward: Person B.
+- `src/ai_daily_digest/delivery/`: HTTP API, subscriptions, email delivery, chat integration, and presentation adapters. Review steward: Person C.
 - `src/ai_daily_digest/shared/`: stable cross-module models, protocols, configuration, and errors. Any change requires peer review.
+- A teammate working outside their usual module follows that module's boundaries and requests review
+  from its steward. This enables parallel implementation without removing architectural review.
 - Dependencies point inward toward `shared`; modules must not import another module's private implementation.
 - The vector store is a derived search index. It is not the source of truth.
 - Raw source snapshots are immutable. Corrections create a new version and retain provenance.

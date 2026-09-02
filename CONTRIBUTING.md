@@ -3,9 +3,12 @@
 ## Before taking a task
 
 1. Create or select one clearly scoped issue with acceptance criteria.
-2. Confirm which module owns the change.
-3. Check whether it alters a shared model, API, migration, or architecture decision.
-4. Create a branch such as `feat/123-openai-rss`, `fix/142-dedup-timezone`, or `docs/18-source-policy`.
+2. Claim the issue by recording its active author, review steward, and expected files. Any teammate
+   may author work in any module; the steward is responsible for design context and review, not
+   exclusive implementation.
+3. Confirm that no other active issue is modifying the same file set.
+4. Check whether it alters a shared model, API, migration, or architecture decision.
+5. Create a branch such as `feat/123-openai-rss`, `fix/142-dedup-timezone`, or `docs/18-source-policy`.
 
 ## Development flow
 
@@ -15,13 +18,15 @@ make bootstrap
 make check
 ```
 
-Commit a coherent unit of work. Rebase or update from `main` before requesting final review, and resolve conflicts with the person who owns the affected module.
+Commit a coherent unit of work. Rebase or update from `main` before requesting final review, and resolve semantic conflicts with the teammate who wrote the affected behavior.
 
 ## Pull requests
 
 - Keep a PR focused on one outcome; prefer fewer than about 400 changed lines excluding fixtures and generated lockfiles.
 - Link the issue and describe behavior, risks, verification, data/schema changes, and rollback.
 - Obtain at least one teammate review.
+- When working outside your usual module, request review from that module's review steward. If the
+  steward authored the change, another teammate provides the required non-author approval.
 - Obtain a shared-contract owner review for changes under `shared`, migrations, or public API schemas.
 - All required CI checks must pass before merge.
 - Use squash merge so one PR produces one understandable commit on `main`.
