@@ -209,9 +209,18 @@ _CLAUSE_SPLIT_RE = re.compile(
 # confirmed to be a pricing-family non-disclosure statement (per
 # _quote_supports_non_disclosure's main check) can still name the WRONG
 # price field: "Output pricing has not been announced" is real pricing
-# non-disclosure, but it says nothing about input_price_usd.
-_INPUT_QUALIFIER_RE = re.compile(r"\b(?:input|prompt|ingress)\b", re.IGNORECASE)
-_OUTPUT_QUALIFIER_RE = re.compile(r"\b(?:output|completion|generation|egress)\b", re.IGNORECASE)
+# non-disclosure, but it says nothing about input_price_usd. Restricted
+# to the whole words "input"/"output" themselves -- per review, broader
+# synonyms (prompt/ingress for input; completion/generation/egress for
+# output) caused false co-occurrences: "image generation" or "prompt
+# caching" are common qualifiers on an OUTPUT-pricing statement's own
+# clause that have nothing to do with which price direction is meant
+# ("Output pricing for prompt caching has not been announced" is about
+# output pricing, but the old pattern would have read "prompt" in it as
+# an INPUT qualifier too, making has_input and has_output both true and
+# silently letting it pass for input_price_usd as well).
+_INPUT_QUALIFIER_RE = re.compile(r"\binput\b", re.IGNORECASE)
+_OUTPUT_QUALIFIER_RE = re.compile(r"\boutput\b", re.IGNORECASE)
 
 
 def _pricing_qualifiers_support_field(field: str, clause: str) -> bool:

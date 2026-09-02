@@ -109,10 +109,11 @@ false positives through:
    (`licence_terms`) matched an unrelated `"payment terms"` sentence; `"limit"`/`"token"` alone
    (`context_window_tokens`) matched `"Rate limits"`, a pricing/throttling concept, not a context
    window. Fixed by replacing single-word substring checks with whole-word/whole-phrase compiled
-   regexes (`_FIELD_CONCEPT_PATTERNS`) per field — `context_window_tokens` now requires a combined
-   phrase (`"context window"`, `"token limit"`, `"max context"`, ...), never a bare word alone;
-   `licence_terms` requires the word `"licence"`/`"license"`/`"licensing"` itself, `"terms"` alone
-   is insufficient.
+   regexes per field — `context_window_tokens` now requires a combined phrase (`"context window"`,
+   `"token limit"`, `"max context"`, ...), never a bare word alone; `licence_terms` requires the
+   word `"licence"`/`"license"`/`"licensing"` itself, `"terms"` alone is insufficient. (Named
+   `_FIELD_CONCEPT_PATTERNS` at the time; regrouped into `_FAMILY_CONCEPT_PATTERNS` — one pattern
+   per concept family rather than per field — in the third round below.)
 2. **`input`/`output` were accepted as pricing evidence on their own.** Corrected: both price
    fields now share one pattern requiring an actual pricing concept (`price`, `cost`, `rate`,
    `fee`, `dollar`, `cent`, `currency`, `usd`, or `$`) — `"input"`/`"output"` are optional
@@ -161,3 +162,29 @@ Fixed with two changes, `extract_facts.py`:
 Verified against concrete phrase pairs for every field family, including the combined-pricing
 positive case and a deliberately multi-family negative case, before relying on the fix — see
 `tests/unit/test_extract_facts.py`'s compound-clause test section.
+
+## Revisions requested by Person A (2026-09-01/02, fourth and fifth rounds)
+
+Two further gaps in `_quote_supports_non_disclosure`, both scoped to the `"pricing"` family
+specifically (`input_price_usd`/`output_price_usd` sharing one family, per the third round above):
+
+1. **The pricing family match alone couldn't tell the two price fields apart.** `"Output pricing
+   has not been announced"` satisfied the family check for `input_price_usd` too, since both
+   fields resolve to the same `"pricing"` family. Fixed with a second, narrower check that runs
+   only within the pricing family — `_pricing_qualifiers_support_field`, gated on `_INPUT_QUALIFIER_RE`/
+   `_OUTPUT_QUALIFIER_RE`: input-only wording supports only `input_price_usd`; output-only wording
+   supports only `output_price_usd`; both qualifiers present, or neither (general unqualified
+   pricing wording), support both — a candidate is not required to name a direction the source
+   text itself never mentioned.
+2. **The qualifier words themselves were too broad.** The first version of `_INPUT_QUALIFIER_RE`/
+   `_OUTPUT_QUALIFIER_RE` matched synonyms beyond the literal words — `prompt`/`ingress` for input,
+   `completion`/`generation`/`egress` for output — which caused false co-occurrences: `"Output
+   pricing for prompt caching has not been announced"` is entirely about output pricing, but the
+   word `"prompt"` in `"prompt caching"` made the old pattern also read it as naming an INPUT
+   qualifier, silently letting the clause pass for `input_price_usd` too. Fixed: both patterns
+   restricted to the literal whole words `input`/`output` only —
+   `r"\binput\b"` / `r"\boutput\b"` — nothing else.
+
+Verified against concrete phrase pairs (including the exact `"image generation"`/`"prompt
+caching"` false-co-occurrence cases) before relying on the fix — see
+`tests/unit/test_extract_facts.py`'s pricing-qualifier test sections.

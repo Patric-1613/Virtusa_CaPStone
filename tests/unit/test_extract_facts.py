@@ -723,3 +723,51 @@ def test_end_to_end_input_price_candidate_citing_output_only_quote_is_dropped() 
 
     facts = extract_facts(_subject(), _snapshot(text), call_fn=fake_call)
     assert facts == []
+
+
+# --- Whole-word input/output qualifiers only (ADR 0006 revision, sixth
+# round) -- the qualifier words themselves were too broad: "prompt"
+# (input synonym) and "generation"/"completion" (output synonyms) caused
+# false co-occurrences with unrelated qualifiers like "image generation"
+# or "prompt caching" that have nothing to do with which price
+# direction is actually meant. Restricted to the literal whole words
+# "input"/"output" only. ---
+
+
+def test_output_price_rejects_input_qualified_quote_with_generation_wording() -> None:
+    """ "generation" no longer counts as an output qualifier -- with the
+    old broader pattern, "Input pricing for image generation..." would
+    have registered BOTH an input qualifier ("Input") and an output
+    qualifier ("generation"), incorrectly passing for output_price_usd
+    too."""
+    assert not _quote_supports_non_disclosure(
+        "output_price_usd", "Input pricing for image generation has not been announced"
+    )
+
+
+def test_input_price_rejects_output_qualified_quote_with_prompt_wording() -> None:
+    """ "prompt" no longer counts as an input qualifier -- with the old
+    broader pattern, "Output pricing for prompt caching..." would have
+    registered BOTH an output qualifier ("Output") and an input
+    qualifier ("prompt"), incorrectly passing for input_price_usd too."""
+    assert not _quote_supports_non_disclosure(
+        "input_price_usd", "Output pricing for prompt caching has not been announced"
+    )
+
+
+def test_input_price_accepts_input_qualified_quote_with_generation_wording() -> None:
+    """The clause is genuinely about INPUT pricing -- "generation" in
+    "image generation" is incidental context, not an output qualifier,
+    so this must still pass for input_price_usd."""
+    assert _quote_supports_non_disclosure(
+        "input_price_usd", "Input pricing for image generation has not been announced"
+    )
+
+
+def test_output_price_accepts_output_qualified_quote_with_prompt_wording() -> None:
+    """The clause is genuinely about OUTPUT pricing -- "prompt" in
+    "prompt caching" is incidental context, not an input qualifier, so
+    this must still pass for output_price_usd."""
+    assert _quote_supports_non_disclosure(
+        "output_price_usd", "Output pricing for prompt caching has not been announced"
+    )
