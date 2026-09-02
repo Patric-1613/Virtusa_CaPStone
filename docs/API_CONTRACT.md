@@ -136,7 +136,7 @@ map explicitly in the shared model and contract tests rather than being used int
 }
 ```
 
-The previous value may be `null` only when the response explicitly says the fact was not previously disclosed. Absence of evidence must not be described as a zero or a negative fact.
+`previous`/`current` are always present as objects, but their own nested `value` may independently be `null` — the previous value only when the response explicitly says the fact was not previously disclosed, and the current value when this Change is itself a disclosure-status transition to "not disclosed" (`change_type: "not_disclosed"`, [ADR 0006](adr/0006-disclosure-status-semantics.md)) — the source now explicitly withholds a fact it previously disclosed. Absence of evidence must not be described as a zero or a negative fact.
 
 Example detail wrapper returned by `GET /v1/changes/{change_id}`:
 

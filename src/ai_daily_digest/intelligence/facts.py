@@ -256,24 +256,24 @@ class FactStore:
         returns None only for a first-time observation (new information,
         but not a change — see this project's second review: nothing
         downstream currently turns a first observation into its own
-        digest content either; "reported elsewhere" was aspirational, not
-        a real path, and is corrected here to say so) or an identical
-        value (which still refreshes the stored provenance — snapshot/
-        source/observed_at — to this newer confirmation, so a fact
-        re-confirmed many times doesn't keep citing its original,
-        increasingly stale snapshot; it's a no-op for Change purposes,
-        not a no-op for "what's the freshest evidence for this fact").
-
-        A disclosure-status transition (ADR 0006 — either side of the
-        comparison has value=None, meaning it's a "not disclosed"
-        observation, not a real value) DOES return a real Change, with
-        change_type "disclosed"/"not_disclosed" (_infer_change_type):
-        this is the one place this method's behaviour differs from a
-        plain first observation/unchanged value, and from how this
-        method used to treat transitions before disclosure-transition
-        claims were built out — see docs/adr/0006-disclosure-status-
-        semantics.md and draft_claims.py::draft_change_claim() for how
-        the two new change types are rendered."""
+        digest content either; "reported elsewhere" was aspirational,
+        not a real path, and is corrected here to say so) or an identical
+        value (including two consecutive not_disclosed observations of
+        the same field — the disclosure STATE hasn't changed, even
+        though both sides have value=None). A genuine disclosure-status
+        TRANSITION (ADR 0006 — one side has a real value, the other is
+        None) DOES return a real Change, with change_type
+        "disclosed"/"not_disclosed" (_infer_change_type) —
+        draft_claims.py::draft_change_claim() renders it as its own
+        single-subject sentence ("X's Y is now disclosed as ..." / "X's Y
+        is no longer disclosed (previously ...)."), citing both the
+        snapshot proving the new state and the snapshot that recorded the
+        previous one. An identical value still refreshes the stored
+        provenance (snapshot/source/observed_at) to this newer
+        confirmation, so a fact re-confirmed many times doesn't keep
+        citing its original, increasingly stale snapshot — it's a no-op
+        for Change purposes, not a no-op for "what's the freshest
+        evidence for this fact"."""
         self.register_subject(subject)
         key = (*_subject_key(subject), fact.field)
         record = self._fields.setdefault(key, _FieldRecord())

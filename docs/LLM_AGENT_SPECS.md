@@ -113,6 +113,13 @@ worked example with fakes standing in for all three.
 - **Input**: one `Change`.
 - **Output**: one `DigestClaim`, `validation_status="pending"`, citing
   the change's current snapshot id (and previous, when it exists).
+- **ADR 0006, disclosure transitions**: `change_type="disclosed"` (a
+  field previously withheld now has a real value) reuses the existing
+  first-disclosure wording ("X's Y is now disclosed as ..."); `"not_disclosed"`
+  (a field previously disclosed is now explicitly withheld) gets its own
+  wording ("X's Y is no longer disclosed (previously ...)."), citing both
+  the snapshot proving the new state and the one that recorded the
+  previous value.
 
 ## compare_subjects — Compare (cross-subject comparisons, ADR 0005)
 

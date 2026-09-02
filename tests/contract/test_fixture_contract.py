@@ -65,10 +65,12 @@ def test_change_set_citations_resolve_to_real_snapshots() -> None:
 
 
 def test_change_previous_null_only_when_not_disclosed_is_the_intent() -> None:
-    """docs/API_CONTRACT.md: 'The previous value may be null only when the
-    response explicitly says the fact was not previously disclosed.' This
-    fixture pack doesn't exercise that case yet (see its README) — this
-    test at least asserts every change we DO have carries a previous."""
+    """docs/API_CONTRACT.md: `previous` (the FactObservation object
+    itself, not its nested `.value`) is null only for a first disclosure
+    -- the fixture pack's real change carries a genuine previous
+    observation, not this ADR-0006 edge case. This fixture pack doesn't
+    exercise the first-disclosure case yet (see its README) — this test
+    at least asserts every change we DO have carries a previous."""
     change_sets = FixtureLoader().load_change_sets()
     for change_set in change_sets:
         for change in change_set.changes:

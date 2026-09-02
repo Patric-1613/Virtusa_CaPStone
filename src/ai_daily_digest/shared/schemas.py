@@ -238,13 +238,22 @@ class FactObservation(BaseModel):
 
 class Change(BaseModel):
     """One field-level change. `previous` is null only when the absence
-    means "not previously disclosed" — never used to mean "unknown"."""
+    means "not previously disclosed" — never used to mean "unknown".
+
+    `previous.value`/`current.value` (FactObservation, not this field
+    itself) can independently be null too — ADR 0006's disclosure-status
+    transitions: change_type="disclosed" has previous.value=None,
+    current.value=real; change_type="not_disclosed" has the reverse.
+    Either way `previous`/`current` themselves (the FactObservation
+    objects) are always present when the transition is a real Change —
+    only their own `.value` goes null, carrying the citation for
+    whichever side lacks a value."""
 
     id: Uuid7Id
     change_set_id: Uuid7Id
     subject: Subject
     field: str
-    change_type: str  # e.g. "increased", "decreased", "disclosed", "changed"
+    change_type: str  # e.g. "increased", "decreased", "disclosed", "not_disclosed", "changed"
     previous: FactObservation | None = None
     current: FactObservation
     confidence: Confidence
