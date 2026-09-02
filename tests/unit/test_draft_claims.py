@@ -119,33 +119,33 @@ def test_transition_not_disclosed_to_disclosed_phrasing_and_dual_citations() -> 
     """A transition from previously not disclosed (value=None, snapshot_id present)
     to disclosed (value present, snapshot_id present) cites both snapshots."""
     change = Change(
-        id="c6",
-        change_set_id="cs1",
+        id=CHANGE_1,
+        change_set_id=CHANGE_SET_1,
         subject=_subject(),
         field="context_window_tokens",
         change_type="disclosed",
-        previous=FactObservation(value=None, snapshot_id="snap_withheld"),
-        current=FactObservation(value="200000", snapshot_id="snap_disclosed"),
+        previous=FactObservation(value=None, snapshot_id=TDC_SNAP_PREV),
+        current=FactObservation(value="200000", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.95,
     )
     claim = draft_change_claim(change)
     assert "now disclosed as 200000" in claim.text
-    assert claim.citation_snapshot_ids == ["snap_disclosed", "snap_withheld"]
+    assert claim.citation_snapshot_ids == [TDC_SNAP_CURRENT, TDC_SNAP_PREV]
 
 
 def test_transition_disclosed_to_not_disclosed_phrasing_and_dual_citations() -> None:
     """A transition from previously disclosed to not disclosed cites both snapshots
     and references the previous value in the claim text."""
     change = Change(
-        id="c7",
-        change_set_id="cs1",
+        id=CHANGE_1,
+        change_set_id=CHANGE_SET_1,
         subject=_subject(),
         field="input_price_usd",
         change_type="not_disclosed",
-        previous=FactObservation(value="$5.00", snapshot_id="snap_disclosed"),
-        current=FactObservation(value=None, snapshot_id="snap_withheld"),
+        previous=FactObservation(value="$5.00", snapshot_id=TDC_SNAP_PREV),
+        current=FactObservation(value=None, snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,
     )
     claim = draft_change_claim(change)
     assert "is no longer disclosed (previously $5.00)" in claim.text
-    assert claim.citation_snapshot_ids == ["snap_withheld", "snap_disclosed"]
+    assert claim.citation_snapshot_ids == [TDC_SNAP_CURRENT, TDC_SNAP_PREV]

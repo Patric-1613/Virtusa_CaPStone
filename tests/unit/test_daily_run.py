@@ -1040,6 +1040,8 @@ def test_recurring_subject_gets_a_new_change_set_id_on_a_later_run() -> None:
     )
     assert len(second_run_result.change_sets) == 1
     assert second_run_result.change_sets[0].id != first_change_set_id
+
+
 # --- ADR 0006/0007: a genuine disclosure-status transition flows all
 # the way through run_daily() as a real Change/DigestClaim, dual-cited
 # against both the withheld and the disclosing snapshot. ---

@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from ai_daily_digest.intelligence.facts import FactStore, change_snapshot_ids, normalise_name
+from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
 from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1
 
@@ -629,6 +630,15 @@ def test_same_subject_transitions_share_one_change_set_id_per_batch() -> None:
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
     )
+    # Baseline for a second field, so the field's own second update below
+    # is a real change (not a first observation) too.
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
     first_change = store.update_fact(
         subject,
         _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
@@ -660,7 +670,7 @@ def test_different_subjects_get_different_change_set_ids() -> None:
         existing = change_set_ids.get(subject)
         if existing is not None:
             return existing
-        allocated = uuid.uuid4()
+        allocated = new_id()  # a real UUID v7, mirroring the production allocator
         change_set_ids[subject] = allocated
         return allocated
 
