@@ -116,7 +116,8 @@ discovered but old article can appear near the top of the feed. `first_fetched_a
 over `published_at` because it is required, non-null, internally controlled, and immutable —
 `published_at` is nullable, externally supplied, and may be corrected by a publisher after the
 fact, which would move a row across a live cursor boundary and cause a skip or a duplicate.
-`first_fetched_at` **must be immutable after creation**; ingestion must never rewrite it.
+`first_fetched_at` **must be immutable after creation** and ingestion must never rewrite it
+(see section 5.C).
 
 **`/v1/changes`** orders by `detected_at` (see section 5.A — this field does not exist yet).
 
@@ -136,8 +137,12 @@ or sort IDs themselves — the server owns the tuple comparison.
 
 ### 5. Shared-contract preconditions
 
-This ADR is the architecture decision that **authorizes** the following two shared-model
-changes. They are pagination prerequisites, not Enum concerns, and not Person B's to carry.
+This ADR is the architecture decision that **authorizes** the shared-model changes below. They
+cover **every component of every ordering tuple** in section 4 — the three business sort
+fields (`SourceItem.first_fetched_at`, `Change.detected_at`, `Digest.digest_date`) and the
+resource `id` used as the tie-breaker. They are pagination prerequisites, not Enum concerns,
+and not Person B's to carry. This ADR does **not** create a separate ADR 0011 — ADR 0008 is
+the authorizing decision.
 
 #### 5.A `Change` gains `detected_at`
 
@@ -150,13 +155,16 @@ detected_at: datetime
 Requirements:
 
 - **Required** — no default.
-- **Timezone-aware UTC** at the storage boundary; **ISO 8601 UTC** on the wire, consistent
-  with the existing datetime fields in the contract.
+- **Timezone-aware.** A timezone-naive `datetime` is **rejected** at the model boundary.
+- An aware input is **normalized to UTC** at the model/storage boundary **without losing
+  microseconds**; **ISO 8601 UTC** on the wire, consistent with the existing datetime fields
+  in the contract.
 - Represents **when the intelligence pipeline detected the Change**, not when a source
   published or a fact was observed.
-- **Immutable** after the `Change` is constructed.
-- **Supplied by the orchestrator** (`intelligence/daily_run.py` / `intelligence/graph.py`) or
-  by an injected clock. It is **never** defaulted with `datetime.now()` inside a Pydantic
+- **Immutable after construction** (see section 5.D).
+- **Supplied through an injected batch clock / time value** carried by the orchestrator
+  (`intelligence/daily_run.py` / `intelligence/graph.py`) and passed into
+  `FactStore.update_fact()`. It is **never** produced by `datetime.now()` inside a Pydantic
   model or a graph node, so unit tests stay independent of wall-clock time
   (`AGENTS.md` testing rules).
 
@@ -171,26 +179,59 @@ value computed from nested facts would be derived and nullable — none is a sta
 
 Requirements:
 
-- Wire JSON representation stays exactly `YYYY-MM-DD` (Pydantic serializes `date` this way, so
-  existing fixtures and API examples remain byte-for-byte valid).
+- Use `datetime.date`.
+- Wire JSON representation continues to serialize as exactly `YYYY-MM-DD` (Pydantic serializes
+  `date` this way, so existing fixtures and API examples remain byte-for-byte valid).
 - Invalid values such as `"2026-13-40"` are **rejected** at the model boundary instead of
   being stored as an unparseable string.
 - The eventual database column is a native `DATE`.
-- `digest_date` is **immutable for an existing digest record**. Pagination requires only that a
-  given digest's ordering value never changes while a cursor referencing it is in use.
+- **Immutable after construction** (see section 5.D).
 
 Pagination does **not** decide digest uniqueness, regeneration, correction, or version-history
 policy — that is a separate digest-lifecycle decision. If that future policy permits more than
 one digest record to share a `digest_date`, those records are still totally ordered by the `id`
 tie-breaker (section 4), so keyset traversal stays correct either way.
 
-#### Delivery of 5.A and 5.B
+#### 5.C `SourceItem.first_fetched_at` invariants
 
-Both changes ship in a **single focused shared-contract PR** (see section 13, PR 2) after this
-ADR is accepted, once `shared/schemas.py` is not being actively edited by another author. They
-are **not** added to Person B's Enum implementation PR, which stays Enum-only. This ADR does
-**not** create a separate ADR 0011 — ADR 0008 is the authorizing decision for these
-prerequisites.
+`SourceItem.first_fetched_at` already exists as a required `datetime`. This ADR tightens it so
+it is safe as an ordering key:
+
+- A timezone-naive `datetime` is **rejected** at the model boundary.
+- An aware input is **normalized to UTC** at the model/storage boundary **without losing
+  microseconds**.
+- **Immutable after construction** (see section 5.D).
+- **Ingestion must never rewrite it** — not on a re-fetch, a content-hash change, a new
+  `DocumentSnapshot`, or any later correction. It records the first time the service saw the
+  item and nothing after that moves it; `updated_at` and later snapshots carry subsequent
+  activity.
+
+#### 5.D Ordering-field and ID immutability (all endpoints)
+
+Every ordering tuple in section 4 is `(business_sort_value, id)`; both components must be
+immutable for the life of the record.
+
+- Each `id` (`SourceItem.id`, `Change.id`, `Digest.id`) is already opaque and immutable under
+  ADR 0007; this ADR restates that it is also the pagination tie-breaker and must never be
+  reassigned.
+- The three business sort fields (`first_fetched_at`, `detected_at`, `digest_date`) are
+  immutable per sections 5.A–5.C.
+- The implementation must **prevent ordinary reassignment** of both the resource `id` and the
+  business ordering field — plain attribute assignment must not succeed.
+- Application code must **not bypass this with `model_copy(update=...)`** on an ordering field
+  or an `id`. ADR 0009 already records that `model_copy(update=...)` skips Pydantic
+  validation; for these fields the rule is stronger — they are not updated by copy at all.
+- **Pydantic-only immutability is not sufficient.** Future persistence implementations must
+  also prohibit `UPDATE`s to these columns (a trigger, a check constraint, or a repository
+  that exposes no update path for them). Model-level and storage-level enforcement are both
+  required.
+
+#### Delivery of the section 5 changes
+
+The changes in sections 5.A–5.D ship in a **single focused shared-contract PR** (see
+section 13, PR 2) after this ADR is accepted, once `shared/schemas.py` is not being actively
+edited by another author. They are **not** added to Person B's Enum implementation PR, which
+stays Enum-only.
 
 ### 6. Cursor format
 
@@ -299,9 +340,30 @@ fingerprint (`f`) is computed from a canonical representation of the request's f
 - serialize as canonical JSON (section 6);
 - hash with SHA-256; `f` is the lowercase hex digest.
 
-The server recomputes `f` from the current request's filters and compares it to the cursor's
-`f` with a constant-time comparison. If a client changes any bound filter (or the hidden
-visibility rule, the sort, or the cursor version changes) while presenting an existing cursor:
+**Canonicalization happens exactly once, at the HTTP boundary, and produces one typed
+canonical filter object.** That same object is the single input to **both**:
+
+1. computing the cursor filter fingerprint `f`; and
+2. executing the repository query.
+
+Raw request query strings are **not** passed to the repository separately after `f` is
+computed — the repository interface accepts the **canonical typed filters**, never raw request
+strings. The fingerprint and the query therefore cannot disagree about what was filtered.
+Consequences of the canonical form, each deliberate:
+
+- surrounding whitespace is **ignored** — `" OpenAI "` and `"OpenAI"` are the same filter, the
+  same `f`, and the same query;
+- Unicode **NFC-equivalent** values are the same filter;
+- **case remains significant** — `"openai"` and `"OpenAI"` are different filters;
+- an **absent** value stays distinct from any explicit value (absent means "no constraint");
+- **hidden constraints** such as `published_only` for `/v1/digests` are part of **both** the
+  fingerprint input **and** the repository query — they can never be applied to one and not
+  the other.
+
+The server recomputes `f` from the current request's canonical filters and compares it to the
+cursor's `f` with a constant-time comparison. If a client changes any membership-affecting
+canonical filter (or the hidden visibility rule, the sort, or the cursor version changes)
+while presenting an existing cursor:
 
 - respond with **HTTP 400**, error code **`invalid_cursor`**;
 - do **not** silently restart pagination or reinterpret the request.
@@ -459,7 +521,8 @@ one, because Phase 1 is not snapshot isolation:**
 **Mutating an ordering value (`sort_value` or `id`) of an existing record is prohibited** — it
 would break the scoped guarantee for that record, and the fix is to prevent the mutation, not
 to work around it in pagination. `first_fetched_at`, `detected_at`, `digest_date`, and every
-`id` are immutable by contract (sections 4, 5.A, 5.B).
+`id` are immutable by contract and enforced at both the model and persistence layers
+(sections 5.A–5.D).
 
 ### 12. Public summary models
 
@@ -499,17 +562,29 @@ when it ships no public request/response schema of its own.
 `docs/API_CONTRACT.md` change, no Python, no dependency, no test. Status stays `Proposed` until
 Persons B and C approve.
 
-**PR 2 — shared pagination sort fields.** After this ADR is accepted and once `shared/schemas.py`
-is not being actively edited by another author (in particular, after Person B's Enum
-implementation no longer holds that file):
+**PR 2 — shared ordering-field contract.** After this ADR is accepted and once
+`shared/schemas.py` is not being actively edited by another author (in particular, after
+Person B's Enum implementation no longer holds that file). One focused PR, covering:
 
-- add `Change.detected_at` (section 5.A);
-- change `Digest.digest_date` to `datetime.date` (section 5.B);
-- update the intelligence construction paths that build a `Change` to thread `detected_at`
-  from the orchestrator / an injected clock;
-- update `tests/fixtures/contracts/` fixtures and the contract tests;
-- update the affected field semantics in `docs/API_CONTRACT.md` in the same PR (contract-change
-  rule).
+- `SourceItem.first_fetched_at` — naive-datetime rejection, UTC normalization with microseconds
+  preserved, and immutability, in `shared/schemas.py` (section 5.C);
+- `Change.detected_at` — the new required field in `shared/schemas.py` (section 5.A);
+- `Digest.digest_date: datetime.date` in `shared/schemas.py` (section 5.B);
+- per-field immutability enforcement for the ordering fields and the `id` fields, and removal
+  of any `model_copy(update=...)` path that would touch them (section 5.D);
+- `FactStore.update_fact()` gains a `detected_at` parameter and stamps it onto the `Change` it
+  builds;
+- `intelligence/graph.py` and `intelligence/daily_run.py` thread the run's **injected batch
+  detection time** into `FactStore.update_fact()` — no node or store calls `datetime.now()`;
+- `intelligence/assemble_digest.py` accepts and passes a `datetime.date` digest date;
+- `intelligence/daily_run.py` builds and passes the digest date as the typed `date`;
+- the empty-digest fallback in `intelligence/evaluate.py` no longer constructs a `Digest` with
+  `digest_date=""` — this ADR does not fix the exact replacement, only requires that it uses a
+  valid deterministic typed `date`, or handles an empty fixture set without constructing an
+  invalid placeholder `Digest` at all;
+- all affected fixtures (`tests/fixtures/contracts/`), model constructors, unit and contract
+  tests, and `docs/API_CONTRACT.md` field semantics — updated together in this PR
+  (contract-change rule).
 
 This is a distinct concern from Enums and is not merged into Person B's PR.
 
@@ -553,11 +628,26 @@ no FastAPI route, no repository — so it tests only the codec, the pure helpers
 generic `Page[T]` container. PR 3 helpers may raise typed/domain validation errors; mapping
 those errors onto an HTTP 400 or 422 response is tested in the endpoint PRs, not here.
 
-**PR 2 — shared field changes.** A `Change` without `detected_at` is rejected; a naive
-(timezone-less) `detected_at` is rejected; a timezone-aware `detected_at` is normalized or
-preserved per the project's UTC policy; `detected_at` is threaded through the intelligence
-pipeline without any test depending on wall-clock time; an invalid `digest_date` such as
-`"2026-13-40"` is rejected; a valid `digest_date` still serializes to `YYYY-MM-DD` on the wire.
+**PR 2 — shared ordering-field contract.**
+
+- A timezone-naive `SourceItem.first_fetched_at` is rejected.
+- An aware `SourceItem.first_fetched_at` is normalized to UTC with microseconds preserved.
+- Reassigning `SourceItem.first_fetched_at` on an existing model is rejected.
+- A `Change` without `detected_at` is rejected; a timezone-naive `detected_at` is rejected.
+- An aware `Change.detected_at` is normalized to UTC with microseconds preserved.
+- `Change.detected_at` is threaded through `FactStore.update_fact()`; the injected detection
+  time is used **exactly** (equality assertion), and no test in that path uses wall-clock time.
+- Reassigning `Change.detected_at` on an existing model is rejected.
+- An invalid `Digest.digest_date` (for example `"2026-13-40"`) is rejected; a valid date still
+  serializes as `YYYY-MM-DD` on the wire.
+- Reassigning `Digest.digest_date` on an existing model is rejected.
+- An `id` used as an ordering tie-breaker (`SourceItem.id`, `Change.id`, `Digest.id`) cannot be
+  reassigned.
+- No construction or update path uses `model_copy(update=...)` to mutate an ordering key —
+  asserted by a targeted test or a lightweight static check over the intelligence code.
+- `intelligence/assemble_digest.py` and `intelligence/evaluate.py` operate on the new typed
+  `date` — including `evaluate.py`'s empty-fixture path, which produces no invalid placeholder
+  `Digest`.
 
 **PR 3 — cursor codec and pure helpers.**
 
@@ -574,8 +664,12 @@ pipeline without any test depending on wall-clock time; an invalid `digest_date`
   rejection surfaces as the codec's typed `InvalidCursorError`, never an HTTP status.
 - *Canonical filter fingerprint:* the same logical filters in any argument order produce the
   same `f`; adding, removing, or changing a bound filter changes `f`; an absent filter is
-  omitted, not hashed as `null`; the hidden visibility constraint, the sort identifier, and
-  the cursor version are all part of `f`.
+  omitted, not hashed as `null`, and stays distinct from an explicit value; the hidden
+  visibility constraint, the sort identifier, and the cursor version are all part of `f`.
+- *Canonicalization is deliberate:* `" OpenAI "` and `"OpenAI"` produce the **same** canonical
+  value and the **same** `f`; NFC-equivalent Unicode inputs produce the same canonical value
+  and `f`; case-different values (`"openai"` vs `"OpenAI"`) produce **different** canonical
+  values and `f`.
 - *Unicode normalization:* NFC-equivalent filter strings produce the same `f`; unusual values
   (combining marks, emoji, right-to-left text) are handled deterministically.
 - *Timestamp / date normalization helpers (pure):* a timezone-aware timestamp normalizes to
@@ -614,12 +708,21 @@ pipeline without any test depending on wall-clock time; an invalid `digest_date`
   raw storage location, snapshot body); `app.openapi()` shows the `cursor` and `limit` query
   parameters, the `Page[UpdateSummary]` response schema, and a stable, explicitly assigned
   `operation_id` for the route.
+- *Filter / query parity:* the repository fake (a spy) receives **exactly** the canonical
+  filter values used to compute `f` — `" OpenAI "` and `"OpenAI"` reach the repository as the
+  same value and select the same rows; NFC-equivalent inputs select the same rows;
+  case-different values (`"openai"` vs `"OpenAI"`) select different rows.
+- Changing a membership-affecting canonical filter while replaying a cursor is rejected at the
+  HTTP boundary with `400` / `invalid_cursor`.
 
 **Later — `/v1/digests` endpoint PR.**
 
 - `date_from` / `date_to` HTTP validation: a non-calendar value, and equal or reversed bounds,
   return **HTTP 422** in the standard envelope.
 - Published-only membership: an unpublished digest never appears in a page.
+- Hidden-constraint parity: `published_only` is present in **both** the fingerprint input and
+  the query the repository fake receives; an unpublished digest is excluded by the query, not
+  merely dropped from the response.
 - Digest-date pagination cases: multiple digests; `digest_date` ties resolved by the `id`
   tie-breaker; first, middle, final, and empty pages.
 
@@ -678,15 +781,22 @@ startup by the configuration layer, not silently accepted by the codec.
   can change what a later page shows. Restarting the traversal only resumes from the current
   page-one state — it is not a frozen snapshot, which would need a future `as_of` boundary or
   a snapshot-isolation design.
-- The first paginated endpoint is `/v1/updates`, because it needs no shared-model change.
-  `/v1/changes` is blocked until `Change.detected_at` is implemented.
+- The first paginated endpoint is `/v1/updates`. It still depends on PR 2 — the
+  `first_fetched_at` naive-rejection / UTC-normalization / immutability work and the
+  ordering-field and `id` immutability enforcement — but not on any *new* field. `/v1/changes`
+  additionally needs the new `Change.detected_at` field and is blocked until it lands.
 - The codec adds no dependency and stays independently unit-testable because it never imports
   FastAPI and never reads configuration directly.
 - Dedicated summary models keep internal fields (`raw_location`, `dedupe_key`, snapshot body
   text, unsupported claims, unpublished digests) out of every list response by construction.
-- The two shared-model prerequisites (`Change.detected_at`, `Digest.digest_date` as `date`)
-  must be implemented in their own PR, serialized after Person B's Enum work releases
-  `shared/schemas.py`, and must not be folded into the Enum PR.
+- Filter canonicalization is computed once at the HTTP boundary and reused for both the cursor
+  fingerprint and the repository query, so the two cannot disagree; the repository interface
+  takes canonical typed filters, not raw request strings.
+- The shared-model prerequisites — `first_fetched_at` invariants, the new `Change.detected_at`
+  field, `Digest.digest_date` as `date`, ordering-field/`id` immutability at both the model and
+  persistence layers, and the `FactStore.update_fact()` / `assemble_digest` / `evaluate`
+  call-site changes — must be implemented in their own PR (section 13, PR 2), serialized after
+  Person B's Enum work releases `shared/schemas.py`, and must not be folded into the Enum PR.
 - Public route integration waits for a real repository boundary; a `NotImplementedError`-only
   adapter is not an acceptable production dependency for shipping an endpoint.
 
@@ -698,6 +808,9 @@ This ADR does not decide, and must not be read as deciding:
 - the FastAPI application factory, error-envelope handlers, OpenAPI metadata, `operationId`
   conventions, or `/docs` exposure (ADR 0010, Person C);
 - database schema, indexes, or migrations;
+- the exact Python mechanism for model-level ordering-field immutability, or the exact
+  `intelligence/evaluate.py` empty-digest replacement — PR 2 chooses these within the
+  constraints of section 5;
 - digest uniqueness, regeneration, correction, or version-history policy — a separate
   digest-lifecycle decision (section 5.B);
 - authentication, authorization, or rate limiting;
