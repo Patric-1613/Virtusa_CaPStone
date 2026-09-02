@@ -7,7 +7,7 @@
 | Ingestion | Person A (`@Patric-1613`) | B or C |
 | Intelligence and digest | Person B (`@SujinJK`) | A or C |
 | Delivery, frontend and deployment | Person C (`@chamath-wijayasundara`) | A or B |
-| Shared contracts, API schema, database migrations | Change author | At least one affected module owner |
+| Shared contracts, API schema, database migrations | Change author | At least one affected review steward |
 
 The review steward coordinates design and keeps the module healthy. The role does not reserve that
 module's implementation work: any teammate may author a focused change in any area through a
@@ -62,7 +62,7 @@ Before splitting work, approve:
 7. Confirm that all three CODEOWNERS accounts have accepted repository access and have write
    permission.
 
-`.github/CODEOWNERS` lists the primary module owners and lists all three teammates for shared
+`.github/CODEOWNERS` lists the review stewards and lists all three teammates for shared
 contracts, architecture, ADRs and engineering policy. Listing all three gives shared changes
 broader visibility but does not require unanimous approval. Branch protection initially requires
 one approval from someone other than the author. Verify ownership routing and account resolution

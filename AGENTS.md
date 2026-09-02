@@ -16,7 +16,7 @@ Build a traceable AI-industry update service that collects official sources, kee
   another teammate's branch.
 - Use a short-lived branch for one concern; never push directly to `main`.
 - Prefer small, reviewable changes. Separate refactors from behavior changes.
-- Before editing shared contracts, database migrations, or public API schemas, write or update an ADR and request review from another module owner.
+- Before editing shared contracts, database migrations, or public API schemas, write or update an ADR and request review from another review steward.
 - Do not add a production dependency without explaining why an existing dependency or standard library cannot do the job.
 - Do not commit secrets, API keys, tokens, personal data, generated environments, or local agent memory.
 

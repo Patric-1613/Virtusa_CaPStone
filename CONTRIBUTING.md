@@ -18,7 +18,7 @@ make bootstrap
 make check
 ```
 
-Commit a coherent unit of work. Rebase or update from `main` before requesting final review, and resolve conflicts with the person who owns the affected module.
+Commit a coherent unit of work. Rebase or update from `main` before requesting final review, and resolve semantic conflicts with the teammate who wrote the affected behavior.
 
 ## Pull requests
 

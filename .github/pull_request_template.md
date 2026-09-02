@@ -4,7 +4,8 @@
 
 ## Scope and architecture
 
-- Module owner: ingestion / intelligence / delivery / shared
+- Active author:
+- Review steward: ingestion / intelligence / delivery / shared
 - Shared contract, API, database migration, or ADR changed: yes / no
 - New production dependency and justification: none / explain
 
