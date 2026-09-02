@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime
 
 from ai_daily_digest.intelligence.evaluate import (
@@ -17,18 +18,30 @@ from ai_daily_digest.shared.schemas import (
     Subject,
 )
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
+from tests.uuid_samples import (
+    CHANGE_1,
+    CHANGE_SET_1,
+    CLAIM_1,
+    CLAIM_2,
+    CLAIM_3,
+    DIGEST_1,
+    ITEM_1,
+    SNAPSHOT_1,
+    SNAPSHOT_2,
+    SNAPSHOT_MISSING,
+)
 
-KNOWN = {"snap_1", "snap_2"}
+KNOWN = {SNAPSHOT_1, SNAPSHOT_2}
 
 
-def _claim(text: str, citations: list[str], claim_id: str = "c1") -> DigestClaim:
+def _claim(text: str, citations: list[uuid.UUID], claim_id: uuid.UUID = CLAIM_1) -> DigestClaim:
     return DigestClaim(id=claim_id, text=text, citation_snapshot_ids=citations)
 
 
-def _snapshot(snap_id: str, text: str) -> DocumentSnapshot:
+def _snapshot(snap_id: uuid.UUID, text: str) -> DocumentSnapshot:
     return DocumentSnapshot(
         id=snap_id,
-        source_item_id="item_1",
+        source_item_id=ITEM_1,
         fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
         content_hash=f"sha256:{snap_id}",
         content_text=text,
@@ -36,13 +49,15 @@ def _snapshot(snap_id: str, text: str) -> DocumentSnapshot:
 
 
 def _digest(claims: list[DigestClaim]) -> Digest:
-    return Digest(id="d1", digest_date="2026-08-20", status="draft", title="Test", claims=claims)
+    return Digest(
+        id=DIGEST_1, digest_date="2026-08-20", status="draft", title="Test", claims=claims
+    )
 
 
-def _change(company: str, product: str, field: str, snap_id: str = "snap_1") -> Change:
+def _change(company: str, product: str, field: str, snap_id: uuid.UUID = SNAPSHOT_1) -> Change:
     return Change(
-        id=f"c-{company}-{product}-{field}",
-        change_set_id="cs1",
+        id=CHANGE_1,
+        change_set_id=CHANGE_SET_1,
         subject=Subject(company=company, product=product),
         field=field,
         change_type="changed",
@@ -56,12 +71,12 @@ def _change(company: str, product: str, field: str, snap_id: str = "snap_1") -> 
 
 
 def test_citation_validity_all_supported() -> None:
-    digest = _digest([_claim("A", ["snap_1"], "c1"), _claim("B", ["snap_2"], "c2")])
+    digest = _digest([_claim("A", [SNAPSHOT_1], CLAIM_1), _claim("B", [SNAPSHOT_2], CLAIM_2)])
     assert citation_validity(digest, KNOWN) == 1.0
 
 
 def test_citation_validity_partial() -> None:
-    digest = _digest([_claim("A", ["snap_1"], "c1"), _claim("B", ["snap_missing"], "c2")])
+    digest = _digest([_claim("A", [SNAPSHOT_1], CLAIM_1), _claim("B", [SNAPSHOT_MISSING], CLAIM_2)])
     assert citation_validity(digest, KNOWN) == 0.5
 
 
@@ -76,9 +91,9 @@ def test_citation_validity_uses_real_content_grounding_when_available() -> None:
     validate_claim() directly, so a citation that exists but doesn't
     ground the claim's numbers is NOT counted as valid, the same as the
     real publish-time gate would score it."""
-    digest = _digest([_claim("The price increased to 999999.", ["snap_1"], "c1")])
+    digest = _digest([_claim("The price increased to 999999.", [SNAPSHOT_1], CLAIM_1)])
     resolver = InMemorySnapshotResolver(
-        {"snap_1": _snapshot("snap_1", "The price increased to 5.")}
+        {SNAPSHOT_1: _snapshot(SNAPSHOT_1, "The price increased to 5.")}
     )
     assert citation_validity(digest, KNOWN, snapshot_resolver=resolver) == 0.0
     assert unsupported_claim_count(digest, KNOWN, snapshot_resolver=resolver) == 1
@@ -88,7 +103,7 @@ def test_citation_validity_without_a_snapshot_resolver_stays_existence_only() ->
     """Omitting snapshot_resolver keeps the old, weaker existence-only
     behavior -- callers that don't have snapshot content aren't forced to
     provide one."""
-    digest = _digest([_claim("The price increased to 999999.", ["snap_1"], "c1")])
+    digest = _digest([_claim("The price increased to 999999.", [SNAPSHOT_1], CLAIM_1)])
     assert citation_validity(digest, KNOWN) == 1.0
 
 
@@ -98,9 +113,9 @@ def test_citation_validity_without_a_snapshot_resolver_stays_existence_only() ->
 def test_unsupported_claim_count_counts_missing_and_empty_citations() -> None:
     digest = _digest(
         [
-            _claim("A", ["snap_1"], "c1"),
-            _claim("B", [], "c2"),
-            _claim("C", ["snap_missing"], "c3"),
+            _claim("A", [SNAPSHOT_1], CLAIM_1),
+            _claim("B", [], CLAIM_2),
+            _claim("C", [SNAPSHOT_MISSING], CLAIM_3),
         ]
     )
     assert unsupported_claim_count(digest, KNOWN) == 2
@@ -110,16 +125,18 @@ def test_unsupported_claim_count_counts_missing_and_empty_citations() -> None:
 
 
 def test_duplicate_rate_no_duplicates() -> None:
-    digest = _digest([_claim("Unique A", ["snap_1"], "c1"), _claim("Unique B", ["snap_1"], "c2")])
+    digest = _digest(
+        [_claim("Unique A", [SNAPSHOT_1], CLAIM_1), _claim("Unique B", [SNAPSHOT_1], CLAIM_2)]
+    )
     assert duplicate_rate(digest) == 0.0
 
 
 def test_duplicate_rate_detects_repeated_text_case_and_whitespace_insensitive() -> None:
     digest = _digest(
         [
-            _claim("GPT-4o now has 256k context", ["snap_1"], "c1"),
-            _claim("  gpt-4o   now has 256k context  ", ["snap_1"], "c2"),
-            _claim("Something else entirely", ["snap_1"], "c3"),
+            _claim("GPT-4o now has 256k context", [SNAPSHOT_1], CLAIM_1),
+            _claim("  gpt-4o   now has 256k context  ", [SNAPSHOT_1], CLAIM_2),
+            _claim("Something else entirely", [SNAPSHOT_1], CLAIM_3),
         ]
     )
     assert duplicate_rate(digest) == 1 / 3
@@ -160,7 +177,7 @@ def test_change_recall_vacuous_when_nothing_expected() -> None:
 
 
 def test_run_eval_combines_all_four_metrics() -> None:
-    digest = _digest([_claim("A", ["snap_1"], "c1")])
+    digest = _digest([_claim("A", [SNAPSHOT_1], CLAIM_1)])
     detected = [_change("OpenAI", "GPT-4o", "context_window_tokens")]
     expected = [_change("OpenAI", "GPT-4o", "context_window_tokens")]
     result: EvalResult = run_eval(digest, detected, expected, KNOWN)

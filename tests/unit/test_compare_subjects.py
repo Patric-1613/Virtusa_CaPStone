@@ -11,6 +11,7 @@ class this suite used to just document as a known gap (see git history
 of this file, pre-ADR-0005) structurally impossible instead."""
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -25,13 +26,26 @@ from ai_daily_digest.intelligence.compare_subjects import (
 )
 from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.shared.schemas import ExtractedFact, Subject
+from tests.uuid_samples import FACT_1, SNAPSHOT_1
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
 GOOGLE_GEMINI = Subject(company="Google", product="Gemini")
 
+TCMP_SNAP_OPENAI_CTX = uuid.UUID("01a01c78-9660-7ae3-94cf-0da298959dd2")
+TCMP_SNAP_ANTHROPIC_CTX = uuid.UUID("01a01752-3a60-7152-9c6c-25cd985d113c")
+TCMP_SNAP_ANTHROPIC_BENCH = uuid.UUID("01a01752-3e48-7652-adde-39996aa7eea2")
+TCMP_SNAP_OPENAI_PRICE_ND = uuid.UUID("01a01c78-9e30-71f2-a306-056b99272c8e")
+TCMP_SNAP_ANTHROPIC_CTX_ND = uuid.UUID("01a01c78-a218-7b33-8e6c-d4bc1f7df219")
+TCMP_SNAP_GOOGLE_CTX = uuid.UUID("01a01c78-a600-7d22-b38f-a72c03111da4")
+TCMP_FACT_2 = uuid.UUID("01a01752-4de8-76d1-8df8-87108b8684b6")
+TCMP_FACT_3 = uuid.UUID("01a01c78-add0-7723-928d-a9e5afe500ef")
+TCMP_FACT_ND = uuid.UUID("01a01c78-b1b8-7383-bcbd-e6aef4ebc6f2")
 
-def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "f1") -> ExtractedFact:
+
+def _fact(
+    field: str, value: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = FACT_1
+) -> ExtractedFact:
     return ExtractedFact(
         id=fact_id,
         snapshot_id=snapshot_id,
@@ -45,7 +59,9 @@ def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "f1") -> Extr
     )
 
 
-def _not_disclosed_fact(field: str, snapshot_id: str, fact_id: str = "f_nd") -> ExtractedFact:
+def _not_disclosed_fact(
+    field: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = TCMP_FACT_ND
+) -> ExtractedFact:
     return ExtractedFact(
         id=fact_id,
         snapshot_id=snapshot_id,
@@ -64,21 +80,24 @@ def _store_with_data() -> FactStore:
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
-        _fact("context_window_tokens", "256000", "snap_openai_ctx"),
+        _fact("context_window_tokens", "256000", TCMP_SNAP_OPENAI_CTX),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),  # never asserted in this suite
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _fact("context_window_tokens", "128000", "snap_anthropic_ctx"),
+        _fact("context_window_tokens", "128000", TCMP_SNAP_ANTHROPIC_CTX),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _fact("benchmark_scores", "71.2", "snap_anthropic_bench", "f2"),
+        _fact("benchmark_scores", "71.2", TCMP_SNAP_ANTHROPIC_BENCH, TCMP_FACT_2),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     return store
 
@@ -117,7 +136,7 @@ def test_build_fact_table_marks_missing_fields_unknown() -> None:
     )
     assert openai_ctx.value == "256000"
     assert openai_ctx.disclosure_status == "disclosed"
-    assert openai_ctx.snapshot_id == "snap_openai_ctx"
+    assert openai_ctx.snapshot_id == TCMP_SNAP_OPENAI_CTX
 
 
 def test_build_fact_table_carries_through_a_real_not_disclosed_fact() -> None:
@@ -127,15 +146,16 @@ def test_build_fact_table_carries_through_a_real_not_disclosed_fact() -> None:
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
-        _not_disclosed_fact("input_price_usd", "snap_openai_price_nd"),
+        _not_disclosed_fact("input_price_usd", TCMP_SNAP_OPENAI_PRICE_ND),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     rows = build_fact_table(store, [OPENAI_GPT4O], ["input_price_usd"])
     row = rows[0]
     assert row.value is None
     assert row.disclosure_status == "not_disclosed"
-    assert row.snapshot_id == "snap_openai_price_nd"
+    assert row.snapshot_id == TCMP_SNAP_OPENAI_PRICE_ND
 
 
 # --- FactRow state invariants (ADR 0006 revision requested by Person A)
@@ -159,7 +179,7 @@ def test_unknown_row_with_a_snapshot_id_is_rejected() -> None:
             subject=OPENAI_GPT4O,
             field="context_window_tokens",
             disclosure_status="unknown",
-            snapshot_id="snap_1",
+            snapshot_id=SNAPSHOT_1,
         )
 
 
@@ -170,7 +190,7 @@ def test_not_disclosed_row_with_a_value_is_rejected() -> None:
             field="context_window_tokens",
             value="256000",
             disclosure_status="not_disclosed",
-            snapshot_id="snap_1",
+            snapshot_id=SNAPSHOT_1,
         )
 
 
@@ -189,7 +209,7 @@ def test_disclosed_row_without_a_value_is_rejected() -> None:
             subject=OPENAI_GPT4O,
             field="context_window_tokens",
             disclosure_status="disclosed",
-            snapshot_id="snap_1",
+            snapshot_id=SNAPSHOT_1,
         )
 
 
@@ -209,7 +229,7 @@ def test_well_grounded_comparison_is_accepted_and_deterministically_rendered() -
 
     claims = compare_subjects(_rows(), call_fn=fake_call)
     assert len(claims) == 1
-    assert set(claims[0].citation_snapshot_ids) == {"snap_openai_ctx", "snap_anthropic_ctx"}
+    assert set(claims[0].citation_snapshot_ids) == {TCMP_SNAP_OPENAI_CTX, TCMP_SNAP_ANTHROPIC_CTX}
     assert claims[0].validation_status == "pending"
     # Code renders the text from the real values -- OpenAI's 256000 is
     # actually higher than Anthropic's 128000.
@@ -231,15 +251,17 @@ def test_equal_values_are_rendered_as_equal_not_higher_or_lower() -> None:
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
-        _fact("context_window_tokens", "128000", "snap_openai_ctx"),
+        _fact("context_window_tokens", "128000", TCMP_SNAP_OPENAI_CTX),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _fact("context_window_tokens", "128000", "snap_anthropic_ctx", "f2"),
+        _fact("context_window_tokens", "128000", TCMP_SNAP_ANTHROPIC_CTX, TCMP_FACT_2),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
 
@@ -322,9 +344,10 @@ def test_value_unknown_on_either_side_is_rejected(caplog: pytest.LogCaptureFixtu
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
-        _fact("context_window_tokens", "256000", "snap_openai_ctx"),
+        _fact("context_window_tokens", "256000", TCMP_SNAP_OPENAI_CTX),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     # Anthropic's context_window_tokens is never recorded.
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
@@ -347,15 +370,17 @@ def test_value_explicitly_not_disclosed_on_either_side_is_rejected(
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
-        _fact("context_window_tokens", "256000", "snap_openai_ctx"),
+        _fact("context_window_tokens", "256000", TCMP_SNAP_OPENAI_CTX),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _not_disclosed_fact("context_window_tokens", "snap_anthropic_ctx_nd"),
+        _not_disclosed_fact("context_window_tokens", TCMP_SNAP_ANTHROPIC_CTX_ND),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
 
@@ -377,9 +402,10 @@ def test_fact_table_prompt_distinguishes_unknown_from_not_disclosed() -> None:
     store = FactStore()
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _not_disclosed_fact("context_window_tokens", "snap_anthropic_ctx_nd"),
+        _not_disclosed_fact("context_window_tokens", TCMP_SNAP_ANTHROPIC_CTX_ND),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     # OpenAI's context_window_tokens is never recorded -- "unknown".
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
@@ -410,21 +436,24 @@ def test_malformed_stored_value_drops_only_that_candidate(
     store = FactStore()
     store.update_fact(
         OPENAI_GPT4O,
-        _fact("context_window_tokens", "not-a-number", "snap_openai_ctx"),
+        _fact("context_window_tokens", "not-a-number", TCMP_SNAP_OPENAI_CTX),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _fact("context_window_tokens", "128000", "snap_anthropic_ctx", "f2"),
+        _fact("context_window_tokens", "128000", TCMP_SNAP_ANTHROPIC_CTX, TCMP_FACT_2),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     store.update_fact(
         GOOGLE_GEMINI,
-        _fact("context_window_tokens", "256000", "snap_google_ctx", "f3"),
+        _fact("context_window_tokens", "256000", TCMP_SNAP_GOOGLE_CTX, TCMP_FACT_3),
         source_url="https://google.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     rows = build_fact_table(
         store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE, GOOGLE_GEMINI], ["context_window_tokens"]
@@ -458,7 +487,7 @@ def test_malformed_stored_value_drops_only_that_candidate(
     # Google is well-formed throughout and survives as a real claim.
     assert "comparison_malformed_value" in caplog.text
     assert len(claims) == 1
-    assert set(claims[0].citation_snapshot_ids) == {"snap_anthropic_ctx", "snap_google_ctx"}
+    assert set(claims[0].citation_snapshot_ids) == {TCMP_SNAP_ANTHROPIC_CTX, TCMP_SNAP_GOOGLE_CTX}
     assert claims[0].text == (
         "Anthropic's Claude has a lower context window (128000) than Google's Gemini (256000)."
     )

@@ -1,10 +1,36 @@
+import uuid
 from datetime import UTC, datetime
+from unittest.mock import Mock
+
+import pytest
+from pydantic import ValidationError
 
 from ai_daily_digest.intelligence.facts import FactStore, change_snapshot_ids, normalise_name
 from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
+from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1
+
+TF_SNAP_1 = uuid.UUID("019e85a1-6358-7050-a64d-ce378b89d87c")
+TF_SNAP_2 = uuid.UUID("01a01c77-c758-7680-a111-bfcfe074da96")
+TF_SNAP_3 = uuid.UUID("01a05a44-1758-7d51-9edd-a9f4f1c293a4")
+TF_SNAP_LAUNCH = uuid.UUID("019e85a1-6740-7b63-9b57-1151ba27045c")
+TF_SNAP_256K = uuid.UUID("01a01c77-cb40-7a30-8ccb-3fc4507fce82")
+TF_FACT_2 = uuid.UUID("01a01e66-0000-7000-8000-000000000010")
+TF_FACT_3 = uuid.UUID("01a01e66-0000-7000-8000-000000000011")
+TF_FACT_ND = uuid.UUID("01a01c77-cf28-7c33-bf3b-edd9efb430af")
 
 
-def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "fact_1") -> ExtractedFact:
+def _factory(change_set_id: uuid.UUID = CHANGE_SET_1) -> Mock:
+    """A change_set_id_factory test double -- most tests here don't care
+    which change_set_id ends up on a produced Change, only that
+    update_fact() calls the factory at the right time (see the
+    call-count tests at the bottom of this file for the ones that do
+    care)."""
+    return Mock(return_value=change_set_id)
+
+
+def _fact(
+    field: str, value: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = FACT_1
+) -> ExtractedFact:
     return ExtractedFact(
         id=fact_id,
         snapshot_id=snapshot_id,
@@ -28,9 +54,10 @@ def test_first_observation_is_not_a_change() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     change = store.update_fact(
         subject,
-        _fact("context_window_tokens", "128000", "snap_1"),
+        _fact("context_window_tokens", "128000", TF_SNAP_1),
         source_url="https://openai.com/news/gpt-4o-launch",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     current = store.get_current_fact(subject, "context_window_tokens")
@@ -43,15 +70,17 @@ def test_identical_value_is_a_silent_no_op() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("context_window_tokens", "128000", "snap_1", "fact_1"),
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("context_window_tokens", "128000", "snap_2", "fact_2"),
+        _fact("context_window_tokens", "128000", TF_SNAP_2, TF_FACT_2),
         source_url="https://techdesk.example.com/b",
         observed_at=datetime(2026, 6, 5, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     assert store.field_history(subject, "context_window_tokens") == []
@@ -59,7 +88,7 @@ def test_identical_value_is_a_silent_no_op() -> None:
     # confirming snapshot, not the original one from June
     current = store.get_current_fact(subject, "context_window_tokens")
     assert current is not None
-    assert current.snapshot_id == "snap_2"
+    assert current.snapshot_id == TF_SNAP_2
 
 
 def test_change_type_auto_infers_increased_and_decreased() -> None:
@@ -67,24 +96,27 @@ def test_change_type_auto_infers_increased_and_decreased() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("context_window_tokens", "128000", "snap_1", "fact_1"),
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     increased = store.update_fact(
         subject,
-        _fact("context_window_tokens", "256000", "snap_2", "fact_2"),
+        _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert increased is not None
     assert increased.change_type == "increased"
 
     decreased = store.update_fact(
         subject,
-        _fact("context_window_tokens", "64000", "snap_3", "fact_3"),
+        _fact("context_window_tokens", "64000", TF_SNAP_3, TF_FACT_3),
         source_url=None,
         observed_at=datetime(2026, 9, 1, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert decreased is not None
     assert decreased.change_type == "decreased"
@@ -95,15 +127,17 @@ def test_change_type_falls_back_to_changed_for_non_numeric_values() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("licence_terms", "MIT", "snap_1", "fact_1"),
+        _fact("licence_terms", "MIT", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("licence_terms", "Apache-2.0", "snap_2", "fact_2"),
+        _fact("licence_terms", "Apache-2.0", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is not None
     assert change.change_type == "changed"
@@ -114,16 +148,18 @@ def test_explicit_change_type_overrides_auto_inference() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("context_window_tokens", "128000", "snap_1", "fact_1"),
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("context_window_tokens", "256000", "snap_2", "fact_2"),
+        _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_type="disclosed",
+        change_set_id_factory=_factory(),
     )
     assert change is not None
     assert change.change_type == "disclosed"
@@ -134,17 +170,19 @@ def test_changed_value_emits_a_change_with_correct_previous_and_current() -> Non
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("context_window_tokens", "128000", "snap_launch", "fact_1"),
+        _fact("context_window_tokens", "128000", TF_SNAP_LAUNCH, FACT_1),
         source_url="https://openai.com/news/gpt-4o-launch",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("context_window_tokens", "256000", "snap_256k", "fact_2"),
+        _fact("context_window_tokens", "256000", TF_SNAP_256K, TF_FACT_2),
         source_url="https://openai.com/news/gpt-4o-256k-context",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_type="increased",
         confidence=0.98,
+        change_set_id_factory=_factory(),
     )
 
     assert change is not None
@@ -153,9 +191,9 @@ def test_changed_value_emits_a_change_with_correct_previous_and_current() -> Non
     assert change.change_type == "increased"
     assert change.previous is not None
     assert change.previous.value == "128000"
-    assert change.previous.snapshot_id == "snap_launch"
+    assert change.previous.snapshot_id == TF_SNAP_LAUNCH
     assert change.current.value == "256000"
-    assert change.current.snapshot_id == "snap_256k"
+    assert change.current.snapshot_id == TF_SNAP_256K
     assert change.confidence == 0.98
 
     # history preserves the old fact, untouched
@@ -174,9 +212,10 @@ def test_different_fields_are_tracked_independently() -> None:
     subject = Subject(company="Anthropic", product="Claude")
     store.update_fact(
         subject,
-        _fact("benchmark_scores", "71.2", "snap_1", "fact_1"),
+        _fact("benchmark_scores", "71.2", TF_SNAP_1, FACT_1),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     # context_window_tokens was never observed for this subject
     assert store.get_current_fact(subject, "context_window_tokens") is None
@@ -196,21 +235,23 @@ def test_reformatted_but_equivalent_value_is_a_silent_no_op() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("input_price_usd", "5", "snap_1", "fact_1"),
+        _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("input_price_usd", "$5.00", "snap_2", "fact_2"),
+        _fact("input_price_usd", "$5.00", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     assert store.field_history(subject, "input_price_usd") == []
     current = store.get_current_fact(subject, "input_price_usd")
     assert current is not None
-    assert current.snapshot_id == "snap_2"  # provenance still refreshes
+    assert current.snapshot_id == TF_SNAP_2  # provenance still refreshes
 
 
 def test_genuinely_different_numeric_value_still_registers_as_a_change() -> None:
@@ -220,24 +261,26 @@ def test_genuinely_different_numeric_value_still_registers_as_a_change() -> None
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("input_price_usd", "5", "snap_1", "fact_1"),
+        _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("input_price_usd", "3", "snap_2", "fact_2"),
+        _fact("input_price_usd", "3", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is not None
     assert change.change_type == "decreased"
 
 
-def _change(previous_snap: str | None, current_snap: str | None) -> Change:
+def _change(previous_snap: uuid.UUID | None, current_snap: uuid.UUID | None) -> Change:
     return Change(
-        id="c1",
-        change_set_id="",
+        id=CHANGE_1,
+        change_set_id=CHANGE_SET_1,
         subject=Subject(company="OpenAI", product="GPT-4o"),
         field="context_window_tokens",
         change_type="changed",
@@ -250,28 +293,26 @@ def _change(previous_snap: str | None, current_snap: str | None) -> Change:
 
 
 def test_change_snapshot_ids_with_both_present() -> None:
-    assert change_snapshot_ids(_change("snap_prev", "snap_cur")) == ("snap_cur", "snap_prev")
+    assert change_snapshot_ids(_change(TF_SNAP_1, TF_SNAP_2)) == (TF_SNAP_2, TF_SNAP_1)
 
 
 def test_change_snapshot_ids_with_no_previous() -> None:
-    assert change_snapshot_ids(_change(None, "snap_cur")) == ("snap_cur", None)
+    assert change_snapshot_ids(_change(None, TF_SNAP_2)) == (TF_SNAP_2, None)
 
 
-def test_change_snapshot_ids_treats_empty_string_as_absent() -> None:
-    change = Change(
-        id="c1",
-        change_set_id="",
-        subject=Subject(company="OpenAI", product="GPT-4o"),
-        field="context_window_tokens",
-        change_type="changed",
-        previous=FactObservation(value="old", snapshot_id=""),
-        current=FactObservation(value="new", snapshot_id=""),
-        confidence=0.9,
-    )
-    assert change_snapshot_ids(change) == (None, None)
+def test_malformed_snapshot_id_is_rejected_at_construction_not_silently_treated_as_absent() -> None:
+    """Superseded behavior, ADR 0007: FactObservation.snapshot_id used to
+    accept an empty string and treat it the same as absent (None).
+    Uuid7Id validation now makes that state unconstructible in the first
+    place -- a malformed value is rejected outright, not silently
+    normalised."""
+    with pytest.raises(ValidationError):
+        FactObservation(value="old", snapshot_id="")  # type: ignore[arg-type]
 
 
-def _not_disclosed_fact(field: str, snapshot_id: str, fact_id: str = "fact_nd") -> ExtractedFact:
+def _not_disclosed_fact(
+    field: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = TF_FACT_ND
+) -> ExtractedFact:
     return ExtractedFact(
         id=fact_id,
         snapshot_id=snapshot_id,
@@ -296,9 +337,10 @@ def test_first_observation_of_a_not_disclosed_fact_is_not_a_change() -> None:
     subject = Subject(company="OpenAI", product="GPT-4o")
     change = store.update_fact(
         subject,
-        _not_disclosed_fact("input_price_usd", "snap_1"),
+        _not_disclosed_fact("input_price_usd", TF_SNAP_1),
         source_url="https://openai.com/pricing",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     current = store.get_current_fact(subject, "input_price_usd")
@@ -317,22 +359,24 @@ def test_disclosed_to_not_disclosed_transition_is_recorded_but_not_a_change() ->
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _fact("input_price_usd", "5", "snap_1", "fact_1"),
+        _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _not_disclosed_fact("input_price_usd", "snap_2", "fact_2"),
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     current = store.get_current_fact(subject, "input_price_usd")
     assert current is not None
     assert current.value is None
     assert current.disclosure_status == "not_disclosed"
-    assert current.snapshot_id == "snap_2"
+    assert current.snapshot_id == TF_SNAP_2
 
 
 def test_not_disclosed_to_disclosed_transition_is_recorded_but_not_a_change() -> None:
@@ -342,15 +386,17 @@ def test_not_disclosed_to_disclosed_transition_is_recorded_but_not_a_change() ->
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _not_disclosed_fact("input_price_usd", "snap_1", "fact_1"),
+        _not_disclosed_fact("input_price_usd", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _fact("input_price_usd", "5", "snap_2", "fact_2"),
+        _fact("input_price_usd", "5", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     current = store.get_current_fact(subject, "input_price_usd")
@@ -368,21 +414,23 @@ def test_repeated_not_disclosed_observation_is_a_silent_no_op_but_refreshes_prov
     subject = Subject(company="OpenAI", product="GPT-4o")
     store.update_fact(
         subject,
-        _not_disclosed_fact("input_price_usd", "snap_1", "fact_1"),
+        _not_disclosed_fact("input_price_usd", TF_SNAP_1, FACT_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     change = store.update_fact(
         subject,
-        _not_disclosed_fact("input_price_usd", "snap_2", "fact_2"),
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert change is None
     assert store.field_history(subject, "input_price_usd") == []
     current = store.get_current_fact(subject, "input_price_usd")
     assert current is not None
-    assert current.snapshot_id == "snap_2"
+    assert current.snapshot_id == TF_SNAP_2
 
 
 def test_known_subjects_accumulates_across_updates() -> None:
@@ -391,14 +439,210 @@ def test_known_subjects_accumulates_across_updates() -> None:
     b = Subject(company="Anthropic", product="Claude")
     store.update_fact(
         a,
-        _fact("context_window_tokens", "128000", "s1"),
+        _fact("context_window_tokens", "128000", TF_SNAP_1),
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     store.update_fact(
         b,
-        _fact("benchmark_scores", "71.2", "s2"),
+        _fact("benchmark_scores", "71.2", TF_SNAP_2),
         source_url=None,
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
+        change_set_id_factory=_factory(),
     )
     assert set(store.known_subjects()) == {a, b}
+
+
+# --- ADR 0007: change_set_id_factory is lazy -- called exactly once,
+# only immediately before a real Change is constructed. ---
+
+
+def test_factory_is_not_called_for_a_first_observation() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    factory = _factory()
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    factory.assert_not_called()
+
+
+def test_factory_is_not_called_for_an_unchanged_value() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+    factory = _factory()
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    factory.assert_not_called()
+
+
+def test_factory_is_not_called_for_a_disclosure_status_transition() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+    factory = _factory()
+    store.update_fact(
+        subject,
+        _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    factory.assert_not_called()
+
+
+def test_factory_is_called_exactly_once_for_a_real_change() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+    factory = _factory()
+    change = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=factory,
+    )
+    assert change is not None
+    factory.assert_called_once()
+
+
+def test_no_placeholder_or_temporary_change_set_id_ever_reaches_a_change() -> None:
+    """A real Change's change_set_id is always exactly what the factory
+    returned -- never an empty string, sentinel, or other temporary
+    value at any point."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=_factory(CHANGE_SET_1),
+    )
+    assert change is not None
+    assert change.change_set_id == CHANGE_SET_1
+
+
+# --- ADR 0007's failed-processing rule: if constructing the real Change
+# fails validation, update_fact() must spend no id (new_id() and
+# change_set_id_factory() both un-called) and must not half-write the
+# store -- record.current stays the previous valid fact and history is
+# not partially appended. Regression: the earlier implementation
+# evaluated new_id()/change_set_id_factory() as Change(...) arguments and
+# mutated record.current/history *before* the Change's own validation
+# ran, so an invalid current observation left call_count==1 and the
+# failed value already "current". ---
+
+
+def _seed_first_value(store: FactStore, subject: Subject) -> None:
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url="https://openai.com/news/gpt-4o-launch",
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+
+
+def test_real_change_with_invalid_current_source_url_spends_no_id_and_preserves_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    _seed_first_value(store, subject)
+
+    new_id_spy = Mock()
+    monkeypatch.setattr("ai_daily_digest.intelligence.facts.new_id", new_id_spy)
+    factory = _factory()
+
+    with pytest.raises(ValidationError) as exc_info:
+        store.update_fact(
+            subject,
+            _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
+            source_url="not a valid url",
+            observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+            change_set_id_factory=factory,
+        )
+    assert exc_info.value.errors()[0]["type"] == "url_parsing"
+
+    factory.assert_not_called()
+    new_id_spy.assert_not_called()
+
+    current = store.get_current_fact(subject, "context_window_tokens")
+    assert current is not None
+    assert current.value == "128000"  # previous valid value is still current
+    assert current.snapshot_id == TF_SNAP_1
+    assert store.field_history(subject, "context_window_tokens") == []  # no partial append
+
+
+@pytest.mark.parametrize(
+    "bad_confidence",
+    [float("nan"), float("inf"), 1.5, -0.1],
+    ids=["nan", "inf", "above_one", "below_zero"],
+)
+def test_real_change_with_invalid_confidence_spends_no_id_and_leaves_store_unchanged(
+    bad_confidence: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    _seed_first_value(store, subject)
+
+    new_id_spy = Mock()
+    monkeypatch.setattr("ai_daily_digest.intelligence.facts.new_id", new_id_spy)
+    factory = _factory()
+
+    with pytest.raises(ValidationError):
+        store.update_fact(
+            subject,
+            _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
+            source_url="https://openai.com/news/gpt-4o-256k-context",
+            observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+            change_set_id_factory=factory,
+            confidence=bad_confidence,
+        )
+
+    factory.assert_not_called()  # validation fails before id allocation
+    new_id_spy.assert_not_called()
+
+    current = store.get_current_fact(subject, "context_window_tokens")
+    assert current is not None
+    assert current.value == "128000"
+    assert current.snapshot_id == TF_SNAP_1
+    assert store.field_history(subject, "context_window_tokens") == []

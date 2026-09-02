@@ -8,6 +8,7 @@ one-line change in get_loader() below, nothing else.
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -98,7 +99,7 @@ class FixtureLoader:
     def load_digests(self) -> list[Digest]:
         return [Digest.model_validate(row) for row in self._read("digests.json")]
 
-    def snapshot_text(self, snapshot_id: str) -> str:
+    def snapshot_text(self, snapshot_id: uuid.UUID) -> str:
         """Convenience: SourceItem carries no body (see shared/schemas.py)
         — callers needing text for a given item look it up by its
         snapshot id."""

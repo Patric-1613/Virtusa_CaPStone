@@ -11,6 +11,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "uuid-utils" },
 ]
 
 [package.dev-dependencies]
@@ -31,8 +32,9 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "langgraph", specifier = ">=0.2" },
-    { name = "pydantic", specifier = ">=2.6" },
+    { name = "pydantic", specifier = ">=2.11" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "uuid-utils", specifier = ">=0.17" },
 ]
 
 [package.metadata.requires-dev]

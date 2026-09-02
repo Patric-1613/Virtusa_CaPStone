@@ -1,6 +1,6 @@
 [
   {
-    "id": "a1000000-0000-4000-8000-000000000001",
+    "id": "01a01e6a-a260-7f03-9481-0c52e1f35714",
     "dedupe_key": "sha256:openai-gpt4o-context-window-increase",
     "source_id": "openai_news",
     "publisher": "OpenAI",
@@ -9,14 +9,14 @@
     "published_at": "2026-08-20T09:00:00Z",
     "updated_at": null,
     "first_fetched_at": "2026-08-20T09:05:00Z",
-    "latest_snapshot_id": "b1000000-0000-4000-8000-000000000001",
+    "latest_snapshot_id": "01a01e6a-a260-79e3-9a2b-1e4e705d3108",
     "event_id": "ev-gpt4o-256k",
     "authors": [],
     "tags": ["model_release"],
     "language": "en"
   },
   {
-    "id": "a1000000-0000-4000-8000-000000000002",
+    "id": "01a01ef8-8a80-7271-a956-b9f73c508585",
     "dedupe_key": "sha256:techdesk-gpt4o-context-window-increase",
     "source_id": "techdesk_news",
     "publisher": "TechDesk",
@@ -25,14 +25,14 @@
     "published_at": "2026-08-20T11:30:00Z",
     "updated_at": null,
     "first_fetched_at": "2026-08-20T11:40:00Z",
-    "latest_snapshot_id": "b1000000-0000-4000-8000-000000000002",
+    "latest_snapshot_id": "01a01ef8-8a80-7d72-8af5-02cbdf0784f9",
     "event_id": "ev-gpt4o-256k",
     "authors": [],
     "tags": ["model_release"],
     "language": "en"
   },
   {
-    "id": "a1000000-0000-4000-8000-000000000003",
+    "id": "019e8798-d240-77d2-b10f-c6ab78299ae1",
     "dedupe_key": "sha256:openai-gpt4o-launch",
     "source_id": "openai_news",
     "publisher": "OpenAI",
@@ -41,14 +41,14 @@
     "published_at": "2026-06-02T09:00:00Z",
     "updated_at": null,
     "first_fetched_at": "2026-06-02T09:10:00Z",
-    "latest_snapshot_id": "b1000000-0000-4000-8000-000000000003",
+    "latest_snapshot_id": "019e8798-d240-7551-8296-37bdd4a08abc",
     "event_id": "ev-gpt4o-launch",
     "authors": [],
     "tags": ["model_release"],
     "language": "en"
   },
   {
-    "id": "a1000000-0000-4000-8000-000000000004",
+    "id": "01a01a5b-82c0-72c1-aff1-dce965ea56ff",
     "dedupe_key": "sha256:anthropic-claude-benchmark-results",
     "source_id": "anthropic_news",
     "publisher": "Anthropic",
@@ -57,7 +57,7 @@
     "published_at": "2026-08-19T14:00:00Z",
     "updated_at": null,
     "first_fetched_at": "2026-08-19T14:10:00Z",
-    "latest_snapshot_id": "b1000000-0000-4000-8000-000000000004",
+    "latest_snapshot_id": "01a01a5b-82c0-7163-b557-1246abccd49d",
     "event_id": null,
     "authors": [],
     "tags": ["benchmark"],

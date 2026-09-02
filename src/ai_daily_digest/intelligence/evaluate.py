@@ -10,6 +10,7 @@ prompt instead (see intelligence/CLAUDE.md's testing rules).
 
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
 from ai_daily_digest.intelligence.validate import validate_claim
+from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, Digest
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver, SnapshotResolver
 
@@ -29,7 +31,7 @@ RESULTS_FILE = find_repo_root(Path.cwd()) / "docs" / "eval_results.md"
 
 def citation_validity(
     digest: Digest,
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     *,
     snapshot_resolver: SnapshotResolver | None = None,
 ) -> float:
@@ -55,7 +57,7 @@ def citation_validity(
 
 def unsupported_claim_count(
     digest: Digest,
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     *,
     snapshot_resolver: SnapshotResolver | None = None,
 ) -> int:
@@ -127,7 +129,7 @@ def run_eval(
     digest: Digest,
     detected_changes: list[Change],
     expected_changes: list[Change],
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     *,
     snapshot_resolver: SnapshotResolver | None = None,
 ) -> EvalResult:
@@ -171,7 +173,9 @@ def main() -> None:
     known_snapshot_ids = {s.id for s in snapshots}
     snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
     changes = [change for cs in change_sets for change in cs.changes]
-    digest = digests[0] if digests else Digest(id="none", digest_date="", status="draft", title="")
+    digest = (
+        digests[0] if digests else Digest(id=new_id(), digest_date="", status="draft", title="")
+    )
 
     result = run_eval(
         digest, changes, changes, known_snapshot_ids, snapshot_resolver=snapshot_resolver

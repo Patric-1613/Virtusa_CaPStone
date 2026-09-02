@@ -11,7 +11,9 @@ Subscription/EmailDelivery (delivery) aren't reproduced here yet — add
 them when a module actually needs the shared type, per shared/README.md's
 "smallest stable set... required across modules", not preemptively.
 
-Requires: pydantic>=2
+Requires: pydantic>=2.11 (docs/adr/0007-uuid-v7-identifier-strategy.md --
+the built-in UUID7 type that shared/ids.py::Uuid7Id re-exports ships in
+2.11.0, not the wider pydantic>=2 this file used to require).
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+
+from ai_daily_digest.shared.ids import Uuid7Id
 
 # A confidence score, everywhere one appears in this contract or in an LLM
 # response model that feeds it (ExtractedFact.confidence, Change.confidence,
@@ -45,16 +49,23 @@ class SourceItem(BaseModel):
     lives separately in DocumentSnapshot — an item may have multiple
     snapshots over time; this record never holds body text itself."""
 
-    id: str  # UUID v4
+    id: Uuid7Id
     dedupe_key: str  # sha256 of the normalized canonical_url; DB-unique
-    source_id: str
+    source_id: str  # sources.yaml registry slug, e.g. "openai_news" -- a
+    # human-readable configuration key, never converted to a UUID (ADR 0007).
     publisher: str
     title: str
     canonical_url: HttpUrl
     published_at: datetime | None = None
     updated_at: datetime | None = None
     first_fetched_at: datetime
-    latest_snapshot_id: str | None = None
+    latest_snapshot_id: Uuid7Id | None = None
+    # event_id: intentionally NOT Uuid7Id. It's a human-readable grouping
+    # key today (e.g. "ev-gpt4o-256k" in the fixture pack), not a
+    # generated resource id -- no Event model is persisted and nothing
+    # constructs one via shared/ids.py::new_id(). Retype only alongside a
+    # future ADR that defines a real, generated Event resource (ADR
+    # 0007's Consequences section).
     event_id: str | None = None  # nullable until items are grouped by event
     authors: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -66,10 +77,10 @@ class DocumentSnapshot(BaseModel):
     omitted from list responses (see API_CONTRACT.md) — treat it as
     Optional even though a stored snapshot always has one."""
 
-    id: str  # UUID v4
-    source_item_id: str
+    id: Uuid7Id
+    source_item_id: Uuid7Id
     fetched_at: datetime
-    content_hash: str
+    content_hash: str  # sha256 content hash -- a hash, never a UUID (ADR 0007).
     content_text: str | None = None
     raw_location: str | None = None
     etag: str | None = None
@@ -131,8 +142,8 @@ class ExtractedFact(BaseModel):
     construction, never silently defaulted into "not disclosed". See
     docs/adr/0006-disclosure-status-semantics.md."""
 
-    id: str  # UUID v4
-    snapshot_id: str
+    id: Uuid7Id
+    snapshot_id: Uuid7Id
     field: str
     value: str | None
     disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
@@ -221,7 +232,7 @@ class FactObservation(BaseModel):
 
     value: str | None = None
     observed_at: datetime | None = None
-    snapshot_id: str | None = None
+    snapshot_id: Uuid7Id | None = None
     source_url: HttpUrl | None = None
 
 
@@ -229,8 +240,8 @@ class Change(BaseModel):
     """One field-level change. `previous` is null only when the absence
     means "not previously disclosed" — never used to mean "unknown"."""
 
-    id: str  # UUID v4
-    change_set_id: str
+    id: Uuid7Id
+    change_set_id: Uuid7Id
     subject: Subject
     field: str
     change_type: str  # e.g. "increased", "decreased", "disclosed", "changed"
@@ -245,11 +256,11 @@ class ChangeSet(BaseModel):
     more Changes about the same subject, grouped with their supporting
     snapshot ids."""
 
-    id: str  # UUID v4
+    id: Uuid7Id
     subject: Subject
     changes: list[Change] = Field(default_factory=list)
-    previous_snapshot_ids: list[str] = Field(default_factory=list)
-    current_snapshot_ids: list[str] = Field(default_factory=list)
+    previous_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
+    current_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
     review_status: str = "pending"
 
 
@@ -263,14 +274,14 @@ class DigestClaim(BaseModel):
     containing an unsupported claim cannot enter "published" status
     automatically."""
 
-    id: str  # UUID v4
+    id: Uuid7Id
     text: str
-    citation_snapshot_ids: list[str] = Field(default_factory=list)
+    citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
     validation_status: str = "pending"  # "pending" | "supported" | "unsupported"
 
 
 class Digest(BaseModel):
-    id: str  # UUID v4
+    id: Uuid7Id
     digest_date: str  # YYYY-MM-DD
     status: str = "draft"  # "draft" | "review" | "published"
     title: str

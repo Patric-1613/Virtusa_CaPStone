@@ -10,6 +10,7 @@ Digest.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,8 +54,8 @@ class BatchItem:
 class DailyRunResult:
     digest: Digest
     resolved_subjects: list[Subject] = field(default_factory=list)
-    unresolved_item_ids: list[str] = field(default_factory=list)
-    failed_item_ids: list[str] = field(default_factory=list)
+    unresolved_item_ids: list[uuid.UUID] = field(default_factory=list)
+    failed_item_ids: list[uuid.UUID] = field(default_factory=list)
     # ChangeSet aggregates built from this run's Changes (change_sets.py)
     # -- ready for whatever persistence layer picks them up next; nothing
     # downstream of run_daily() currently persists them, the same way
@@ -77,11 +78,19 @@ class _BatchAccumulator:
     # mirrors resolved_subjects purely so membership checks below are
     # O(1) instead of a list scan repeated for every item in the batch.
     seen_subjects: set[Subject] = field(default_factory=set)
-    unresolved_item_ids: list[str] = field(default_factory=list)
-    failed_item_ids: list[str] = field(default_factory=list)
+    unresolved_item_ids: list[uuid.UUID] = field(default_factory=list)
+    failed_item_ids: list[uuid.UUID] = field(default_factory=list)
+    # Batch-scoped ChangeSet-id allocator (ADR 0007) -- owns "which
+    # change_set_id has this subject already been assigned in THIS
+    # batch", via change_sets.py::get_or_create_change_set_id(). Must be
+    # a fresh dict every run_daily() call (never reused across days, and
+    # never owned by FactStore, which persists across runs by design) --
+    # _BatchAccumulator already has exactly that lifetime, since run_daily()
+    # constructs one fresh instance per call.
+    change_set_ids: dict[Subject, uuid.UUID] = field(default_factory=dict)
 
 
-def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[str]) -> Digest:
+def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[uuid.UUID]) -> Digest:
     """INTERIM SAFETY POLICY, kept in force by ADR 0005 (docs/adr/0005-
     structured-comparison-and-snapshot-resolution.md): no cross-subject
     comparison claim may cause a digest to auto-publish, regardless of
@@ -118,7 +127,7 @@ def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[st
 def _process_item(
     entry: BatchItem,
     graph: CompiledStateGraph[PipelineState, Any, PipelineState, PipelineState],
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     snapshot_resolver: SnapshotResolver,
     acc: _BatchAccumulator,
 ) -> None:
@@ -177,7 +186,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     # just above for where the actual per-item logic was already
     # extracted out to keep this function itself short.
     store: FactStore,
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     batch: list[BatchItem],
     digest_date: str,
     *,
@@ -220,26 +229,33 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     the day, the same principle ingestion applies to its own sources.
 
     Every Change produced by the batch is also grouped into ChangeSet
-    aggregates (see change_sets.py) and returned on the result —
-    previously nothing did this, and every Change left with an empty,
-    never-assigned `change_set_id`.
+    aggregates (see change_sets.py) and returned on the result. Each
+    Change's `change_set_id` is allocated lazily and batch-scoped (ADR
+    0007's "Batch-scoped ChangeSet ID allocation"): `acc` (below) owns
+    the allocator, threaded into `build_graph()` so its `compare` node
+    can request one per subject on first use within this run only.
 
     INTERIM SAFETY POLICY: no cross-subject comparison claim (from
     compare_subjects()) may cause the digest to auto-publish, regardless
     of its own validation status -- see _never_auto_publish_comparisons().
     """
+    # _BatchAccumulator (and its change_set_ids allocator) must exist
+    # BEFORE build_graph(), which closes over acc.change_set_ids the same
+    # way it already closes over `store` -- the graph cannot be built
+    # without something for its `compare` node to close over.
+    acc = _BatchAccumulator()
     graph = build_graph(
         store,
+        acc.change_set_ids,
         alias_table=alias_table,
         resolve_llm_call_fn=resolve_llm_call_fn,
         extract_call_fn=extract_call_fn,
     )
 
-    acc = _BatchAccumulator()
     for entry in batch:
         _process_item(entry, graph, known_snapshot_ids, snapshot_resolver, acc)
 
-    comparison_claim_ids: set[str] = set()
+    comparison_claim_ids: set[uuid.UUID] = set()
     # Default to only the fields with a registered ComparisonRule (ADR
     # 0005 point 2, Phase 1: context_window_tokens only) -- there is no
     # point asking the model to consider a field compare_subjects() can

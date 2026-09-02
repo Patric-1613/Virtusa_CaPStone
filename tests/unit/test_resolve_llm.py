@@ -3,6 +3,7 @@ shaping) with an injected fake call_fn — no network/API key needed. The
 real call_structured() path is exercised by intelligence/llm.py's own
 tests, not here."""
 
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -12,11 +13,13 @@ from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse, resolve_via_llm
 from ai_daily_digest.shared.schemas import SourceItem, Subject
 
+TRL_ITEM_TEST = uuid.UUID("01a01e2f-3770-7bc0-967a-19297e60ec0c")
+
 
 def _item() -> SourceItem:
     return SourceItem(
-        id="item_test",
-        dedupe_key="sha256:item_test",
+        id=TRL_ITEM_TEST,
+        dedupe_key=f"sha256:{TRL_ITEM_TEST}",
         source_id="test-source",
         publisher="Test Publisher",
         title="Some ambiguous headline",

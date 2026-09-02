@@ -8,8 +8,18 @@ ComparisonAssertion(subject_a, subject_b, field) triples only -- no text,
 no snapshot ids, no values. compare_subjects() looks those up and renders
 the claim deterministically; see test_compare_subjects.py for the
 guardrail-level coverage of that resolution. This file only needs to
-prove daily_run.py wires everything together end to end."""
+prove daily_run.py wires everything together end to end.
 
+Routing note: extract_fake() functions below route their fake response
+by checking whether a given snapshot's id (its canonical string form)
+appears in the rendered prompt -- extract_facts.py embeds
+`str(snapshot.id)` verbatim (see its own "Snapshot id: {{snapshot_id}}"
+prompt line), so this works the same way the old "snap_launch" in prompt
+substring checks did pre-ADR-0007, just keyed by UUID string instead of
+a descriptive label.
+"""
+
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -26,9 +36,44 @@ from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
 
+TDR_ITEM_LAUNCH = uuid.UUID("019e860f-2500-7e53-b080-0bf532479738")
+TDR_ITEM_256K = uuid.UUID("01a01ce5-8900-7521-a4d7-58c6aad9845b")
+TDR_ITEM_ANTHROPIC_CTX = uuid.UUID("01a017bf-2d00-7d90-87ae-c7d1f45b0aef")
+TDR_ITEM_OPENAI_CTX = uuid.UUID("01a01ce5-8ce8-7ce3-8010-7c1413b263ba")
+TDR_ITEM_OPENAI_R = uuid.UUID("01a01ce5-90d0-7621-97bb-289825462537")
+TDR_ITEM_ANTHROPIC_R = uuid.UUID("01a01ce5-94b8-7f90-b54e-ab80d9776453")
+TDR_ITEM_BROKEN = uuid.UUID("01a017bf-3ca0-7613-b3f4-74644c73f757")
+TDR_ITEM_CONFLICT_2 = uuid.UUID("01a01ce5-9c88-78d1-a43a-d19b89f9e9be")
+TDR_ITEM_VALID_1 = uuid.UUID("01a01ce5-a070-75d3-bc7a-2a152ecd575e")
+TDR_ITEM_VALID_3 = uuid.UUID("01a01ce5-a458-7630-beaa-c2a57f85a2c9")
+TDR_ITEM_MYSTERY = uuid.UUID("01a017bf-4c40-7e01-a75b-d7a77cf43130")
+TDR_ITEM_OPENAI_SEED = uuid.UUID("019e80e8-c900-7de0-a271-4d5b63107bda")
+TDR_ITEM_ANTHROPIC_SEED = uuid.UUID("019e80e8-cce8-7f52-baaf-4325a80dcbe3")
+TDR_ITEM_PRE_EXISTING = uuid.UUID("019fbb0c-b500-78b0-92c3-b711e0bb6845")
+TDR_SNAP_LAUNCH = uuid.UUID("019e8610-0f60-7f30-a0ba-af7311a9e28a")
+TDR_SNAP_256K = uuid.UUID("01a01ce6-7360-7a02-94e9-c39b2b3a0884")
+TDR_SNAP_ANTHROPIC_CTX = uuid.UUID("01a017c0-1760-78f0-b9fa-3780439bc199")
+TDR_SNAP_OPENAI_CTX = uuid.UUID("01a01ce6-7748-7100-9cb5-1cdc564c20d9")
+TDR_SNAP_OPENAI_R = uuid.UUID("01a01ce6-7b30-7ac2-836f-0c1a3baaa614")
+TDR_SNAP_ANTHROPIC_R = uuid.UUID("01a01ce6-7f18-7721-9135-cf50d16daaf7")
+TDR_SNAP_BROKEN = uuid.UUID("01a017c0-2700-7541-a153-86cab3f7b6ae")
+TDR_SNAP_CONFLICT = uuid.UUID("01a01ce6-86e8-77e1-8fe8-0c393493c7c1")
+TDR_SNAP_VALID_1 = uuid.UUID("01a01ce6-8ad0-7ad0-9088-fc23421c52a4")
+TDR_SNAP_VALID_3 = uuid.UUID("01a01ce6-8eb8-7f43-b7aa-76111e0f9b54")
+TDR_SNAP_MYSTERY = uuid.UUID("01a017c0-36a0-72e2-b179-ce4e377b5772")
+TDR_SNAP_OPENAI_SEED = uuid.UUID("019e80e9-b360-7a42-8916-1c171b5523c1")
+TDR_SNAP_ANTHROPIC_SEED = uuid.UUID("019e80e9-b748-7550-bba4-a161098e8a99")
+TDR_SNAP_FROM_A_PREVIOUS_RUN = uuid.UUID("01a01299-bb60-7680-a8eb-eb8abc6ffb35")
+TDR_FACT_SEED_OPENAI = uuid.UUID("019e80ea-9dc0-7fd0-ae5e-3e5417994010")
+TDR_FACT_SEED_ANTHROPIC = uuid.UUID("019e80ea-a1a8-7400-8b12-c32efea1184c")
+TDR_FACT_SEED = uuid.UUID("01a01ce7-6590-7752-b47a-3191db7228dd")
+
 
 def _item(
-    item_id: str, title: str, publisher: str = "OpenAI", source_id: str = "openai_news"
+    item_id: uuid.UUID,
+    title: str,
+    publisher: str = "OpenAI",
+    source_id: str = "openai_news",
 ) -> SourceItem:
     return SourceItem(
         id=item_id,
@@ -41,7 +86,9 @@ def _item(
     )
 
 
-def _snapshot(snap_id: str, item_id: str, text: str, fetched_at: datetime) -> DocumentSnapshot:
+def _snapshot(
+    snap_id: uuid.UUID, item_id: uuid.UUID, text: str, fetched_at: datetime
+) -> DocumentSnapshot:
     return DocumentSnapshot(
         id=snap_id,
         source_item_id=item_id,
@@ -51,7 +98,9 @@ def _snapshot(snap_id: str, item_id: str, text: str, fetched_at: datetime) -> Do
     )
 
 
-def _fact(field: str, value: str, snapshot_id: str, fact_id: str = "seed") -> ExtractedFact:
+def _fact(
+    field: str, value: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = TDR_FACT_SEED
+) -> ExtractedFact:
     return ExtractedFact(
         id=fact_id,
         snapshot_id=snapshot_id,
@@ -93,11 +142,11 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     # Extraction responses differ per item -- route by which snapshot is being processed.
     extraction_responses = {
-        "snap_launch": FactExtractionResponse(
+        TDR_SNAP_LAUNCH: FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="context_window_tokens",
@@ -107,7 +156,7 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
                 )
             ]
         ),
-        "snap_256k": FactExtractionResponse(
+        TDR_SNAP_256K: FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="context_window_tokens",
@@ -117,7 +166,7 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
                 )
             ]
         ),
-        "snap_anthropic_ctx": FactExtractionResponse(
+        TDR_SNAP_ANTHROPIC_CTX: FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="context_window_tokens",
@@ -131,39 +180,39 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
         for snap_id, response in extraction_responses.items():
-            if snap_id in prompt:
+            if str(snap_id) in prompt:
                 return response
         return FactExtractionResponse(facts=[])
 
     batch = [
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
         ),
         BatchItem(
-            _item("item_256k", "GPT-4o now supports a 256k token context window"),
+            _item(TDR_ITEM_256K, "GPT-4o now supports a 256k token context window"),
             _snapshot(
-                "snap_256k",
-                "item_256k",
+                TDR_SNAP_256K,
+                TDR_ITEM_256K,
                 "OpenAI announced GPT-4o's context window has been increased to 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
             _item(
-                "item_anthropic_ctx",
+                TDR_ITEM_ANTHROPIC_CTX,
                 "Claude context window disclosed",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_anthropic_ctx",
-                "item_anthropic_ctx",
+                TDR_SNAP_ANTHROPIC_CTX,
+                TDR_ITEM_ANTHROPIC_CTX,
                 "Anthropic disclosed that Claude's context window is 200,000 tokens.",
                 datetime(2026, 8, 19, tzinfo=UTC),
             ),
@@ -202,14 +251,13 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
     # daily_run.py::_never_auto_publish_comparisons.
     assert result.digest.status == "review"
 
-    # the one Change (128k -> 256k) is grouped into one ChangeSet, with
-    # its change_set_id backfilled -- not left empty (see change_sets.py)
+    # the one Change (128k -> 256k) is grouped into one ChangeSet, with a
+    # real change_set_id allocated lazily -- never a placeholder (ADR 0007)
     assert len(result.change_sets) == 1
     change_set = result.change_sets[0]
     assert change_set.subject == OPENAI_GPT4O
     assert len(change_set.changes) == 1
     assert change_set.changes[0].change_set_id == change_set.id
-    assert change_set.changes[0].change_set_id != ""
 
 
 def test_well_grounded_comparison_still_never_auto_publishes() -> None:
@@ -224,10 +272,10 @@ def test_well_grounded_comparison_still_never_auto_publishes() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
-        if "snap_openai_ctx" in prompt:
+        if str(TDR_SNAP_OPENAI_CTX) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -238,7 +286,7 @@ def test_well_grounded_comparison_still_never_auto_publishes() -> None:
                     )
                 ]
             )
-        if "snap_anthropic_ctx" in prompt:
+        if str(TDR_SNAP_ANTHROPIC_CTX) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -253,24 +301,24 @@ def test_well_grounded_comparison_still_never_auto_publishes() -> None:
 
     batch = [
         BatchItem(
-            _item("item_openai_ctx", "GPT-4o context window"),
+            _item(TDR_ITEM_OPENAI_CTX, "GPT-4o context window"),
             _snapshot(
-                "snap_openai_ctx",
-                "item_openai_ctx",
+                TDR_SNAP_OPENAI_CTX,
+                TDR_ITEM_OPENAI_CTX,
                 "OpenAI's GPT-4o has a context window of 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
             _item(
-                "item_anthropic_ctx",
+                TDR_ITEM_ANTHROPIC_CTX,
                 "Claude context window",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_anthropic_ctx",
-                "item_anthropic_ctx",
+                TDR_SNAP_ANTHROPIC_CTX,
+                TDR_ITEM_ANTHROPIC_CTX,
                 "Anthropic's Claude has a context window of 128,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
@@ -306,10 +354,10 @@ def test_reversed_pair_proposal_still_renders_the_correct_non_swapped_text() -> 
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
-        if "snap_openai_r" in prompt:
+        if str(TDR_SNAP_OPENAI_R) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -320,7 +368,7 @@ def test_reversed_pair_proposal_still_renders_the_correct_non_swapped_text() -> 
                     )
                 ]
             )
-        if "snap_anthropic_r" in prompt:
+        if str(TDR_SNAP_ANTHROPIC_R) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -335,24 +383,24 @@ def test_reversed_pair_proposal_still_renders_the_correct_non_swapped_text() -> 
 
     batch = [
         BatchItem(
-            _item("item_openai_r", "GPT-4o context window"),
+            _item(TDR_ITEM_OPENAI_R, "GPT-4o context window"),
             _snapshot(
-                "snap_openai_r",
-                "item_openai_r",
+                TDR_SNAP_OPENAI_R,
+                TDR_ITEM_OPENAI_R,
                 "OpenAI's GPT-4o has a context window of 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
             _item(
-                "item_anthropic_r",
+                TDR_ITEM_ANTHROPIC_R,
                 "Claude context window",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_anthropic_r",
-                "item_anthropic_r",
+                TDR_SNAP_ANTHROPIC_R,
+                TDR_ITEM_ANTHROPIC_R,
                 "Anthropic's Claude has a context window of 128,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
@@ -389,23 +437,23 @@ def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() 
     just that validate.py's own check works in isolation)."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     batch = [
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
         ),
         BatchItem(
-            _item("item_256k", "GPT-4o now supports a 256k token context window"),
+            _item(TDR_ITEM_256K, "GPT-4o now supports a 256k token context window"),
             _snapshot(
-                "snap_256k",
-                "item_256k",
+                TDR_SNAP_256K,
+                TDR_ITEM_256K,
                 "OpenAI announced GPT-4o's context window has been increased to 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
@@ -413,12 +461,12 @@ def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() 
     ]
 
     # Each snapshot needs its own grounded extraction response -- a
-    # single fixed quoted_span for both would fail snap_256k's own
+    # single fixed quoted_span for both would fail TDR_SNAP_256K's own
     # grounding check (its text doesn't contain "128,000 token context
-    # window" verbatim), so route by which snapshot's text is in the
+    # window" verbatim), so route by which snapshot's id is in the
     # prompt, the same way the first test in this file does.
     extraction_responses = {
-        "snap_launch": FactExtractionResponse(
+        TDR_SNAP_LAUNCH: FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="context_window_tokens",
@@ -428,7 +476,7 @@ def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() 
                 )
             ]
         ),
-        "snap_256k": FactExtractionResponse(
+        TDR_SNAP_256K: FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="context_window_tokens",
@@ -442,7 +490,7 @@ def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() 
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
         for snap_id, response in extraction_responses.items():
-            if snap_id in prompt:
+            if str(snap_id) in prompt:
                 return response
         return FactExtractionResponse(facts=[])
 
@@ -474,12 +522,12 @@ def test_one_item_raising_does_not_abort_the_rest_of_the_batch() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
     store.register_subject(ANTHROPIC_CLAUDE)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
-        if "snap_broken" in prompt:
+        if str(TDR_SNAP_BROKEN) in prompt:
             raise RuntimeError("simulated transient extraction failure")
-        if "snap_launch" in prompt:
+        if str(TDR_SNAP_LAUNCH) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -494,19 +542,19 @@ def test_one_item_raising_does_not_abort_the_rest_of_the_batch() -> None:
 
     batch = [
         BatchItem(
-            _item("item_broken", "GPT-4o update"),
+            _item(TDR_ITEM_BROKEN, "GPT-4o update"),
             _snapshot(
-                "snap_broken",
-                "item_broken",
+                TDR_SNAP_BROKEN,
+                TDR_ITEM_BROKEN,
                 "OpenAI GPT-4o details.",
                 datetime(2026, 8, 19, tzinfo=UTC),
             ),
         ),
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
@@ -523,7 +571,7 @@ def test_one_item_raising_does_not_abort_the_rest_of_the_batch() -> None:
         extract_call_fn=extract_fake,
     )
 
-    assert result.failed_item_ids == ["item_broken"]
+    assert result.failed_item_ids == [TDR_ITEM_BROKEN]
     # the second item still resolved and its fact was recorded, despite
     # the first item raising
     current = store.get_current_fact(OPENAI_GPT4O, "context_window_tokens")
@@ -547,47 +595,49 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
     # (see validate.py's own docstring) -- otherwise the seed citations
     # would fail the plain existence check before content grounding is
     # even reached.
-    known_snapshot_ids: set[str] = {"snap_openai_seed", "snap_anthropic_seed"}
+    known_snapshot_ids: set[uuid.UUID] = {TDR_SNAP_OPENAI_SEED, TDR_SNAP_ANTHROPIC_SEED}
 
     # Seed each subject's "previous" value directly, as if recorded by
     # an earlier day's run -- both seed snapshots are pre-registered in
     # the resolver too, so the real Change claims below have citations
     # that actually resolve.
     seed_openai_snapshot = _snapshot(
-        "snap_openai_seed",
-        "item_openai_seed",
+        TDR_SNAP_OPENAI_SEED,
+        TDR_ITEM_OPENAI_SEED,
         "OpenAI's context window is 128,000 tokens.",
         datetime(2026, 6, 1, tzinfo=UTC),
     )
     seed_anthropic_snapshot = _snapshot(
-        "snap_anthropic_seed",
-        "item_anthropic_seed",
+        TDR_SNAP_ANTHROPIC_SEED,
+        TDR_ITEM_ANTHROPIC_SEED,
         "Anthropic's context window is 64,000 tokens.",
         datetime(2026, 6, 1, tzinfo=UTC),
     )
     store.update_fact(
         OPENAI_GPT4O,
-        _fact("context_window_tokens", "128000", "snap_openai_seed", "seed_openai"),
+        _fact("context_window_tokens", "128000", TDR_SNAP_OPENAI_SEED, TDR_FACT_SEED_OPENAI),
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
-        _fact("context_window_tokens", "64000", "snap_anthropic_seed", "seed_anthropic"),
+        _fact("context_window_tokens", "64000", TDR_SNAP_ANTHROPIC_SEED, TDR_FACT_SEED_ANTHROPIC),
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
     )
 
     resolver = InMemorySnapshotResolver(
         {
-            "snap_openai_seed": seed_openai_snapshot,
-            "snap_anthropic_seed": seed_anthropic_snapshot,
+            TDR_SNAP_OPENAI_SEED: seed_openai_snapshot,
+            TDR_SNAP_ANTHROPIC_SEED: seed_anthropic_snapshot,
             # Pre-registered under the SAME id item_conflict_2's own
             # snapshot will use below, but with different content --
             # that mismatch is exactly what add() must reject.
-            "snap_conflict": _snapshot(
-                "snap_conflict",
-                "item_pre_existing",
+            TDR_SNAP_CONFLICT: _snapshot(
+                TDR_SNAP_CONFLICT,
+                TDR_ITEM_PRE_EXISTING,
                 "Pre-existing, unrelated content already in the resolver.",
                 datetime(2026, 8, 1, tzinfo=UTC),
             ),
@@ -595,7 +645,7 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
     )
 
     def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
-        if "snap_valid_1" in prompt:
+        if str(TDR_SNAP_VALID_1) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -606,7 +656,7 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
                     )
                 ]
             )
-        if "snap_valid_3" in prompt:
+        if str(TDR_SNAP_VALID_3) in prompt:
             return FactExtractionResponse(
                 facts=[
                     FactCandidate(
@@ -621,33 +671,33 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
 
     batch = [
         BatchItem(
-            _item("item_valid_1", "GPT-4o context window update"),
+            _item(TDR_ITEM_VALID_1, "GPT-4o context window update"),
             _snapshot(
-                "snap_valid_1",
-                "item_valid_1",
+                TDR_SNAP_VALID_1,
+                TDR_ITEM_VALID_1,
                 "OpenAI's GPT-4o context window increased to 256,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
-            _item("item_conflict_2", "Unrelated update", publisher="Anthropic"),
+            _item(TDR_ITEM_CONFLICT_2, "Unrelated update", publisher="Anthropic"),
             _snapshot(
-                "snap_conflict",  # same id as the resolver's pre-existing entry
-                "item_conflict_2",
+                TDR_SNAP_CONFLICT,  # same id as the resolver's pre-existing entry
+                TDR_ITEM_CONFLICT_2,
                 "Different content than what the resolver already has for this id.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
         ),
         BatchItem(
             _item(
-                "item_valid_3",
+                TDR_ITEM_VALID_3,
                 "Claude context window update",
                 publisher="Anthropic",
                 source_id="anthropic_news",
             ),
             _snapshot(
-                "snap_valid_3",
-                "item_valid_3",
+                TDR_SNAP_VALID_3,
+                TDR_ITEM_VALID_3,
                 "Anthropic's Claude context window increased to 96,000 tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
             ),
@@ -665,16 +715,16 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
     )
 
     # Only the conflicting item failed -- the whole batch did not crash.
-    assert result.failed_item_ids == ["item_conflict_2"]
+    assert result.failed_item_ids == [TDR_ITEM_CONFLICT_2]
     assert set(result.resolved_subjects) == {OPENAI_GPT4O, ANTHROPIC_CLAUDE}
     assert len(result.digest.claims) == 2
     assert all(c.validation_status == "supported" for c in result.digest.claims)
     claim_texts = {c.text for c in result.digest.claims}
     assert any("256000" in text for text in claim_texts)
     assert any("96000" in text for text in claim_texts)
-    # The resolver's original, pre-existing content for "snap_conflict"
+    # The resolver's original, pre-existing content for TDR_SNAP_CONFLICT
     # survived the rejected conflicting add() untouched.
-    conflict_content = resolver.get_content("snap_conflict")
+    conflict_content = resolver.get_content(TDR_SNAP_CONFLICT)
     assert conflict_content is not None
     assert (
         conflict_content.content_text == "Pre-existing, unrelated content already in the resolver."
@@ -683,17 +733,17 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
 
 def test_unresolvable_item_is_recorded_not_dropped() -> None:
     store = FactStore()
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(confidence=0.9)  # no proposal
 
     batch = [
         BatchItem(
-            _item("item_mystery", "Completely unrelated headline"),
+            _item(TDR_ITEM_MYSTERY, "Completely unrelated headline"),
             _snapshot(
-                "snap_mystery",
-                "item_mystery",
+                TDR_SNAP_MYSTERY,
+                TDR_ITEM_MYSTERY,
                 "Nothing about a tracked subject here.",
                 datetime(2026, 8, 19, tzinfo=UTC),
             ),
@@ -710,7 +760,7 @@ def test_unresolvable_item_is_recorded_not_dropped() -> None:
         resolve_llm_call_fn=resolve_fake,
     )
 
-    assert result.unresolved_item_ids == ["item_mystery"]
+    assert result.unresolved_item_ids == [TDR_ITEM_MYSTERY]
     assert result.resolved_subjects == []
     assert result.digest.status == "draft"  # nothing to report
     assert result.digest.claims == []
@@ -719,14 +769,14 @@ def test_unresolvable_item_is_recorded_not_dropped() -> None:
 def test_comparison_skipped_with_fewer_than_two_resolved_subjects() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     batch = [
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
@@ -756,14 +806,14 @@ def test_known_snapshot_ids_accumulate_across_calls() -> None:
     reset each call."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
-    known_snapshot_ids: set[str] = {"snap_from_a_previous_run"}
+    known_snapshot_ids: set[uuid.UUID] = {TDR_SNAP_FROM_A_PREVIOUS_RUN}
 
     batch = [
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
@@ -782,8 +832,8 @@ def test_known_snapshot_ids_accumulate_across_calls() -> None:
         ),
     )
 
-    assert "snap_from_a_previous_run" in known_snapshot_ids
-    assert "snap_launch" in known_snapshot_ids
+    assert TDR_SNAP_FROM_A_PREVIOUS_RUN in known_snapshot_ids
+    assert TDR_SNAP_LAUNCH in known_snapshot_ids
 
 
 def test_snapshot_resolver_is_required() -> None:
@@ -794,7 +844,7 @@ def test_snapshot_resolver_is_required() -> None:
     must supply one explicitly. Proven here by the call itself failing,
     not by behavior."""
     store = FactStore()
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
     batch: list[BatchItem] = []
 
     with pytest.raises(TypeError):
@@ -809,15 +859,15 @@ def test_caller_supplied_snapshot_resolver_is_reused_not_replaced() -> None:
     afterward, with no separate internal resolver involved."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
     resolver = InMemorySnapshotResolver()
 
     batch = [
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
@@ -836,7 +886,7 @@ def test_caller_supplied_snapshot_resolver_is_reused_not_replaced() -> None:
         ),
     )
 
-    assert resolver.get_content("snap_launch") is not None
+    assert resolver.get_content(TDR_SNAP_LAUNCH) is not None
 
 
 def test_resolver_without_add_is_left_to_manage_its_own_contents() -> None:
@@ -848,18 +898,18 @@ def test_resolver_without_add_is_left_to_manage_its_own_contents() -> None:
     such a resolver's own contents unchanged."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
-    known_snapshot_ids: set[str] = set()
+    known_snapshot_ids: set[uuid.UUID] = set()
 
     class _ReadOnlyResolver:
-        def get_content(self, snapshot_id: str) -> DocumentSnapshot | None:
+        def get_content(self, snapshot_id: uuid.UUID) -> DocumentSnapshot | None:
             return None
 
     batch = [
         BatchItem(
-            _item("item_launch", "Introducing GPT-4o"),
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
             _snapshot(
-                "snap_launch",
-                "item_launch",
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
@@ -880,3 +930,91 @@ def test_resolver_without_add_is_left_to_manage_its_own_contents() -> None:
 
     # No exception from the missing add() -- the run completes normally.
     assert result.resolved_subjects == [OPENAI_GPT4O]
+
+
+# --- ADR 0007: a new daily_run() call gets a fresh ChangeSet allocator,
+# so the same recurring subject receives a NEW change_set_id, never a
+# previous run's cached value. ---
+
+
+def test_recurring_subject_gets_a_new_change_set_id_on_a_later_run() -> None:
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    known_snapshot_ids: set[uuid.UUID] = set()
+
+    # First run: establish a baseline value (128000) as a first
+    # observation -- no Change/ChangeSet yet.
+    run_daily(
+        store,
+        known_snapshot_ids,
+        [
+            BatchItem(
+                _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
+                _snapshot(
+                    TDR_SNAP_LAUNCH,
+                    TDR_ITEM_LAUNCH,
+                    "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                    datetime(2026, 6, 2, tzinfo=UTC),
+                ),
+            )
+        ],
+        "2026-06-02",
+        alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "128000", "128,000 token context window"
+        ),
+    )
+
+    # Second run, a later day: the value changes, producing a real
+    # Change/ChangeSet for OPENAI_GPT4O.
+    first_run_result = run_daily(
+        store,
+        known_snapshot_ids,
+        [
+            BatchItem(
+                _item(TDR_ITEM_256K, "GPT-4o now supports a 256k token context window"),
+                _snapshot(
+                    TDR_SNAP_256K,
+                    TDR_ITEM_256K,
+                    "OpenAI announced GPT-4o's context window has increased to 256,000 tokens.",
+                    datetime(2026, 8, 20, tzinfo=UTC),
+                ),
+            )
+        ],
+        "2026-08-20",
+        alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "256000", "increased to 256,000 tokens"
+        ),
+    )
+    assert len(first_run_result.change_sets) == 1
+    first_change_set_id = first_run_result.change_sets[0].id
+
+    # Third run, yet another day: another change for the SAME subject
+    # must get a DIFFERENT change_set_id -- proving the allocator is
+    # freshly built per run_daily() call, not cached on FactStore.
+    second_run_result = run_daily(
+        store,
+        known_snapshot_ids,
+        [
+            BatchItem(
+                _item(TDR_ITEM_VALID_1, "GPT-4o context window update"),
+                _snapshot(
+                    TDR_SNAP_VALID_1,
+                    TDR_ITEM_VALID_1,
+                    "OpenAI's GPT-4o context window increased to 512,000 tokens.",
+                    datetime(2026, 9, 1, tzinfo=UTC),
+                ),
+            )
+        ],
+        "2026-09-01",
+        alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "512000", "increased to 512,000 tokens"
+        ),
+    )
+    assert len(second_run_result.change_sets) == 1
+    assert second_run_result.change_sets[0].id != first_change_set_id

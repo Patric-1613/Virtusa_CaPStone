@@ -3,6 +3,7 @@ every LLM call site — no network/API key needed. This exercises the
 wiring (state passing, conditional routing) on top of logic that's
 already covered by each node's own unit tests."""
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -15,8 +16,21 @@ from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem, Subject
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 
+TG_ITEM_LAUNCH = uuid.UUID("019e85d8-3680-7023-bb24-6d440e85eb11")
+TG_ITEM_256K = uuid.UUID("01a01cae-9a80-78a2-9a8a-c4d249e93d11")
+TG_ITEM_AMBIGUOUS = uuid.UUID("01a01788-3e80-76a1-9574-dc0d398c4c47")
+TG_ITEM_LECHAT = uuid.UUID("01a01cae-9e68-7622-a0fa-5c439040e356")
+TG_ITEM_UNKNOWN = uuid.UUID("01a01788-4268-73b0-81e3-7a871f8f99fb")
+TG_SNAP_LAUNCH = uuid.UUID("019e85d8-3e50-7571-8a64-e2d24fc1234e")
+TG_SNAP_256K = uuid.UUID("01a01cae-a250-7dd2-b02c-5fbb7b3d3f7f")
+TG_SNAP_AMB = uuid.UUID("01a01788-4650-72d3-8dbb-b65bf1c69df4")
+TG_SNAP_LECHAT = uuid.UUID("01a01cae-a638-7773-9890-d0fa83b3c72c")
+TG_SNAP_UNKNOWN = uuid.UUID("01a01788-4a38-7a81-8bc9-e52f5ba7a84d")
 
-def _item(item_id: str, title: str, canonical_url: str = "https://openai.com/a") -> SourceItem:
+
+def _item(
+    item_id: uuid.UUID, title: str, canonical_url: str = "https://openai.com/a"
+) -> SourceItem:
     return SourceItem(
         id=item_id,
         dedupe_key=f"sha256:{item_id}",
@@ -28,7 +42,9 @@ def _item(item_id: str, title: str, canonical_url: str = "https://openai.com/a")
     )
 
 
-def _snapshot(snap_id: str, item_id: str, text: str, fetched_at: datetime) -> DocumentSnapshot:
+def _snapshot(
+    snap_id: uuid.UUID, item_id: uuid.UUID, text: str, fetched_at: datetime
+) -> DocumentSnapshot:
     return DocumentSnapshot(
         id=snap_id,
         source_item_id=item_id,
@@ -58,15 +74,16 @@ def test_first_observation_produces_no_claims() -> None:
     store.register_subject(OPENAI_GPT4O)  # already tracked -- deterministic matching needs this
     graph = build_graph(
         store,
+        {},
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
     )
-    item = _item("item_launch", "Introducing GPT-4o")
+    item = _item(TG_ITEM_LAUNCH, "Introducing GPT-4o")
     snapshot = _snapshot(
-        "snap_launch",
-        "item_launch",
+        TG_SNAP_LAUNCH,
+        TG_ITEM_LAUNCH,
         "OpenAI is launching GPT-4o with a 128,000 token context window.",
         datetime(2026, 6, 2, tzinfo=UTC),
     )
@@ -82,17 +99,19 @@ def test_first_observation_produces_no_claims() -> None:
 def test_changed_value_flows_through_to_a_supported_claim() -> None:
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)  # already tracked -- deterministic matching needs this
+    change_set_ids: dict[Subject, uuid.UUID] = {}
     launch_graph = build_graph(
         store,
+        change_set_ids,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
     )
-    launch_item = _item("item_launch", "Introducing GPT-4o")
+    launch_item = _item(TG_ITEM_LAUNCH, "Introducing GPT-4o")
     launch_snapshot = _snapshot(
-        "snap_launch",
-        "item_launch",
+        TG_SNAP_LAUNCH,
+        TG_ITEM_LAUNCH,
         "OpenAI is launching GPT-4o with a 128,000 token context window.",
         datetime(2026, 6, 2, tzinfo=UTC),
     )
@@ -100,15 +119,16 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
 
     update_graph = build_graph(
         store,
+        change_set_ids,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens"
         ),
     )
-    update_item = _item("item_256k", "GPT-4o now supports a 256k token context window")
+    update_item = _item(TG_ITEM_256K, "GPT-4o now supports a 256k token context window")
     update_snapshot = _snapshot(
-        "snap_256k",
-        "item_256k",
+        TG_SNAP_256K,
+        TG_ITEM_256K,
         "OpenAI today announced GPT-4o's context window has been increased to 256,000 tokens.",
         datetime(2026, 8, 20, tzinfo=UTC),
     )
@@ -123,7 +143,7 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
     claim = result["claims"][0]
     assert "256000" in claim.text
     assert claim.validation_status == "supported"
-    assert set(claim.citation_snapshot_ids) == {"snap_launch", "snap_256k"}
+    assert set(claim.citation_snapshot_ids) == {TG_SNAP_LAUNCH, TG_SNAP_256K}
 
 
 def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
@@ -133,8 +153,10 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
     regardless of the actual extraction confidence."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)
+    change_set_ids: dict[Subject, uuid.UUID] = {}
     launch_graph = build_graph(
         store,
+        change_set_ids,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window", confidence=0.95
@@ -142,10 +164,10 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
     )
     launch_graph.invoke(
         {
-            "item": _item("item_launch", "Introducing GPT-4o"),
+            "item": _item(TG_ITEM_LAUNCH, "Introducing GPT-4o"),
             "snapshot": _snapshot(
-                "snap_launch",
-                "item_launch",
+                TG_SNAP_LAUNCH,
+                TG_ITEM_LAUNCH,
                 "OpenAI is launching GPT-4o with a 128,000 token context window.",
                 datetime(2026, 6, 2, tzinfo=UTC),
             ),
@@ -154,6 +176,7 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
 
     update_graph = build_graph(
         store,
+        change_set_ids,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens", confidence=0.72
@@ -161,10 +184,10 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
     )
     result = update_graph.invoke(
         {
-            "item": _item("item_256k", "GPT-4o now supports a 256k token context window"),
+            "item": _item(TG_ITEM_256K, "GPT-4o now supports a 256k token context window"),
             "snapshot": _snapshot(
-                "snap_256k",
-                "item_256k",
+                TG_SNAP_256K,
+                TG_ITEM_256K,
                 "OpenAI today announced GPT-4o's context window has been increased to 256,000 "
                 "tokens.",
                 datetime(2026, 8, 20, tzinfo=UTC),
@@ -193,13 +216,14 @@ def test_subject_is_registered_even_when_no_facts_are_accepted() -> None:
 
     graph = build_graph(
         store,
+        {},
         alias_table=alias_table,
         extract_call_fn=lambda system, prompt: FactExtractionResponse(facts=[]),
     )
-    item = _item("item_lechat", "Le Chat gets an update", canonical_url="https://mistral.ai/a")
+    item = _item(TG_ITEM_LECHAT, "Le Chat gets an update", canonical_url="https://mistral.ai/a")
     snapshot = _snapshot(
-        "snap_lechat",
-        "item_lechat",
+        TG_SNAP_LECHAT,
+        TG_ITEM_LECHAT,
         "Mistral's Le Chat received a minor update today.",
         datetime(2026, 8, 20, tzinfo=UTC),
     )
@@ -219,14 +243,15 @@ def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:
 
     graph = build_graph(
         store,
+        {},
         alias_table=[],
         resolve_llm_call_fn=resolve_fake,
         extract_call_fn=_extraction_fake("benchmark_scores", "71.2", "scored 71.2"),
     )
-    item = _item("item_ambiguous", "New model scores 71.2 on ReasonBench")
+    item = _item(TG_ITEM_AMBIGUOUS, "New model scores 71.2 on ReasonBench")
     snapshot = _snapshot(
-        "snap_amb",
-        "item_ambiguous",
+        TG_SNAP_AMB,
+        TG_ITEM_AMBIGUOUS,
         "The new model scored 71.2 on the ReasonBench suite.",
         datetime(2026, 8, 19, tzinfo=UTC),
     )
@@ -242,11 +267,11 @@ def test_unresolvable_item_ends_early_with_no_facts_or_claims() -> None:
     def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(confidence=0.9)  # no company/product proposed
 
-    graph = build_graph(store, alias_table=[], resolve_llm_call_fn=resolve_fake)
-    item = _item("item_unknown", "Completely unrelated headline")
+    graph = build_graph(store, {}, alias_table=[], resolve_llm_call_fn=resolve_fake)
+    item = _item(TG_ITEM_UNKNOWN, "Completely unrelated headline")
     snapshot = _snapshot(
-        "snap_unknown",
-        "item_unknown",
+        TG_SNAP_UNKNOWN,
+        TG_ITEM_UNKNOWN,
         "Nothing about a tracked subject here.",
         datetime(2026, 8, 19, tzinfo=UTC),
     )

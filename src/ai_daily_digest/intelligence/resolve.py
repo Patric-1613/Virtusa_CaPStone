@@ -13,6 +13,7 @@ phrase in the item text — not a loose substring check.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,7 +35,7 @@ class SubjectAlias:
 
 @dataclass
 class ResolutionResult:
-    item_id: str
+    item_id: uuid.UUID
     subject: Subject | None
     method: str  # "alias_match" | "no_match" | "ambiguous"
     confidence: float

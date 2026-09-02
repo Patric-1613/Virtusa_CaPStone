@@ -24,12 +24,14 @@ docs/LLM_AGENT_SPECS.md's "Not yet built" section.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from ai_daily_digest.intelligence.change_sets import get_or_create_change_set_id
 from ai_daily_digest.intelligence.draft_claims import draft_change_claim
 from ai_daily_digest.intelligence.extract_facts import FactExtractionResponse, extract_facts
 from ai_daily_digest.intelligence.facts import FactStore, change_snapshot_ids
@@ -63,6 +65,7 @@ class PipelineState(TypedDict, total=False):
 
 def build_graph(
     store: FactStore,
+    change_set_ids: dict[Subject, uuid.UUID],
     *,
     alias_table: list[SubjectAlias] | None = None,
     resolve_llm_call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
@@ -71,9 +74,15 @@ def build_graph(
     """store: the FactStore this pipeline reads from and writes to —
     shared across invocations so history accumulates run over run, the
     same way the real system will use one long-lived store (or, later,
-    the real database via StoreLoader). alias_table/*_call_fn are
-    injectable, primarily for tests — see tests/unit/test_graph.py for
-    running this without hitting the real Anthropic API.
+    the real database via StoreLoader). change_set_ids: the batch-scoped
+    ChangeSet-id allocator (ADR 0007's "Batch-scoped ChangeSet ID
+    allocation") -- unlike `store`, this must be a FRESH dict per
+    run_daily() call (daily_run.py's `_BatchAccumulator.change_set_ids`),
+    never reused across runs, since a change_set_id is only valid for one
+    batch. Closed over by the `compare` node below, the same way `store`
+    already is. alias_table/*_call_fn are injectable, primarily for tests
+    — see tests/unit/test_graph.py for running this without hitting the
+    real Anthropic API.
     """
     resolved_alias_table = alias_table if alias_table is not None else load_alias_table()
 
@@ -152,6 +161,11 @@ def build_graph(
                 fact,
                 source_url=str(state["item"].canonical_url),
                 observed_at=snapshot.fetched_at,
+                # Lazy -- only actually invoked by update_fact() if this
+                # fact turns into a real Change (ADR 0007). Late-binds
+                # `subject` via the closure, which is correct here since
+                # `subject` doesn't change again before this call resolves.
+                change_set_id_factory=lambda: get_or_create_change_set_id(change_set_ids, subject),
                 # Without this, update_fact()'s confidence=1.0 default
                 # silently applied to every real Change regardless of
                 # the actual extraction confidence -- fact.confidence is

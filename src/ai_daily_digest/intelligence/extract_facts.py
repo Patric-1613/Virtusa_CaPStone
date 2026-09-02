@@ -432,7 +432,13 @@ def extract_facts(
         user_template,
         subject_company=subject.company,
         subject_product=subject.product,
-        snapshot_id=snapshot.id,
+        # render()'s **values: str requires an actual str -- this is
+        # exactly the "external boundary" (an LLM prompt, sent outside
+        # this codebase) where a uuid.UUID value is deliberately
+        # converted to its canonical string form (ADR 0007's "convert
+        # only at an explicit external boundary" rule), not a scattered
+        # workaround.
+        snapshot_id=str(snapshot.id),
         comparable_fields=_format_fields(),
         snapshot_text=snapshot.content_text or "",
     )
