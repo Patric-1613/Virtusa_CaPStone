@@ -135,8 +135,13 @@ It must not contain:
 - subscriptions or email;
 - chat;
 - authentication;
+- CORS policy;
+- inbound rate limiting;
 - administrative routes; or
 - background-job controls.
+
+CORS and inbound rate limiting are deferred to separately scoped security or feature PRs after
+their configuration and public behavior are agreed.
 
 Dependency rules for that PR:
 
@@ -174,6 +179,16 @@ protocol:
 
 An unconfigured infrastructure dependency must not be represented by a fake successful check. The
 foundation's configuration and tests must make the meaning of ready explicit.
+
+The required-dependency set is explicit configuration. A foundation-only application may configure
+that set as empty; in that case, `GET /v1/health/ready` returns `200` because there are no required
+external dependencies to check. This result must not be implemented by installing fake successful
+probes for dependencies that have not been configured.
+
+Once a domain feature requires infrastructure, application startup or configuration validation
+must require a corresponding real readiness probe. Naming a dependency as required without
+providing its probe is a configuration error and must prevent normal startup; it must never be
+silently ignored so that readiness reports success.
 
 ### Request-ID policy
 
@@ -213,9 +228,17 @@ decision:
 | Malformed JSON or request-schema failure | `422` | `validation_error` |
 | Malformed UUID | `422` | `validation_error` |
 | UUID v4 where UUID v7 is required | `422` | `validation_error` |
+| Unknown or unmatched route | `404` | `not_found` |
+| Unsupported method for a matched route | `405` | `method_not_allowed` |
 | Missing resource | `404` | Endpoint-specific, for example `change_not_found` |
 | Readiness failure | `503` | `service_unavailable` |
 | Unexpected exception | `500` | `internal_error` |
+
+Framework-generated errors, including unknown-route `404` and unsupported-method `405` responses,
+must be intercepted and returned in the same `ErrorEnvelope`; the API must not expose FastAPI or
+Starlette's default `detail` response body. The handlers use the request's existing UUID v7 and
+preserve safe protocol headers required by the framework, including `Allow` on a `405` response.
+Endpoint handlers continue to use endpoint-specific codes for known resources that are not found.
 
 Invalid-cursor status and code are deliberately not decided here. ADR 0008 owns that contract; this
 ADR does not predefine `invalid_cursor`.
@@ -308,8 +331,8 @@ under `delivery/api/`, including error envelopes, health responses, request bodi
 parameters, presentation projections, and pagination envelopes after ADR 0008. Do not place
 HTTP-only types in `shared`.
 
-ADR 0009 is still proposed while this ADR is drafted. If its shared Enums are accepted and
-implemented, Delivery imports and reuses them; it must not redefine equivalent HTTP-local Enums.
+ADR 0009 is accepted on current `main`. Once its shared Enums are implemented, Delivery imports and
+reuses them; it must not redefine equivalent HTTP-local Enums.
 
 ### API metadata and compatibility
 
@@ -365,7 +388,8 @@ Recommended order:
 
 1. ADRs 0008, 0009, and 0010 may be reviewed and merged independently.
 2. The FastAPI health foundation may merge without waiting for Enum or pagination implementation.
-3. The Enum implementation rebases as necessary.
+3. The Enum implementation rebases onto current `main` as necessary and may merge independently
+   once its CI passes.
 4. Person A implements the cursor codec without changing `app.py`.
 5. Person C's first functional domain endpoint merges.
 6. Person A rebases and integrates the first paginated list endpoint.
@@ -385,8 +409,14 @@ The health-foundation PR records and passes tests proving:
 - repeated OpenAPI generation is deterministic;
 - operation IDs are explicit and unique;
 - liveness returns the documented typed response;
+- readiness returns `200` when the explicitly configured required-dependency set is empty;
 - readiness success and failure use injected fakes;
+- startup or configuration validation rejects a required dependency that has no real probe;
 - error responses validate against `ErrorEnvelope`;
+- an unknown path returns a `404` `ErrorEnvelope` with code `not_found`, not a default `detail`
+  body;
+- an unsupported method returns a `405` `ErrorEnvelope` with code `method_not_allowed` and
+  preserves the `Allow` header;
 - request-validation details contain no input, body, header, or Pydantic `ctx` values;
 - unexpected exceptions expose no secrets, exception strings, or tracebacks;
 - error responses and structured logs use the same request ID;
@@ -455,4 +485,4 @@ The work is split into narrowly reviewable PRs:
 - ADR 0006 — disclosure status and evidence semantics.
 - ADR 0007 — UUID v7 policy and future HTTP acceptance gates.
 - ADR 0008 — pagination policy (reserved; separate decision).
-- ADR 0009 — shared Enum policy (proposed separately while this ADR is drafted).
+- ADR 0009 — accepted shared Enum policy (decided separately).
