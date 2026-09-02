@@ -331,8 +331,9 @@ under `delivery/api/`, including error envelopes, health responses, request bodi
 parameters, presentation projections, and pagination envelopes after ADR 0008. Do not place
 HTTP-only types in `shared`.
 
-ADR 0009 is accepted on current `main`. Once its shared Enums are implemented, Delivery imports and
-reuses them; it must not redefine equivalent HTTP-local Enums.
+ADR 0009 is merged on current `main` with `Status: Proposed`. Delivery imports and reuses its
+shared Enums only after ADR 0009 is formally accepted and its implementation is merged; Delivery
+must not redefine equivalent HTTP-local Enums.
 
 ### API metadata and compatibility
 
@@ -485,4 +486,4 @@ The work is split into narrowly reviewable PRs:
 - ADR 0006 — disclosure status and evidence semantics.
 - ADR 0007 — UUID v7 policy and future HTTP acceptance gates.
 - ADR 0008 — pagination policy (reserved; separate decision).
-- ADR 0009 — accepted shared Enum policy (decided separately).
+- ADR 0009 — shared Enum policy (merged with `Status: Proposed`; decided separately).
