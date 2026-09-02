@@ -1,7 +1,7 @@
 [
   {
-    "id": "g1000000-0000-4000-8000-000000000001",
-    "snapshot_id": "b1000000-0000-4000-8000-000000000001",
+    "id": "01a01e6b-8cc0-7b23-bf15-1f0b3c46d2df",
+    "snapshot_id": "01a01e6a-a260-79e3-9a2b-1e4e705d3108",
     "field": "context_window_tokens",
     "value": "256000",
     "disclosure_status": "disclosed",
@@ -12,8 +12,8 @@
     "confidence": 0.97
   },
   {
-    "id": "g1000000-0000-4000-8000-000000000002",
-    "snapshot_id": "b1000000-0000-4000-8000-000000000002",
+    "id": "01a01ef9-74e0-7fb0-a8b8-325f1711febf",
+    "snapshot_id": "01a01ef8-8a80-7d72-8af5-02cbdf0784f9",
     "field": "context_window_tokens",
     "value": "256000",
     "disclosure_status": "disclosed",
@@ -24,8 +24,8 @@
     "confidence": 0.95
   },
   {
-    "id": "g1000000-0000-4000-8000-000000000003",
-    "snapshot_id": "b1000000-0000-4000-8000-000000000003",
+    "id": "019e8799-bca0-7273-abff-88ba0d62554b",
+    "snapshot_id": "019e8798-d240-7551-8296-37bdd4a08abc",
     "field": "context_window_tokens",
     "value": "128000",
     "disclosure_status": "disclosed",
@@ -36,8 +36,8 @@
     "confidence": 0.98
   },
   {
-    "id": "g1000000-0000-4000-8000-000000000004",
-    "snapshot_id": "b1000000-0000-4000-8000-000000000004",
+    "id": "01a01a5c-6d20-7690-9e50-31d02ef54f5c",
+    "snapshot_id": "01a01a5b-82c0-7163-b557-1246abccd49d",
     "field": "benchmark_scores",
     "value": "71.2",
     "disclosure_status": "disclosed",
@@ -48,8 +48,8 @@
     "confidence": 0.93
   },
   {
-    "id": "g1000000-0000-4000-8000-000000000005",
-    "snapshot_id": "b1000000-0000-4000-8000-000000000004",
+    "id": "01a01a5c-e250-7eb2-9678-0ab355a02425",
+    "snapshot_id": "01a01a5b-82c0-7163-b557-1246abccd49d",
     "field": "context_window_tokens",
     "value": null,
     "disclosure_status": "not_disclosed",

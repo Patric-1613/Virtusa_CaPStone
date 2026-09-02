@@ -42,7 +42,7 @@ from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.llm import SONNET, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS, COMPARISON_RULES, field_label
-from ai_daily_digest.shared.ids import new_id
+from ai_daily_digest.shared.ids import Uuid7Id, new_id
 from ai_daily_digest.shared.schemas import DigestClaim, Subject
 
 logger = logging.getLogger("intelligence.compare_subjects")
@@ -75,7 +75,7 @@ class FactRow(BaseModel):
     field: str
     value: str | None = None
     disclosure_status: Literal["disclosed", "not_disclosed", "unknown"] = "unknown"
-    snapshot_id: str | None = None
+    snapshot_id: Uuid7Id | None = None
 
     @model_validator(mode="after")
     def _require_consistent_disclosure_state(self) -> FactRow:

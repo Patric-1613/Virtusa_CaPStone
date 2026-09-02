@@ -7,6 +7,25 @@ schema-valid to run against. It is **not** what `docs/TEAM_WORKFLOW.md`'s
 "Day-one agreement" item 5 and `docs/ARCHITECTURE.md`'s Milestone 0
 actually require:
 
+## UUID v7 identifier convention (docs/adr/0007-uuid-v7-identifier-strategy.md)
+
+Every id/foreign-key value in this pack is a real, frozen RFC 9562 UUID v7
+value — generated once, offline, via the actual approved generator
+(`uuid_utils.compat.uuid7(timestamp=<int epoch seconds>)`, the same
+function `shared/ids.py::new_id()` calls in production), each with an
+explicit timestamp plausibly matching that record's own narrative date
+(e.g. a source item's id embeds a time close to its `first_fetched_at`).
+Every value was self-validated (parsed, `.version == 7`, correct RFC 9562
+variant bits) before being written in. This is deliberately **not** the
+old memorable `a1000000-0000-4000-8000-...`-style placeholders with only
+the version nibble flipped — those would freeze in values the real
+generator never produced. Every cross-reference relationship the old
+placeholders encoded (a source item's `latest_snapshot_id` equal to its
+snapshot's `id`, a `Change`'s citations equal to real snapshot ids, etc.)
+is preserved exactly, just with authentic values. These IDs are frozen
+literals — never regenerated at test-run time — so the pack stays fully
+deterministic.
+
 > A committed, schema-validated fixture pack in `tests/fixtures/contracts/`:
 > at least twenty `SourceItem` records with snapshots, two change sets,
 > and two digests. It must include duplicate, changed-content,

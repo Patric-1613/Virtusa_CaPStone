@@ -52,6 +52,8 @@ accepted cost of not trusting unverifiable citations, not a bug.
 
 from __future__ import annotations
 
+import uuid
+
 from ai_daily_digest.intelligence.grounding import numbers_in
 from ai_daily_digest.shared.schemas import Digest, DigestClaim
 from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
@@ -86,7 +88,7 @@ def _claim_numbers_are_grounded(claim: DigestClaim, snapshot_resolver: SnapshotR
 
 def validate_claim(
     claim: DigestClaim,
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     *,
     snapshot_resolver: SnapshotResolver | None = None,
 ) -> DigestClaim:
@@ -107,7 +109,7 @@ def validate_claim(
 
 def validate_digest(
     digest: Digest,
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     *,
     snapshot_resolver: SnapshotResolver,
 ) -> Digest:
@@ -130,7 +132,7 @@ def validate_digest(
 
 def publish_digest(
     digest: Digest,
-    known_snapshot_ids: set[str],
+    known_snapshot_ids: set[uuid.UUID],
     *,
     snapshot_resolver: SnapshotResolver,
 ) -> Digest:

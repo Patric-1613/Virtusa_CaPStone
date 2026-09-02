@@ -2,12 +2,14 @@
 opposed to tests/contract/, which protects the fixture pack, this is
 about the Python model definitions themselves."""
 
+import uuid
 from collections.abc import Callable
 
 import pytest
 from pydantic import ValidationError
 
 from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
+from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1, SNAPSHOT_1
 
 SUBJECT = Subject(company="OpenAI", product="GPT-4o")
 
@@ -16,8 +18,8 @@ _Builder = Callable[[float], ExtractedFact | Change]
 
 def _extracted_fact(confidence: float) -> ExtractedFact:
     return ExtractedFact(
-        id="f1",
-        snapshot_id="snap_1",
+        id=FACT_1,
+        snapshot_id=SNAPSHOT_1,
         field="context_window_tokens",
         value="256000",
         extraction_method="llm_structured_output",
@@ -28,8 +30,8 @@ def _extracted_fact(confidence: float) -> ExtractedFact:
 
 def _change(confidence: float) -> Change:
     return Change(
-        id="c1",
-        change_set_id="cs1",
+        id=CHANGE_1,
+        change_set_id=CHANGE_SET_1,
         subject=SUBJECT,
         field="context_window_tokens",
         change_type="changed",
@@ -73,8 +75,8 @@ def test_confidence_accepts_valid_range(build: _Builder) -> None:
 def test_llm_extracted_fact_without_quoted_span_is_rejected() -> None:
     with pytest.raises(ValidationError, match="quoted_span"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value="256000",
             extraction_method="llm_structured_output",
@@ -85,8 +87,8 @@ def test_llm_extracted_fact_without_quoted_span_is_rejected() -> None:
 def test_llm_extracted_fact_without_confidence_is_rejected() -> None:
     with pytest.raises(ValidationError, match="confidence"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value="256000",
             extraction_method="llm_structured_output",
@@ -99,8 +101,8 @@ def test_deterministic_fact_without_evidence_is_still_allowed() -> None:
     only -- deterministic facts don't always have a natural quote to
     attach (see ExtractedFact's own docstring), and must stay unaffected."""
     fact = ExtractedFact(
-        id="f1",
-        snapshot_id="snap_1",
+        id=FACT_1,
+        snapshot_id=SNAPSHOT_1,
         field="context_window_tokens",
         value="256000",
         extraction_method="deterministic",
@@ -115,8 +117,8 @@ def test_deterministic_fact_without_evidence_is_still_allowed() -> None:
 
 def test_not_disclosed_fact_with_grounded_evidence_is_accepted() -> None:
     fact = ExtractedFact(
-        id="f1",
-        snapshot_id="snap_1",
+        id=FACT_1,
+        snapshot_id=SNAPSHOT_1,
         field="input_price_usd",
         value=None,
         disclosure_status="not_disclosed",
@@ -135,8 +137,8 @@ def test_not_disclosed_fact_with_a_value_is_rejected() -> None:
     given -- the exact contradiction this ADR calls out."""
     with pytest.raises(ValidationError, match="not_disclosed"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="input_price_usd",
             value="5",
             disclosure_status="not_disclosed",
@@ -155,8 +157,8 @@ def test_not_disclosed_fact_without_quoted_span_is_rejected() -> None:
     requirement above)."""
     with pytest.raises(ValidationError, match="quoted_span"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="input_price_usd",
             value=None,
             disclosure_status="not_disclosed",
@@ -167,8 +169,8 @@ def test_not_disclosed_fact_without_quoted_span_is_rejected() -> None:
 def test_not_disclosed_fact_with_empty_quoted_span_is_rejected() -> None:
     with pytest.raises(ValidationError, match="quoted_span"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="input_price_usd",
             value=None,
             disclosure_status="not_disclosed",
@@ -183,8 +185,8 @@ def test_disclosed_fact_with_explicit_none_value_is_rejected() -> None:
     be disclosed while stating nothing."""
     with pytest.raises(ValidationError, match="disclosed"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value=None,
             extraction_method="deterministic",
@@ -194,8 +196,8 @@ def test_disclosed_fact_with_explicit_none_value_is_rejected() -> None:
 def test_disclosed_fact_with_empty_string_value_is_rejected() -> None:
     with pytest.raises(ValidationError, match="disclosed"):
         ExtractedFact(
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value="",
             extraction_method="deterministic",
@@ -207,8 +209,8 @@ def test_disclosed_fact_with_a_real_value_is_accepted() -> None:
     (the default) -- the positive case the two rejections above are the
     negative side of."""
     fact = ExtractedFact(
-        id="f1",
-        snapshot_id="snap_1",
+        id=FACT_1,
+        snapshot_id=SNAPSHOT_1,
         field="context_window_tokens",
         value="256000",
         extraction_method="deterministic",
@@ -227,8 +229,8 @@ def test_disclosed_fact_with_a_real_value_is_accepted() -> None:
 def test_extracted_fact_omitting_value_entirely_is_rejected_when_disclosed() -> None:
     with pytest.raises(ValidationError):
         ExtractedFact(  # type: ignore[call-arg]
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             extraction_method="deterministic",
         )
@@ -237,10 +239,59 @@ def test_extracted_fact_omitting_value_entirely_is_rejected_when_disclosed() -> 
 def test_extracted_fact_omitting_value_entirely_is_rejected_when_not_disclosed() -> None:
     with pytest.raises(ValidationError):
         ExtractedFact(  # type: ignore[call-arg]
-            id="f1",
-            snapshot_id="snap_1",
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             disclosure_status="not_disclosed",
             extraction_method="deterministic",
             quoted_span="pricing has not been announced",
         )
+
+
+# --- ADR 0007: id-shaped fields are typed `Uuid7Id` (a re-export of
+# pydantic.UUID7). A well-formed UUID of the wrong version must be
+# rejected specifically for its version, which is a different failure
+# than a malformed string that cannot be parsed at all. ---
+
+
+@pytest.mark.parametrize("as_string", [False, True], ids=["uuid_object", "uuid_string"])
+def test_uuid_v4_is_rejected_by_a_uuid7_typed_field_for_its_version(as_string: bool) -> None:
+    """A syntactically valid UUID v4 -- passed either as a `uuid.UUID`
+    object or its canonical string -- does not satisfy a `Uuid7Id`-typed
+    field. The rejection is specifically a version mismatch
+    (`uuid_version`), not a parse failure (`uuid_parsing`): the version
+    constraint is what does the work here, not incidental syntax
+    strictness."""
+    v4 = uuid.UUID("4e2b4d9a-0c1f-4b6e-9d3a-1f2e3c4d5b6a")
+    assert v4.version == 4  # guard: the fixture really is a v4
+
+    with pytest.raises(ValidationError) as exc_info:
+        ExtractedFact(
+            id=FACT_1,
+            snapshot_id=(str(v4) if as_string else v4),  # type: ignore[arg-type]
+            field="context_window_tokens",
+            value="256000",
+            extraction_method="deterministic",
+        )
+
+    error_types = {error["type"] for error in exc_info.value.errors()}
+    assert error_types == {"uuid_version"}
+    assert "uuid_parsing" not in error_types
+
+
+def test_malformed_uuid_is_rejected_by_a_uuid7_typed_field_as_a_parse_failure() -> None:
+    """Contrast case for the test above: a genuinely malformed value fails
+    with `uuid_parsing`, never reaching the version check -- so the two
+    rejection reasons stay distinguishable."""
+    with pytest.raises(ValidationError) as exc_info:
+        ExtractedFact(
+            id=FACT_1,
+            snapshot_id="not-a-uuid",  # type: ignore[arg-type]
+            field="context_window_tokens",
+            value="256000",
+            extraction_method="deterministic",
+        )
+
+    error_types = {error["type"] for error in exc_info.value.errors()}
+    assert error_types == {"uuid_parsing"}
+    assert "uuid_version" not in error_types

@@ -13,12 +13,13 @@ from ai_daily_digest.intelligence.extract_facts import (
     extract_facts,
 )
 from ai_daily_digest.shared.schemas import DocumentSnapshot, Subject
+from tests.uuid_samples import ITEM_1, SNAPSHOT_1
 
 
 def _snapshot(text: str) -> DocumentSnapshot:
     return DocumentSnapshot(
-        id="snap_1",
-        source_item_id="item_1",
+        id=SNAPSHOT_1,
+        source_item_id=ITEM_1,
         fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
         content_hash="sha256:x",
         content_text=text,

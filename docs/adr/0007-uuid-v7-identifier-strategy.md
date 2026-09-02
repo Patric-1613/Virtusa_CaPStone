@@ -473,6 +473,16 @@ This section is part of the durable record, not just PR narration:
 7. Merge only after required CI checks (`quality`, `tests`, `security`) and both fresh approvals are
    green — not on Person C's comment alone, and not on CI alone.
 
+## Implementation notes
+
+- **`Uuid7Id` alias spelling.** The Python 3.12 implementation defines the central alias as
+  `type Uuid7Id = UUID7` (PEP 695 `type` statement) in `shared/ids.py`, not the
+  `Uuid7Id: TypeAlias = pydantic.UUID7` spelling written in the Decision section above. The two are
+  equivalent — both bind `Uuid7Id` to `pydantic.UUID7` (`Annotated[uuid.UUID, UuidVersion(7)]`)
+  with no change to the runtime validator or to this ADR's decision. The PEP 695 form is used
+  because this repository's Ruff configuration selects rule `UP040`, which rejects the
+  `TypeAlias`-annotation spelling on Python ≥3.12; `make check` cannot pass with the older form.
+
 ## References
 
 - [RFC 9562 — Universally Unique IDentifiers (UUIDs)](https://datatracker.ietf.org/doc/rfc9562/)

@@ -26,6 +26,7 @@ a resolver.
 
 from __future__ import annotations
 
+import uuid
 from typing import Protocol
 
 from ai_daily_digest.shared.schemas import DocumentSnapshot
@@ -39,7 +40,7 @@ class SnapshotResolver(Protocol):
     outside the current batch) -- validate.py treats that as "can't
     verify", not "verified absent"."""
 
-    def get_content(self, snapshot_id: str) -> DocumentSnapshot | None: ...
+    def get_content(self, snapshot_id: uuid.UUID) -> DocumentSnapshot | None: ...
 
 
 class InMemorySnapshotResolver:
@@ -53,10 +54,10 @@ class InMemorySnapshotResolver:
     daily_run.py grows the resolver across a batch, one item at a time.
     """
 
-    def __init__(self, snapshots_by_id: dict[str, DocumentSnapshot] | None = None) -> None:
-        self._snapshots_by_id: dict[str, DocumentSnapshot] = dict(snapshots_by_id or {})
+    def __init__(self, snapshots_by_id: dict[uuid.UUID, DocumentSnapshot] | None = None) -> None:
+        self._snapshots_by_id: dict[uuid.UUID, DocumentSnapshot] = dict(snapshots_by_id or {})
 
-    def get_content(self, snapshot_id: str) -> DocumentSnapshot | None:
+    def get_content(self, snapshot_id: uuid.UUID) -> DocumentSnapshot | None:
         return self._snapshots_by_id.get(snapshot_id)
 
     def add(self, snapshot: DocumentSnapshot) -> None:

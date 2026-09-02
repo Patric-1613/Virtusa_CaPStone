@@ -20,12 +20,29 @@ dependencies = [
   #   compare/generate (see intelligence/CLAUDE.md's model-choice table).
   # langgraph: ADR-listed technology baseline (docs/ARCHITECTURE.md,
   #   still Proposed) for the intelligence workflow's explicit state/nodes.
-  # NOTE: uv.lock was NOT regenerated for these -- uv isn't installed on
-  # this machine. Whoever picks this up needs to run `uv lock` before
-  # `uv sync --locked` will succeed. Flag this in the PR.
-  "pydantic>=2.6",
+  # uv.lock has been regenerated for these additions and `uv sync --locked`
+  # succeeds on Python 3.12 (verified with `--no-editable`, matching CI's
+  # non-editable install).
+  # pydantic>=2.11: shared/schemas.py's Uuid7Id alias re-exports
+  #   pydantic.UUID7, which ships starting in 2.11.0 (pydantic/pydantic#11436) --
+  #   the plain pydantic>=2 floor this used to declare doesn't actually
+  #   guarantee that type exists (docs/adr/0007-uuid-v7-identifier-strategy.md).
+  # uuid-utils: shared/ids.py's UUID v7 generator. Python 3.12 has no
+  #   standard-library UUID v7 generator (added in 3.14) -- ADR 0007
+  #   evaluated uuid-utils, uuid6, and uuid-backport and selected
+  #   uuid-utils (RFC 9562-targeting, actively maintained, BSD-3-Clause,
+  #   zero further runtime deps). uuid-utils was already present in this
+  #   project's dependency tree transitively (via langgraph -> langchain-core
+  #   -> langsmith), but transitive presence is not a declared dependency:
+  #   it can disappear on any future langgraph/langchain-core upgrade with
+  #   no warning, and this project's own UUID generation correctness must
+  #   not depend on an unrelated package's unrelated needs. Declaring it
+  #   directly is what makes it Dependabot/security-tracked for this
+  #   project specifically, per AGENTS.md's dependency rule.
+  "pydantic>=2.11",
   "anthropic>=0.40",
   "langgraph>=0.2",
+  "uuid-utils>=0.17",
 ]
 
 [dependency-groups]

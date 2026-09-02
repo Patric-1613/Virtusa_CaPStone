@@ -1,23 +1,23 @@
 [
   {
-    "id": "e1000000-0000-4000-8000-000000000001",
+    "id": "01a02054-7100-7b00-95b6-3de3c6554a8d",
     "digest_date": "2026-08-20",
     "status": "published",
     "title": "AI Daily Digest — 20 August 2026",
     "claims": [
       {
-        "id": "f1000000-0000-4000-8000-000000000001",
+        "id": "01a02054-7100-7201-b0db-1840b091df02",
         "text": "OpenAI's GPT-4o now supports a 256,000-token context window, up from 128,000.",
         "citation_snapshot_ids": [
-          "b1000000-0000-4000-8000-000000000001",
-          "b1000000-0000-4000-8000-000000000003"
+          "01a01e6a-a260-79e3-9a2b-1e4e705d3108",
+          "019e8798-d240-7551-8296-37bdd4a08abc"
         ],
         "validation_status": "supported"
       },
       {
-        "id": "f1000000-0000-4000-8000-000000000002",
+        "id": "01a02054-74e8-73d3-8912-aff93b0bd0ae",
         "text": "Anthropic's Claude has not disclosed its context window in this update, so it cannot be compared to GPT-4o's on that dimension.",
-        "citation_snapshot_ids": ["b1000000-0000-4000-8000-000000000004"],
+        "citation_snapshot_ids": ["01a01a5b-82c0-7163-b557-1246abccd49d"],
         "validation_status": "supported"
       }
     ]
