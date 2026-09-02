@@ -29,6 +29,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractedFact,
     FactObservation,
     Subject,
+    validate_change_shape,
 )
 
 # Compiled once at import time rather than inside normalise_name(): this
@@ -236,15 +237,18 @@ class FactStore:
         allocation"): called exactly once, and only on the single path
         that returns a real Change -- after every value that could fail
         validation (both FactObservations, so a bad source_url; the
-        confidence bound) has already been checked, and before the store
-        is advanced. A first observation, an unchanged value, or a
-        validation failure on either of those inputs all return None (or
-        raise) without calling it and without touching record.current or
-        history, so no UUID is spent -- and no partial write is left
-        behind -- for an observation that never becomes a Change. An ADR
-        0006 disclosure-status transition DOES call it: since this
-        method's own guard was removed, a transition is a real, reportable
-        Change too (see below), not a case that skips id allocation.
+        confidence bound; and the resolved change_type's own observation-
+        shape invariant, validate_change_shape() in shared/schemas.py --
+        see the inline comment just above where it's called) has already
+        been checked, and before the store is advanced. A first
+        observation, an unchanged value, or a validation failure on any
+        of those inputs all return None (or raise) without calling it and
+        without touching record.current or history, so no UUID is spent
+        -- and no partial write is left behind -- for an observation that
+        never becomes a Change. An ADR 0006 disclosure-status transition
+        DOES call it: since this method's own guard was removed, a
+        transition is a real, reportable Change too (see below), not a
+        case that skips id allocation.
         Callers pass a
         batch-scoped get-or-create closure (change_sets.py::
         get_or_create_change_set_id, closed over graph.py's per-run
@@ -303,12 +307,13 @@ class FactStore:
             source_url=record.current_source_url,  # type: ignore[arg-type]
         )
 
-        # Everything that can fail validation -- the confidence bound and
-        # the `current` FactObservation's source_url -- is checked HERE,
-        # before new_id() and change_set_id_factory() run and before the
-        # store is touched, so a rejected input spends no UUID and leaves
-        # record.current and history exactly as they were (ADR 0007's
-        # failed-processing rule).
+        # Everything that can fail validation -- the confidence bound,
+        # the `current` FactObservation's source_url, and (below) the
+        # resolved change_type's own observation-shape invariant -- is
+        # checked HERE, before new_id() and change_set_id_factory() run
+        # and before the store is touched, so a rejected input spends no
+        # UUID and leaves record.current and history exactly as they were
+        # (ADR 0007's failed-processing rule).
         _CONFIDENCE_ADAPTER.validate_python(confidence)
         current_observation = FactObservation(
             value=fact.value,
@@ -321,6 +326,17 @@ class FactStore:
             if change_type is not None
             else _infer_change_type(previous.value, fact.value)
         )
+        # An explicit change_type override (the only way resolved_change_type
+        # can disagree with what the two observations actually look like --
+        # _infer_change_type's own output always matches by construction)
+        # must be checked BEFORE new_id()/change_set_id_factory() below: both
+        # are evaluated as call arguments to Change(...), i.e. BEFORE
+        # Change's own validator would ever get a chance to reject the same
+        # inconsistency, which would otherwise spend a real UUID and a real
+        # change_set_id on a Change that never gets returned. Same rule
+        # Change._require_valid_change_shape enforces at construction --
+        # see validate_change_shape's own docstring, shared/schemas.py.
+        validate_change_shape(resolved_change_type, previous_observation, current_observation)
         change = Change(
             id=new_id(),
             change_set_id=change_set_id_factory(),

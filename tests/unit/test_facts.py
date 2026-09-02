@@ -833,3 +833,92 @@ def test_real_change_with_invalid_confidence_spends_no_id_and_leaves_store_uncha
     assert current.value == "128000"
     assert current.snapshot_id == TF_SNAP_1
     assert store.field_history(subject, "context_window_tokens") == []
+
+
+# --- An explicit change_type override is the one input update_fact()
+# itself can make internally inconsistent with the two observations it
+# builds (_infer_change_type's own output always matches by
+# construction) -- validate_change_shape() must catch that BEFORE
+# new_id()/change_set_id_factory() run, the same way a bad confidence or
+# source_url already does above. ---
+
+
+def _seed_price_value(store: FactStore, subject: Subject) -> None:
+    store.update_fact(
+        subject,
+        _fact("input_price_usd", "5", TF_SNAP_1, FACT_1),
+        source_url="https://openai.com/news/pricing",
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+    )
+
+
+def test_inconsistent_change_type_override_to_not_a_disclosure_shape_spends_no_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real value -> None (a genuine not_disclosed transition) but with
+    an inconsistent explicit override of change_type="changed": "changed"
+    requires a real value on both sides, so this must be rejected before
+    any id is spent, leaving the store exactly as update_fact() found it."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    _seed_price_value(store, subject)
+
+    new_id_spy = Mock()
+    monkeypatch.setattr("ai_daily_digest.intelligence.facts.new_id", new_id_spy)
+    factory = _factory()
+
+    with pytest.raises(ValueError, match="requires current observation with non-null value"):
+        store.update_fact(
+            subject,
+            _not_disclosed_fact("input_price_usd", TF_SNAP_2, TF_FACT_2),
+            source_url=None,
+            observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+            change_type="changed",
+            change_set_id_factory=factory,
+        )
+
+    factory.assert_not_called()
+    new_id_spy.assert_not_called()
+
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.value == "5"
+    assert current.snapshot_id == TF_SNAP_1
+    assert store.field_history(subject, "input_price_usd") == []
+
+
+def test_inconsistent_change_type_override_to_a_disclosure_shape_spends_no_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real value -> a different real value (a genuine numeric change)
+    but with an inconsistent explicit override of change_type="disclosed":
+    "disclosed" requires previous.value=None when previous is present, so
+    this must be rejected before any id is spent, leaving the store
+    exactly as update_fact() found it."""
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    _seed_price_value(store, subject)
+
+    new_id_spy = Mock()
+    monkeypatch.setattr("ai_daily_digest.intelligence.facts.new_id", new_id_spy)
+    factory = _factory()
+
+    with pytest.raises(ValueError, match=r"requires previous\.value=None"):
+        store.update_fact(
+            subject,
+            _fact("input_price_usd", "10", TF_SNAP_2, TF_FACT_2),
+            source_url=None,
+            observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+            change_type="disclosed",
+            change_set_id_factory=factory,
+        )
+
+    factory.assert_not_called()
+    new_id_spy.assert_not_called()
+
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.value == "5"
+    assert current.snapshot_id == TF_SNAP_1
+    assert store.field_history(subject, "input_price_usd") == []
