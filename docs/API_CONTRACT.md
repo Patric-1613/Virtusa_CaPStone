@@ -15,9 +15,9 @@ Draft v0.1 for agreement by all three module owners. Once implementation begins,
   must not construct or sort by them, and must not decode or rely on the approximate timestamp a
   v7 value embeds.
 - Deterministic URL/content hashes are deduplication keys, never public resource IDs.
-- Pagination: cursor-based with `next_cursor`. Business ordering always uses the resource's
-  explicit timestamp field; a UUID is never business chronology, only an opaque secondary
-  tie-breaker where one is needed.
+- Pagination: keyset (cursor) pagination with an opaque `next_cursor`. Business ordering always
+  uses the resource's explicit timestamp field; a UUID is never business chronology, only an
+  opaque secondary tie-breaker where one is needed. See the [Pagination](#pagination) section.
 - Errors use one envelope and a stable machine-readable code.
 - Public responses never contain raw prompts, credentials, internal stack traces, or subscriber addresses.
 
@@ -33,6 +33,121 @@ Draft v0.1 for agreement by all three module owners. Once implementation begins,
   }
 }
 ```
+
+## Pagination
+
+List endpoints (`/v1/updates`, `/v1/changes`, `/v1/digests`) use **keyset (seek) pagination** —
+see [ADR 0008](adr/0008-cursor-pagination-contract.md). Offset, page numbers, backward cursors,
+and total counts are not part of Phase 1.
+
+### Response envelope
+
+Every paginated response body has exactly these two keys:
+
+```json
+{
+  "items": [],
+  "next_cursor": null
+}
+```
+
+- `items` is always a JSON array.
+- `next_cursor` is always present: an opaque string when another page exists, `null` on the
+  final page and on an empty result.
+- No `total`, `total_count`, `page`, `has_more`, or `prev_cursor` field is ever added.
+
+### Page size
+
+- `limit` query parameter: default `20`, minimum `1`, maximum `100`.
+- A supplied `limit` that is non-integer, below `1`, above `100`, or empty (`?limit=`) is
+  rejected with HTTP 422 and the standard error envelope.
+- `limit` may change between requests in the same traversal. It is never encoded in, or bound
+  by, the cursor.
+
+### Ordering
+
+Results are newest-first, ordered by `(business_sort_value DESC, id DESC)`. The record's UUID is
+an opaque secondary tie-breaker only; its embedded timestamp is never decoded and its sort
+position among rows sharing a business value carries no meaning ([ADR 0007](adr/0007-uuid-v7-identifier-strategy.md)).
+
+| Endpoint | Ordering tuple | Sort identifier |
+|---|---|---|
+| `GET /v1/updates` | `(first_fetched_at DESC, id DESC)` | `first_fetched_at:desc,id:desc` |
+| `GET /v1/changes` | `(detected_at DESC, id DESC)` | `detected_at:desc,id:desc` |
+| `GET /v1/digests` | `(digest_date DESC, id DESC)` | `digest_date:desc,id:desc` |
+
+The continuation predicate for the descending scan is the tuple comparison
+`(sort_value, id) < (last_sort_value, last_id)`, applied after all filters. Clients never parse,
+construct, or sort by IDs.
+
+### Cursor
+
+The cursor is an **opaque, authenticated, versioned token** — clients treat it as a blob and
+only ever echo it back verbatim. It is:
+
+- canonical UTF-8 JSON (sorted keys, compact separators), URL-safe base64 without padding, in
+  two `.`-separated segments (payload and signature);
+- signed with **HMAC-SHA256** using a server-side key; it is authenticated, not encrypted, and
+  carries no secret or subscriber data;
+- at most 512 characters;
+- bound to the endpoint (`resource`), the sort identifier, and a SHA-256 fingerprint of the
+  request's canonical filters;
+- carrying only the last returned row's sort value and its UUID v7 — never `limit`.
+
+Rotating the server key invalidates every outstanding cursor; clients then restart from the
+first page (a request with no `cursor`). There is no cursor expiry in Phase 1.
+
+### Filter and sort binding
+
+Filters are canonicalized once, at the HTTP boundary, into a single typed representation used
+for both the cursor fingerprint and the repository query, so the two can never disagree:
+
+- surrounding whitespace is trimmed; string values are Unicode NFC-normalized; **case is
+  significant**;
+- timezone-aware timestamps are normalized to UTC with microsecond precision; timezone-naive
+  timestamps are rejected (HTTP 422);
+- calendar dates are `YYYY-MM-DD`;
+- an absent filter is distinct from an explicitly supplied `null`;
+- hidden constraints (for example, `/v1/digests` returns published digests only) are part of
+  the fingerprint and the query;
+- `cursor` and `limit` are excluded from the fingerprint.
+
+Range filters are half-open intervals `[from, to)` — `from` inclusive, `to` exclusive. When
+both bounds are supplied, `from` must be strictly earlier than `to`; equal or reversed bounds
+are rejected with HTTP 422.
+
+Changing any bound filter (or the sort, hidden constraint, or cursor version) while presenting
+an existing cursor is rejected as an invalid cursor; pagination is never silently restarted.
+
+### Invalid cursor
+
+Any supplied-but-unusable cursor — malformed, bad base64 or signature, bad JSON, unknown or
+missing field, unsupported version, wrong endpoint/sort/filter binding, malformed or non-v7
+UUID, unparseable sort value, or over length — returns:
+
+- HTTP 400;
+- error `code` `invalid_cursor`;
+- message `"The pagination cursor is invalid for this request."`.
+
+The response never reveals which check failed, and the cursor, signature, decoded payload, and
+signing key are never logged. An absent `cursor` parameter simply requests the first page.
+
+### Terminal-page behaviour
+
+The server reads `limit + 1` rows, returns at most `limit`, and builds `next_cursor` from the
+**last returned** row only when a further row exists; otherwise `next_cursor` is `null`. An
+empty result and a request past the final item both return `{"items": [], "next_cursor": null}`.
+
+### Concurrency
+
+A traversal is **not** a transactionally frozen snapshot across requests. For a record that
+stays present, stays in the filtered result set, and keeps immutable ordering values, keyset
+pagination returns it exactly once — no duplicate, no skip. Outside that scope a later page can
+differ: a deleted record disappears, and a record whose membership-affecting field changes (or
+a digest moving from draft to published) can enter or leave a later page. Restarting the
+traversal only resumes from the current first page; a genuinely frozen view would need a future
+`as_of` boundary. Sort keys (`first_fetched_at`, `detected_at`, `digest_date`) and every `id`
+are immutable by contract.
 
 ## Core endpoints
 
