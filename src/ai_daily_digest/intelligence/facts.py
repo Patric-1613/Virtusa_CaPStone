@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import TypeAdapter
 
@@ -81,9 +82,9 @@ def _values_are_equivalent(previous_value: str | None, current_value: str | None
     ExtractedFact's own docstring, shared/schemas.py). Two not_disclosed
     observations in a row are equivalent (nothing changed); a disclosed
     value on one side and None on the other are never equivalent -- that
-    IS a real disclosure-status change, just one update_fact() below
-    doesn't currently turn into a reportable Change (see its own
-    docstring)."""
+    IS a real disclosure-status change, and update_fact() below turns it
+    into a real, reportable Change (change_type "disclosed"/
+    "not_disclosed" -- see its own docstring)."""
     if previous_value is None or current_value is None:
         return previous_value == current_value
     if previous_value == current_value:
@@ -116,28 +117,45 @@ def _subject_key(subject: Subject) -> tuple[str, str]:
     return (normalise_name(subject.company), normalise_name(subject.product))
 
 
-def _infer_change_type(previous_value: str | None, current_value: str | None) -> str:
-    """ "disclosed"/"not_disclosed" for transitions across disclosure
-    boundaries; "increased"/"decreased" when both values parse as plain
-    numbers and differ that way; "changed" otherwise (non-numeric fields
-    like licence_terms, or values with units/formatting that don't parse).
-    Callers can still override via update_fact()'s change_type param for
-    cases they know more about than a bare float comparison can."""
+class InferredChangeType(StrEnum):
+    """The closed set of change_type values _infer_change_type() below can
+    produce on its own. Intelligence-local, not shared: Change.change_type
+    itself stays a plain, open `str` in shared/schemas.py (ADR 0009) --
+    an explicit override via update_fact()'s change_type param, a future
+    plugin, or a hand-built Change can still use a string outside this
+    Enum, and validate_change_shape() enforces the same observation-shape
+    invariant regardless of whether the value is a member here."""
+
+    INCREASED = "increased"
+    DECREASED = "decreased"
+    CHANGED = "changed"
+    DISCLOSED = "disclosed"
+    NOT_DISCLOSED = "not_disclosed"
+
+
+def _infer_change_type(previous_value: str | None, current_value: str | None) -> InferredChangeType:
+    """`InferredChangeType.DISCLOSED`/`NOT_DISCLOSED` for transitions
+    across disclosure boundaries; `INCREASED`/`DECREASED` when both
+    values parse as plain numbers and differ that way; `CHANGED`
+    otherwise (non-numeric fields like licence_terms, or values with
+    units/formatting that don't parse). Callers can still override via
+    update_fact()'s change_type param (a plain `str`, open set) for cases
+    they know more about than a bare float comparison can."""
     if previous_value is None and current_value is not None:
-        return "disclosed"
+        return InferredChangeType.DISCLOSED
     if previous_value is not None and current_value is None:
-        return "not_disclosed"
+        return InferredChangeType.NOT_DISCLOSED
     if previous_value is not None and current_value is not None:
         try:
             previous_number = float(previous_value)
             current_number = float(current_value)
             if current_number > previous_number:
-                return "increased"
+                return InferredChangeType.INCREASED
             if current_number < previous_number:
-                return "decreased"
+                return InferredChangeType.DECREASED
         except (TypeError, ValueError):
             pass
-    return "changed"
+    return InferredChangeType.CHANGED
 
 
 @dataclass

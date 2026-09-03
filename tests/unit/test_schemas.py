@@ -4,12 +4,33 @@ about the Python model definitions themselves."""
 
 import uuid
 from collections.abc import Callable
+from enum import StrEnum
 
 import pytest
 from pydantic import ValidationError
 
-from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
-from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1, SNAPSHOT_1, SNAPSHOT_2, SNAPSHOT_3
+from ai_daily_digest.shared.schemas import (
+    Change,
+    ClaimValidationStatus,
+    Digest,
+    DigestClaim,
+    DigestStatus,
+    DisclosureStatus,
+    ExtractedFact,
+    ExtractionMethod,
+    FactObservation,
+    Subject,
+)
+from tests.uuid_samples import (
+    CHANGE_1,
+    CHANGE_SET_1,
+    CLAIM_1,
+    DIGEST_1,
+    FACT_1,
+    SNAPSHOT_1,
+    SNAPSHOT_2,
+    SNAPSHOT_3,
+)
 
 SUBJECT = Subject(company="OpenAI", product="GPT-4o")
 
@@ -22,7 +43,7 @@ def _extracted_fact(confidence: float) -> ExtractedFact:
         snapshot_id=SNAPSHOT_1,
         field="context_window_tokens",
         value="256000",
-        extraction_method="llm_structured_output",
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         quoted_span="256,000 tokens",
         confidence=confidence,
     )
@@ -80,7 +101,7 @@ def test_llm_extracted_fact_without_quoted_span_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value="256000",
-            extraction_method="llm_structured_output",
+            extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
             confidence=0.9,
         )
 
@@ -92,7 +113,7 @@ def test_llm_extracted_fact_without_confidence_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value="256000",
-            extraction_method="llm_structured_output",
+            extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
             quoted_span="256,000 tokens",
         )
 
@@ -106,7 +127,7 @@ def test_deterministic_fact_without_evidence_is_still_allowed() -> None:
         snapshot_id=SNAPSHOT_1,
         field="context_window_tokens",
         value="256000",
-        extraction_method="deterministic",
+        extraction_method=ExtractionMethod.DETERMINISTIC,
     )
     assert fact.quoted_span is None
     assert fact.confidence is None
@@ -122,8 +143,8 @@ def test_not_disclosed_fact_with_grounded_evidence_is_accepted() -> None:
         snapshot_id=SNAPSHOT_1,
         field="input_price_usd",
         value=None,
-        disclosure_status="not_disclosed",
-        extraction_method="llm_structured_output",
+        disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
         quoted_span="pricing has not yet been announced",
@@ -142,8 +163,8 @@ def test_not_disclosed_fact_with_a_value_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="input_price_usd",
             value="5",
-            disclosure_status="not_disclosed",
-            extraction_method="llm_structured_output",
+            disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+            extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
             extraction_model="claude-sonnet-5",
             prompt_version="v1",
             quoted_span="pricing has not yet been announced",
@@ -162,8 +183,8 @@ def test_not_disclosed_fact_without_quoted_span_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="input_price_usd",
             value=None,
-            disclosure_status="not_disclosed",
-            extraction_method="deterministic",
+            disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
 
@@ -174,8 +195,8 @@ def test_not_disclosed_fact_with_empty_quoted_span_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="input_price_usd",
             value=None,
-            disclosure_status="not_disclosed",
-            extraction_method="deterministic",
+            disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
             quoted_span="",
         )
 
@@ -190,7 +211,7 @@ def test_disclosed_fact_with_explicit_none_value_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value=None,
-            extraction_method="deterministic",
+            extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
 
@@ -201,7 +222,7 @@ def test_disclosed_fact_with_empty_string_value_is_rejected() -> None:
             snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
             value="",
-            extraction_method="deterministic",
+            extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
 
@@ -214,7 +235,7 @@ def test_disclosed_fact_with_a_real_value_is_accepted() -> None:
         snapshot_id=SNAPSHOT_1,
         field="context_window_tokens",
         value="256000",
-        extraction_method="deterministic",
+        extraction_method=ExtractionMethod.DETERMINISTIC,
     )
     assert fact.value == "256000"
     assert fact.disclosure_status == "disclosed"
@@ -233,7 +254,7 @@ def test_extracted_fact_omitting_value_entirely_is_rejected_when_disclosed() -> 
             id=FACT_1,
             snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
-            extraction_method="deterministic",
+            extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
 
@@ -243,8 +264,8 @@ def test_extracted_fact_omitting_value_entirely_is_rejected_when_not_disclosed()
             id=FACT_1,
             snapshot_id=SNAPSHOT_1,
             field="context_window_tokens",
-            disclosure_status="not_disclosed",
-            extraction_method="deterministic",
+            disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
             quoted_span="pricing has not been announced",
         )
 
@@ -272,7 +293,7 @@ def test_uuid_v4_is_rejected_by_a_uuid7_typed_field_for_its_version(as_string: b
             snapshot_id=(str(v4) if as_string else v4),  # type: ignore[arg-type]
             field="context_window_tokens",
             value="256000",
-            extraction_method="deterministic",
+            extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
     error_types = {error["type"] for error in exc_info.value.errors()}
@@ -290,7 +311,7 @@ def test_malformed_uuid_is_rejected_by_a_uuid7_typed_field_as_a_parse_failure() 
             snapshot_id="not-a-uuid",  # type: ignore[arg-type]
             field="context_window_tokens",
             value="256000",
-            extraction_method="deterministic",
+            extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
     error_types = {error["type"] for error in exc_info.value.errors()}
@@ -440,3 +461,232 @@ def test_unrecognised_change_type_still_gets_generic_shape_validation() -> None:
             change_type="unsupported_type",
             previous=FactObservation(value="10", snapshot_id=None),
         )
+
+
+# --- ADR 0009: Phase 1 shared StrEnums -- DisclosureStatus/ExtractionMethod
+# (ExtractedFact), ClaimValidationStatus (DigestClaim), DigestStatus
+# (Digest). Each is a closed, deliberately narrow set: a valid member is
+# accepted and round-trips as the exact lowercase wire string it always
+# was; an invalid, misspelled, or wrong-case string is now rejected at
+# the model boundary instead of only by convention. ---
+
+
+def _disclosed_fact(disclosure_status: object, extraction_method: object) -> ExtractedFact:
+    """A "disclosed" ExtractedFact shape (real value, no not_disclosed
+    evidence rule in play) -- isolates disclosure_status/extraction_method
+    field-type validation from _require_valid_disclosure_state's separate
+    shape rule."""
+    return ExtractedFact(
+        id=FACT_1,
+        snapshot_id=SNAPSHOT_1,
+        field="context_window_tokens",
+        value="256000",
+        disclosure_status=disclosure_status,  # type: ignore[arg-type]
+        extraction_method=extraction_method,  # type: ignore[arg-type]
+        quoted_span="256,000 tokens",
+        confidence=0.9,
+    )
+
+
+@pytest.mark.parametrize("member", list(DisclosureStatus))
+def test_disclosure_status_accepts_every_valid_member(member: DisclosureStatus) -> None:
+    if member is DisclosureStatus.NOT_DISCLOSED:
+        fact = ExtractedFact(
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
+            field="input_price_usd",
+            value=None,
+            disclosure_status=member,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+            quoted_span="pricing has not yet been announced",
+        )
+    else:
+        fact = _disclosed_fact(member, ExtractionMethod.DETERMINISTIC)
+    assert fact.disclosure_status is member
+
+
+@pytest.mark.parametrize("bad_value", ["DISCLOSED", "Disclosed", "unknown", "not-disclosed", ""])
+def test_disclosure_status_rejects_invalid_strings(bad_value: str) -> None:
+    with pytest.raises(ValidationError):
+        _disclosed_fact(bad_value, ExtractionMethod.DETERMINISTIC)
+
+
+@pytest.mark.parametrize("member", list(ExtractionMethod))
+def test_extraction_method_accepts_every_valid_member(member: ExtractionMethod) -> None:
+    fact = _disclosed_fact(DisclosureStatus.DISCLOSED, member)
+    assert fact.extraction_method is member
+
+
+@pytest.mark.parametrize(
+    "bad_value", ["DETERMINISTIC", "Llm_Structured_Output", "llm", "manual", ""]
+)
+def test_extraction_method_rejects_invalid_strings(bad_value: str) -> None:
+    with pytest.raises(ValidationError):
+        _disclosed_fact(DisclosureStatus.DISCLOSED, bad_value)
+
+
+def _digest_claim(validation_status: object) -> DigestClaim:
+    return DigestClaim(
+        id=CLAIM_1,
+        text="Example claim.",
+        citation_snapshot_ids=[SNAPSHOT_1],
+        validation_status=validation_status,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.parametrize("member", list(ClaimValidationStatus))
+def test_claim_validation_status_accepts_every_valid_member(
+    member: ClaimValidationStatus,
+) -> None:
+    assert _digest_claim(member).validation_status is member
+
+
+def test_claim_validation_status_defaults_to_pending() -> None:
+    claim = DigestClaim(id=CLAIM_1, text="Example claim.", citation_snapshot_ids=[SNAPSHOT_1])
+    assert claim.validation_status is ClaimValidationStatus.PENDING
+
+
+@pytest.mark.parametrize("bad_value", ["PENDING", "Supported", "unsure", "rejected", ""])
+def test_claim_validation_status_rejects_invalid_strings(bad_value: str) -> None:
+    with pytest.raises(ValidationError):
+        _digest_claim(bad_value)
+
+
+def _digest(status: object) -> Digest:
+    return Digest(
+        id=DIGEST_1,
+        digest_date="2026-09-02",
+        status=status,  # type: ignore[arg-type]
+        title="Test digest",
+    )
+
+
+@pytest.mark.parametrize("member", list(DigestStatus))
+def test_digest_status_accepts_every_valid_member(member: DigestStatus) -> None:
+    assert _digest(member).status is member
+
+
+def test_digest_status_defaults_to_draft() -> None:
+    digest = Digest(id=DIGEST_1, digest_date="2026-09-02", title="Test digest")
+    assert digest.status is DigestStatus.DRAFT
+
+
+@pytest.mark.parametrize("bad_value", ["DRAFT", "Published", "archived", "live", ""])
+def test_digest_status_rejects_invalid_strings(bad_value: str) -> None:
+    with pytest.raises(ValidationError):
+        _digest(bad_value)
+
+
+# --- JSON wire format: an Enum-backed field still emits the exact same
+# lowercase string on the wire, round-trips through JSON, and its
+# model_json_schema() enum list is exactly its members -- ADR 0009's
+# "unchanged wire format" guarantee, verified rather than assumed. ---
+
+
+def test_extracted_fact_enum_fields_serialize_to_exact_lowercase_strings() -> None:
+    fact = _disclosed_fact(DisclosureStatus.DISCLOSED, ExtractionMethod.LLM_STRUCTURED_OUTPUT)
+    dumped = fact.model_dump(mode="json")
+    assert dumped["disclosure_status"] == "disclosed"
+    assert dumped["extraction_method"] == "llm_structured_output"
+    assert isinstance(dumped["disclosure_status"], str)
+    assert isinstance(dumped["extraction_method"], str)
+    assert '"disclosure_status":"disclosed"' in fact.model_dump_json()
+    assert '"extraction_method":"llm_structured_output"' in fact.model_dump_json()
+
+
+def test_extracted_fact_enum_fields_round_trip_through_json() -> None:
+    fact = _disclosed_fact(DisclosureStatus.DISCLOSED, ExtractionMethod.LLM_STRUCTURED_OUTPUT)
+    restored = ExtractedFact.model_validate_json(fact.model_dump_json())
+    assert restored.disclosure_status is DisclosureStatus.DISCLOSED
+    assert restored.extraction_method is ExtractionMethod.LLM_STRUCTURED_OUTPUT
+    assert restored == fact
+
+
+def test_digest_claim_and_digest_enum_fields_serialize_to_exact_lowercase_strings() -> None:
+    claim = _digest_claim(ClaimValidationStatus.SUPPORTED)
+    assert claim.model_dump(mode="json")["validation_status"] == "supported"
+    assert '"validation_status":"supported"' in claim.model_dump_json()
+
+    digest = _digest(DigestStatus.PUBLISHED)
+    assert digest.model_dump(mode="json")["status"] == "published"
+    assert '"status":"published"' in digest.model_dump_json()
+
+
+def test_digest_claim_and_digest_enum_fields_round_trip_through_json() -> None:
+    claim = _digest_claim(ClaimValidationStatus.SUPPORTED)
+    restored_claim = DigestClaim.model_validate_json(claim.model_dump_json())
+    assert restored_claim.validation_status is ClaimValidationStatus.SUPPORTED
+    assert restored_claim == claim
+
+    digest = _digest(DigestStatus.PUBLISHED)
+    restored_digest = Digest.model_validate_json(digest.model_dump_json())
+    assert restored_digest.status is DigestStatus.PUBLISHED
+    assert restored_digest == digest
+
+
+@pytest.mark.parametrize(
+    ("model", "field_name", "enum_cls"),
+    [
+        (ExtractedFact, "disclosure_status", DisclosureStatus),
+        (ExtractedFact, "extraction_method", ExtractionMethod),
+        (DigestClaim, "validation_status", ClaimValidationStatus),
+        (Digest, "status", DigestStatus),
+    ],
+)
+def test_model_json_schema_exposes_exact_enum_members(
+    model: type[ExtractedFact | DigestClaim | Digest], field_name: str, enum_cls: type[StrEnum]
+) -> None:
+    """model_json_schema() is what FastAPI/OpenAPI would generate an
+    `enum` schema from (ADR 0009/0010) -- assert the exact member list,
+    not just that *an* enum shows up, so a future member added to one
+    Enum without updating the other can't slip through unnoticed."""
+    schema = model.model_json_schema()
+    # Pydantic emits a StrEnum as a named $defs entry referenced via $ref,
+    # not an inline "enum" list on the field itself.
+    enum_def = schema["$defs"][enum_cls.__name__]
+    assert enum_def["enum"] == [member.value for member in enum_cls]
+    field_schema = schema["properties"][field_name]
+    ref = field_schema.get("$ref") or field_schema.get("allOf", [{}])[0].get("$ref")
+    assert ref == f"#/$defs/{enum_cls.__name__}"
+
+
+# --- model_copy(update=...) invariant (ADR 0009): it does not re-validate
+# -- callers must pass real Enum members, which these tests do, proving
+# the intended usage actually produces a real Enum member on the copy,
+# not a plain unvalidated string. ---
+
+
+def test_model_copy_with_enum_member_produces_a_real_enum_on_the_copy() -> None:
+    claim = _digest_claim(ClaimValidationStatus.PENDING)
+    updated = claim.model_copy(update={"validation_status": ClaimValidationStatus.SUPPORTED})
+    assert updated.validation_status is ClaimValidationStatus.SUPPORTED
+    assert isinstance(updated.validation_status, ClaimValidationStatus)
+
+    digest = _digest(DigestStatus.DRAFT)
+    published = digest.model_copy(update={"status": DigestStatus.PUBLISHED})
+    assert published.status is DigestStatus.PUBLISHED
+    assert isinstance(published.status, DigestStatus)
+
+
+# --- Cross-model handoff: DisclosureStatus (ExtractedFact) into
+# FactRow.disclosure_status (compare_subjects.py's intelligence-local,
+# deliberately wider three-state Literal, ADR 0006/0009). ---
+
+
+def test_disclosure_status_member_satisfies_fact_row_literal() -> None:
+    # Imported here, not at module level: FactRow is intelligence-local
+    # (compare_subjects.py), not part of this file's shared/schemas.py
+    # subject matter -- this one test exists specifically to prove the
+    # cross-boundary handoff, not to pull compare_subjects.py into every
+    # test in this file.
+    from ai_daily_digest.intelligence.compare_subjects import FactRow
+
+    for member in DisclosureStatus:
+        row = FactRow(
+            subject=SUBJECT,
+            field="context_window_tokens",
+            value="256000" if member is DisclosureStatus.DISCLOSED else None,
+            disclosure_status=member.value,
+            snapshot_id=SNAPSHOT_1,
+        )
+        assert row.disclosure_status == member.value

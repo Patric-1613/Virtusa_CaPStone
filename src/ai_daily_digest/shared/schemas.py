@@ -19,7 +19,8 @@ the built-in UUID7 type that shared/ids.py::Uuid7Id re-exports ships in
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from enum import StrEnum
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
@@ -114,6 +115,29 @@ class Subject(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class DisclosureStatus(StrEnum):
+    """ADR 0006's two persisted disclosure states -- owned by ExtractedFact.
+    Deliberately does NOT include "unknown": that's a FactRow-only,
+    intelligence-local concept (compare_subjects.py) meaning "no
+    ExtractedFact exists at all", never a state a real extracted fact can
+    itself be in. See ADR 0009 for why this stays a closed, two-member
+    Enum rather than the three-value Literal FactRow uses."""
+
+    DISCLOSED = "disclosed"
+    NOT_DISCLOSED = "not_disclosed"
+
+
+class ExtractionMethod(StrEnum):
+    """How an ExtractedFact's value was produced -- owned by ExtractedFact.
+    A closed set by construction: every fact in this codebase is built
+    either deterministically or via one structured LLM extraction path
+    (intelligence/extract_facts.py); a third method would be a real,
+    reviewed addition to this Enum, not an open string (ADR 0009)."""
+
+    DETERMINISTIC = "deterministic"
+    LLM_STRUCTURED_OUTPUT = "llm_structured_output"
+
+
 class ExtractedFact(BaseModel):
     """One field-level fact extracted from a single snapshot. Facts
     created by deterministic code use extraction_method="deterministic";
@@ -146,8 +170,8 @@ class ExtractedFact(BaseModel):
     snapshot_id: Uuid7Id
     field: str
     value: str | None
-    disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
-    extraction_method: str  # "deterministic" | "llm_structured_output"
+    disclosure_status: DisclosureStatus = DisclosureStatus.DISCLOSED
+    extraction_method: ExtractionMethod
     extraction_model: str | None = None
     prompt_version: str | None = None
     quoted_span: str | None = None
@@ -165,7 +189,7 @@ class ExtractedFact(BaseModel):
         invariant makes that impossible regardless of how the object is
         built. Deterministic facts are unaffected -- they don't always
         have a natural quote to attach (see this class's own docstring)."""
-        if self.extraction_method == "llm_structured_output":
+        if self.extraction_method == ExtractionMethod.LLM_STRUCTURED_OUTPUT:
             if self.quoted_span is None:
                 raise ValueError(
                     "ExtractedFact with extraction_method='llm_structured_output' "
@@ -198,7 +222,7 @@ class ExtractedFact(BaseModel):
             non-empty value -- the "normal" case's own invariant, now
             enforced at the model level now that `value` is Optional at
             the type level."""
-        if self.disclosure_status == "not_disclosed":
+        if self.disclosure_status == DisclosureStatus.NOT_DISCLOSED:
             if self.value is not None:
                 raise ValueError(
                     "ExtractedFact with disclosure_status='not_disclosed' must have "
@@ -234,6 +258,16 @@ class FactObservation(BaseModel):
     observed_at: datetime | None = None
     snapshot_id: Uuid7Id | None = None
     source_url: HttpUrl | None = None
+
+
+def _is_grounded(obs: FactObservation | None) -> bool:
+    """True if `obs` is a real, citable observation -- present, with a
+    non-null value AND a non-null snapshot_id. Shared by every
+    validate_change_shape() branch below that needs to assert "this side
+    is a real observation, not a placeholder or a disclosure-boundary
+    null" -- extracted so that predicate has exactly one definition
+    (ADR 0009's Phase 1 cleanup), not one hand-copied per branch."""
+    return obs is not None and obs.value is not None and obs.snapshot_id is not None
 
 
 def validate_change_shape(
@@ -276,7 +310,7 @@ def validate_change_shape(
         entirely, since "disclosed"/"not_disclosed" are the only
         change_types this model knows to relax that for."""
     if change_type == "not_disclosed":
-        if previous is None or previous.value is None or previous.snapshot_id is None:
+        if not _is_grounded(previous):
             raise ValueError(
                 "Change with change_type='not_disclosed' requires previous observation "
                 "with non-null value and snapshot_id"
@@ -287,7 +321,7 @@ def validate_change_shape(
                 "with value=None and snapshot_id"
             )
     elif change_type == "disclosed":
-        if current.value is None or current.snapshot_id is None:
+        if not _is_grounded(current):
             raise ValueError(
                 "Change with change_type='disclosed' requires current observation "
                 "with non-null value and snapshot_id"
@@ -308,12 +342,12 @@ def validate_change_shape(
         # constructed Change must still prove both sides are real
         # observations unless it's one of the two disclosure-boundary
         # types explicitly relaxed above).
-        if previous is None or previous.value is None or previous.snapshot_id is None:
+        if not _is_grounded(previous):
             raise ValueError(
                 f"Change with change_type='{change_type}' requires previous "
                 "observation with non-null value and snapshot_id"
             )
-        if current.value is None or current.snapshot_id is None:
+        if not _is_grounded(current):
             raise ValueError(
                 f"Change with change_type='{change_type}' requires current "
                 "observation with non-null value and snapshot_id"
@@ -377,6 +411,27 @@ class ChangeSet(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ClaimValidationStatus(StrEnum):
+    """A DigestClaim's evidence-check outcome -- owned by DigestClaim.
+    "supported" is earned only by validate.py's checks (real citations,
+    every cited snapshot known, grounded numbers); nothing else may set
+    it directly (ADR 0009)."""
+
+    PENDING = "pending"
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+
+
+class DigestStatus(StrEnum):
+    """A Digest's publication lifecycle -- owned by Digest. "published" is
+    reachable only through validate.py::publish_digest() (ADR 0009);
+    every other construction site starts a Digest at DRAFT."""
+
+    DRAFT = "draft"
+    REVIEW = "review"
+    PUBLISHED = "published"
+
+
 class DigestClaim(BaseModel):
     """Every factual claim requires >=1 valid citation. A digest
     containing an unsupported claim cannot enter "published" status
@@ -385,12 +440,12 @@ class DigestClaim(BaseModel):
     id: Uuid7Id
     text: str
     citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
-    validation_status: str = "pending"  # "pending" | "supported" | "unsupported"
+    validation_status: ClaimValidationStatus = ClaimValidationStatus.PENDING
 
 
 class Digest(BaseModel):
     id: Uuid7Id
     digest_date: str  # YYYY-MM-DD
-    status: str = "draft"  # "draft" | "review" | "published"
+    status: DigestStatus = DigestStatus.DRAFT
     title: str
     claims: list[DigestClaim] = Field(default_factory=list)

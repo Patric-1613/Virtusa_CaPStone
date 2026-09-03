@@ -158,7 +158,9 @@ response contains complete Change objects and is protected by a contract test.
 
 Facts created by deterministic code use `extraction_method: "deterministic"`. Facts created with
 an LLM must also record the provider-neutral model identifier and versioned prompt so evaluations
-can be reproduced.
+can be reproduced. `extraction_method` is backed by the closed, two-member `ExtractionMethod`
+`StrEnum` (`shared/schemas.py`) — the wire value is unchanged, but a misspelled or wrong-case value
+is now rejected at the model boundary, not just by convention (ADR 0009).
 
 `quoted_span` and `confidence` (both optional) record the evidence a fact was built from: the
 exact source text the value was extracted from, and the extractor's confidence in it. Optional
@@ -172,7 +174,11 @@ absence of any fact at all — the latter is represented by no `ExtractedFact` e
 with a null `value`. When `disclosure_status` is `"not_disclosed"`, `value` MUST be `null` and
 `quoted_span` MUST cite the actual non-disclosure statement — "not disclosed" is itself a groundable
 claim needing its own evidence, not a default. Enforced at the model level, not just documented —
-see [ADR 0006](adr/0006-disclosure-status-semantics.md).
+see [ADR 0006](adr/0006-disclosure-status-semantics.md). `disclosure_status` is backed by the
+closed, two-member `DisclosureStatus` `StrEnum` (`shared/schemas.py`) — deliberately narrower than
+`compare_subjects.py`'s intelligence-local three-state `FactRow.disclosure_status` (which adds
+`"unknown"` for "no fact was ever extracted"); the wire value is unchanged either way, but a
+misspelled or wrong-case value is now rejected at the model boundary (ADR 0009).
 
 ```json
 {
@@ -240,6 +246,12 @@ Digest list and detail responses use a wrapper rather than returning unowned cla
 ```
 
 Every factual claim requires at least one valid citation. A digest containing an `unsupported` claim cannot enter `published` status automatically.
+
+`validation_status` (`DigestClaim`) is backed by the closed, three-member `ClaimValidationStatus`
+`StrEnum`; `status` (`Digest`) is backed by the closed, three-member `DigestStatus` `StrEnum` (both
+`shared/schemas.py`). Wire values are unchanged; a misspelled or wrong-case value is now rejected
+at the model boundary, not just by convention (ADR 0009). `"published"` remains reachable only
+through `intelligence/validate.py::publish_digest()`.
 
 ## Subscription request contracts
 

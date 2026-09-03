@@ -75,7 +75,6 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -85,7 +84,14 @@ from ai_daily_digest.intelligence.llm import SONNET, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Confidence, DocumentSnapshot, ExtractedFact, Subject
+from ai_daily_digest.shared.schemas import (
+    Confidence,
+    DisclosureStatus,
+    DocumentSnapshot,
+    ExtractedFact,
+    ExtractionMethod,
+    Subject,
+)
 
 logger = logging.getLogger("intelligence.extract_facts")
 
@@ -263,7 +269,7 @@ class FactCandidate(BaseModel):
 
     field: str
     value: str | None
-    disclosure_status: Literal["disclosed", "not_disclosed"] = "disclosed"
+    disclosure_status: DisclosureStatus = DisclosureStatus.DISCLOSED
     quoted_span: str
     # Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
     # -- rejects confidence=NaN at parse time (see shared/schemas.py's
@@ -281,11 +287,11 @@ class FactCandidate(BaseModel):
         retry-with-the-validation-error loop instead of silently
         reaching this module's post-processing only to be dropped
         without the model ever getting a chance to correct itself."""
-        if self.disclosure_status == "not_disclosed" and self.value is not None:
+        if self.disclosure_status == DisclosureStatus.NOT_DISCLOSED and self.value is not None:
             raise ValueError(
                 "a candidate with disclosure_status='not_disclosed' must not also report a value"
             )
-        if self.disclosure_status == "disclosed" and not self.value:
+        if self.disclosure_status == DisclosureStatus.DISCLOSED and not self.value:
             raise ValueError("a candidate with disclosure_status='disclosed' must report a value")
         return self
 
@@ -528,7 +534,7 @@ def extract_facts(
                 field=candidate.field,
                 value=candidate.value,
                 disclosure_status=candidate.disclosure_status,
-                extraction_method="llm_structured_output",
+                extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
                 extraction_model=SONNET,
                 prompt_version=PROMPT_VERSION,
                 quoted_span=candidate.quoted_span,

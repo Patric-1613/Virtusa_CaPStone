@@ -30,7 +30,14 @@ from ai_daily_digest.intelligence.daily_run import BatchItem, run_daily
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.facts import FactStore
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
-from ai_daily_digest.shared.schemas import DocumentSnapshot, ExtractedFact, SourceItem, Subject
+from ai_daily_digest.shared.schemas import (
+    DisclosureStatus,
+    DocumentSnapshot,
+    ExtractedFact,
+    ExtractionMethod,
+    SourceItem,
+    Subject,
+)
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
@@ -111,7 +118,7 @@ def _fact(
         snapshot_id=snapshot_id,
         field=field,
         value=value,
-        extraction_method="llm_structured_output",
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
         quoted_span=f"quote containing {value}",
@@ -127,8 +134,8 @@ def _not_disclosed_fact(
         snapshot_id=snapshot_id,
         field=field,
         value=None,
-        disclosure_status="not_disclosed",
-        extraction_method="llm_structured_output",
+        disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
         quoted_span="pricing has not been announced",

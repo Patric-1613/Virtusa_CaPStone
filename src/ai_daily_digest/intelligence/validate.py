@@ -55,7 +55,7 @@ from __future__ import annotations
 import uuid
 
 from ai_daily_digest.intelligence.grounding import numbers_in
-from ai_daily_digest.shared.schemas import Digest, DigestClaim
+from ai_daily_digest.shared.schemas import ClaimValidationStatus, Digest, DigestClaim, DigestStatus
 from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 
@@ -103,7 +103,13 @@ def validate_claim(
     if is_supported and snapshot_resolver is not None:
         is_supported = _claim_numbers_are_grounded(claim, snapshot_resolver)
     return claim.model_copy(
-        update={"validation_status": "supported" if is_supported else "unsupported"}
+        update={
+            "validation_status": (
+                ClaimValidationStatus.SUPPORTED
+                if is_supported
+                else ClaimValidationStatus.UNSUPPORTED
+            )
+        }
     )
 
 
@@ -125,8 +131,10 @@ def validate_digest(
         validate_claim(claim, known_snapshot_ids, snapshot_resolver=snapshot_resolver)
         for claim in digest.claims
     ]
-    has_unsupported = any(c.validation_status == "unsupported" for c in validated_claims)
-    status = "review" if has_unsupported else digest.status
+    has_unsupported = any(
+        c.validation_status == ClaimValidationStatus.UNSUPPORTED for c in validated_claims
+    )
+    status = DigestStatus.REVIEW if has_unsupported else digest.status
     return digest.model_copy(update={"claims": validated_claims, "status": status})
 
 
@@ -141,6 +149,6 @@ def publish_digest(
     "review" instead, per the contract's publish gate. `snapshot_resolver`
     is REQUIRED -- see validate_digest()'s docstring."""
     validated = validate_digest(digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver)
-    if any(c.validation_status != "supported" for c in validated.claims):
-        return validated.model_copy(update={"status": "review"})
-    return validated.model_copy(update={"status": "published"})
+    if any(c.validation_status != ClaimValidationStatus.SUPPORTED for c in validated.claims):
+        return validated.model_copy(update={"status": DigestStatus.REVIEW})
+    return validated.model_copy(update={"status": DigestStatus.PUBLISHED})

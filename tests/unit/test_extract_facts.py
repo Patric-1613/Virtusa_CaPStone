@@ -12,7 +12,7 @@ from ai_daily_digest.intelligence.extract_facts import (
     _quote_supports_non_disclosure,
     extract_facts,
 )
-from ai_daily_digest.shared.schemas import DocumentSnapshot, Subject
+from ai_daily_digest.shared.schemas import DisclosureStatus, DocumentSnapshot, Subject
 from tests.uuid_samples import ITEM_1, SNAPSHOT_1
 
 
@@ -228,7 +228,7 @@ def test_well_grounded_not_disclosed_candidate_is_accepted() -> None:
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="has not yet announced pricing",
                     confidence=0.9,
                 )
@@ -259,7 +259,7 @@ def test_not_disclosed_candidate_skips_the_value_support_check() -> None:
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="Pricing details for GPT-4o have not been announced",
                     confidence=0.9,
                 )
@@ -283,7 +283,7 @@ def test_ungrounded_not_disclosed_quoted_span_is_rejected() -> None:
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="this exact non-disclosure sentence does not appear anywhere",
                     confidence=0.9,
                 )
@@ -303,7 +303,7 @@ def test_low_confidence_not_disclosed_candidate_is_rejected() -> None:
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="has not yet been announced",
                     confidence=0.3,
                 )
@@ -335,7 +335,7 @@ def test_disclosed_and_not_disclosed_candidates_coexist_in_one_response() -> Non
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="Pricing has not yet been announced",
                     confidence=0.9,
                 ),
@@ -359,7 +359,7 @@ def test_not_disclosed_candidate_with_a_value_is_rejected_at_construction() -> N
         FactCandidate(
             field="input_price_usd",
             value="5",
-            disclosure_status="not_disclosed",
+            disclosure_status=DisclosureStatus.NOT_DISCLOSED,
             quoted_span="pricing has not yet been announced",
             confidence=0.9,
         )
@@ -385,7 +385,7 @@ def test_factcandidate_omitting_value_entirely_is_rejected() -> None:
     with pytest.raises(ValidationError):
         FactCandidate(  # type: ignore[call-arg]
             field="input_price_usd",
-            disclosure_status="not_disclosed",
+            disclosure_status=DisclosureStatus.NOT_DISCLOSED,
             quoted_span="pricing has not been announced",
             confidence=0.9,
         )
@@ -445,7 +445,7 @@ def test_end_to_end_disclosed_value_mislabeled_not_disclosed_is_rejected() -> No
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span=(
                         "pricing has not been announced, though early testers "
                         "report $5 per million tokens"
@@ -639,7 +639,7 @@ def test_end_to_end_cross_family_clause_candidate_is_dropped() -> None:
                 FactCandidate(
                     field="context_window_tokens",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="Context window and benchmark scores have not been disclosed",
                     confidence=0.9,
                 )
@@ -715,7 +715,7 @@ def test_end_to_end_input_price_candidate_citing_output_only_quote_is_dropped() 
                 FactCandidate(
                     field="input_price_usd",
                     value=None,
-                    disclosure_status="not_disclosed",
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
                     quoted_span="Output pricing has not been announced",
                     confidence=0.9,
                 )
