@@ -25,7 +25,12 @@ from ai_daily_digest.intelligence.compare_subjects import (
     compare_subjects,
 )
 from ai_daily_digest.intelligence.facts import FactStore
-from ai_daily_digest.shared.schemas import ExtractedFact, Subject
+from ai_daily_digest.shared.schemas import (
+    DisclosureStatus,
+    ExtractedFact,
+    ExtractionMethod,
+    Subject,
+)
 from tests.uuid_samples import FACT_1, SNAPSHOT_1
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
@@ -51,7 +56,7 @@ def _fact(
         snapshot_id=snapshot_id,
         field=field,
         value=value,
-        extraction_method="llm_structured_output",
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
         quoted_span=f"quote containing {value}",
@@ -67,8 +72,8 @@ def _not_disclosed_fact(
         snapshot_id=snapshot_id,
         field=field,
         value=None,
-        disclosure_status="not_disclosed",
-        extraction_method="llm_structured_output",
+        disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="v1",
         quoted_span="has not yet been announced",

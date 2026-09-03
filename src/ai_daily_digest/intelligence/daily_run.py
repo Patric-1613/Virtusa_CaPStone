@@ -35,6 +35,7 @@ from ai_daily_digest.shared.schemas import (
     ChangeSet,
     Digest,
     DigestClaim,
+    DigestStatus,
     DocumentSnapshot,
     SourceItem,
     Subject,
@@ -119,8 +120,8 @@ def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[uu
     step, not an automatic consequence of this refactor. Every
     cross-subject comparison still requires human review until that
     decision is made."""
-    if comparison_claim_ids and digest.status == "published":
-        return digest.model_copy(update={"status": "review"})
+    if comparison_claim_ids and digest.status == DigestStatus.PUBLISHED:
+        return digest.model_copy(update={"status": DigestStatus.REVIEW})
     return digest
 
 

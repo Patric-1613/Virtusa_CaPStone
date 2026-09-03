@@ -7,7 +7,14 @@ from pydantic import ValidationError
 
 from ai_daily_digest.intelligence.facts import FactStore, change_snapshot_ids, normalise_name
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Change, ExtractedFact, FactObservation, Subject
+from ai_daily_digest.shared.schemas import (
+    Change,
+    DisclosureStatus,
+    ExtractedFact,
+    ExtractionMethod,
+    FactObservation,
+    Subject,
+)
 from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1
 
 TF_SNAP_1 = uuid.UUID("019e85a1-6358-7050-a64d-ce378b89d87c")
@@ -37,7 +44,7 @@ def _fact(
         snapshot_id=snapshot_id,
         field=field,
         value=value,
-        extraction_method="llm_structured_output",
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="fact-extraction-v1",
         quoted_span=f"quote containing {value}",
@@ -337,8 +344,8 @@ def _not_disclosed_fact(
         snapshot_id=snapshot_id,
         field=field,
         value=None,
-        disclosure_status="not_disclosed",
-        extraction_method="llm_structured_output",
+        disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+        extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
         extraction_model="claude-sonnet-5",
         prompt_version="fact-extraction-v1",
         quoted_span="pricing has not yet been announced",

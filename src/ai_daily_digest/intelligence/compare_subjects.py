@@ -43,7 +43,7 @@ from ai_daily_digest.intelligence.llm import SONNET, call_structured
 from ai_daily_digest.intelligence.prompt_templates import load_prompt, render
 from ai_daily_digest.shared.attributes import COMPARABLE_FIELDS, COMPARISON_RULES, field_label
 from ai_daily_digest.shared.ids import Uuid7Id, new_id
-from ai_daily_digest.shared.schemas import DigestClaim, Subject
+from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestClaim, Subject
 
 logger = logging.getLogger("intelligence.compare_subjects")
 
@@ -151,7 +151,16 @@ def build_fact_table(store: FactStore, subjects: list[Subject], fields: list[str
                         subject=subject,
                         field=field,
                         value=fact.value,
-                        disclosure_status=fact.disclosure_status,
+                        # ADR 0009: fact.disclosure_status is DisclosureStatus
+                        # (StrEnum), FactRow.disclosure_status is a
+                        # deliberately wider Literal (adds "unknown", ADR
+                        # 0006) that DisclosureStatus doesn't share -- a
+                        # DisclosureStatus member validates into it fine at
+                        # runtime (pydantic checks by value), but mypy can't
+                        # see that cross-type relationship, so pass the
+                        # plain string value explicitly instead of the enum
+                        # member.
+                        disclosure_status=fact.disclosure_status.value,
                         snapshot_id=fact.snapshot_id,
                     )
                 )
@@ -305,7 +314,7 @@ def _resolve_assertion(  # pylint: disable=too-many-return-statements
         id=new_id(),
         text=text,
         citation_snapshot_ids=[row_a.snapshot_id, row_b.snapshot_id],
-        validation_status="pending",
+        validation_status=ClaimValidationStatus.PENDING,
     )
     return claim, None
 

@@ -12,7 +12,7 @@ import uuid
 
 from ai_daily_digest.intelligence.validate import publish_digest
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Digest, DigestClaim
+from ai_daily_digest.shared.schemas import Digest, DigestClaim, DigestStatus
 from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 
@@ -40,7 +40,7 @@ def assemble_digest(
     digest = Digest(
         id=new_id(),
         digest_date=digest_date,
-        status="draft",
+        status=DigestStatus.DRAFT,
         title=title or f"AI Daily Digest — {digest_date}",
         claims=claims,
     )

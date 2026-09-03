@@ -19,7 +19,7 @@ from pathlib import Path
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
 from ai_daily_digest.intelligence.validate import validate_claim
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Change, Digest
+from ai_daily_digest.shared.schemas import Change, Digest, DigestStatus
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver, SnapshotResolver
 
 # CWD-rooted, not __file__-rooted -- see loaders.py::find_repo_root's
@@ -174,7 +174,9 @@ def main() -> None:
     snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
     changes = [change for cs in change_sets for change in cs.changes]
     digest = (
-        digests[0] if digests else Digest(id=new_id(), digest_date="", status="draft", title="")
+        digests[0]
+        if digests
+        else Digest(id=new_id(), digest_date="", status=DigestStatus.DRAFT, title="")
     )
 
     result = run_eval(

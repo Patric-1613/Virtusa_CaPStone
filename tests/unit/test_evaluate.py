@@ -13,6 +13,7 @@ from ai_daily_digest.shared.schemas import (
     Change,
     Digest,
     DigestClaim,
+    DigestStatus,
     DocumentSnapshot,
     FactObservation,
     Subject,
@@ -50,7 +51,11 @@ def _snapshot(snap_id: uuid.UUID, text: str) -> DocumentSnapshot:
 
 def _digest(claims: list[DigestClaim]) -> Digest:
     return Digest(
-        id=DIGEST_1, digest_date="2026-08-20", status="draft", title="Test", claims=claims
+        id=DIGEST_1,
+        digest_date="2026-08-20",
+        status=DigestStatus.DRAFT,
+        title="Test",
+        claims=claims,
     )
 
 
