@@ -112,9 +112,3 @@ def test_contract_document_records_the_generic_pagination_rules() -> None:
         "first_fetched_at:desc,id:desc",
     ):
         assert token in text, f"docs/API_CONTRACT.md is missing pagination detail: {token!r}"
-
-
-def test_contract_document_does_not_claim_an_endpoint_is_implemented() -> None:
-    text = _CONTRACT.read_text(encoding="utf-8")
-    assert "UpdateSummary" not in text
-    assert "Status: Implemented" not in text

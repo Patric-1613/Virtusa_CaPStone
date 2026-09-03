@@ -54,7 +54,8 @@ Every paginated response body has exactly these two keys:
 - `items` is always a JSON array.
 - `next_cursor` is always present: an opaque string when another page exists, `null` on the
   final page and on an empty result.
-- No `total`, `total_count`, `page`, `has_more`, or `prev_cursor` field is ever added.
+- In Phase 1, the envelope contains no `total`, `total_count`, `page`, `has_more`, or
+  `prev_cursor` field. Adding any such field later requires a reviewed contract and ADR change.
 
 ### Page size
 
