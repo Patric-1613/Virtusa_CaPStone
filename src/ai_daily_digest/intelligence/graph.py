@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -63,15 +64,24 @@ class PipelineState(TypedDict, total=False):
     claims: list[DigestClaim]
 
 
-def build_graph(
+def build_graph(  # pylint: disable=too-many-arguments,too-many-locals
     store: FactStore,
     change_set_ids: dict[Subject, uuid.UUID],
     *,
+    batch_detected_at: datetime,
     alias_table: list[SubjectAlias] | None = None,
     resolve_llm_call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
     extract_call_fn: Callable[[str, str], FactExtractionResponse] | None = None,
 ) -> CompiledStateGraph[PipelineState, Any, PipelineState, PipelineState]:
-    """store: the FactStore this pipeline reads from and writes to —
+    """batch_detected_at: the one caller-injected instant every `Change` this
+    graph produces is stamped with as its `detected_at` (the `/v1/changes`
+    sort key, ADR 0008 section 5.A). Required, keyword-only, no default — no
+    graph node ever reads the wall clock; `run_daily()` normalizes it once and
+    threads it here, and a direct `build_graph()` caller (a test) must supply
+    it too. The `compare` node closes over it exactly the way it already
+    closes over `store` and `change_set_ids`.
+
+    store: the FactStore this pipeline reads from and writes to —
     shared across invocations so history accumulates run over run, the
     same way the real system will use one long-lived store (or, later,
     the real database via StoreLoader). change_set_ids: the batch-scoped
@@ -161,6 +171,10 @@ def build_graph(
                 fact,
                 source_url=str(state["item"].canonical_url),
                 observed_at=snapshot.fetched_at,
+                # The run's one injected detection time -- every Change from
+                # this batch is stamped with exactly this instant. Never the
+                # wall clock (ADR 0008 section 5.A).
+                detected_at=batch_detected_at,
                 # Lazy -- only actually invoked by update_fact() if this
                 # fact turns into a real Change (ADR 0007). Late-binds
                 # `subject` via the closure, which is correct here since

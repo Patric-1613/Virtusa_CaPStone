@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
@@ -16,6 +16,10 @@ from ai_daily_digest.shared.schemas import (
     Subject,
 )
 from tests.uuid_samples import CHANGE_1, CHANGE_SET_1, FACT_1
+
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TF_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
 
 TF_SNAP_1 = uuid.UUID("019e85a1-6358-7050-a64d-ce378b89d87c")
 TF_SNAP_2 = uuid.UUID("01a01c77-c758-7680-a111-bfcfe074da96")
@@ -66,6 +70,7 @@ def test_first_observation_is_not_a_change() -> None:
         source_url="https://openai.com/news/gpt-4o-launch",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is None
     current = store.get_current_fact(subject, "context_window_tokens")
@@ -82,6 +87,7 @@ def test_identical_value_is_a_silent_no_op() -> None:
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -89,6 +95,7 @@ def test_identical_value_is_a_silent_no_op() -> None:
         source_url="https://techdesk.example.com/b",
         observed_at=datetime(2026, 6, 5, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is None
     assert store.field_history(subject, "context_window_tokens") == []
@@ -108,6 +115,7 @@ def test_change_type_auto_infers_increased_and_decreased() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     increased = store.update_fact(
         subject,
@@ -115,6 +123,7 @@ def test_change_type_auto_infers_increased_and_decreased() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert increased is not None
     assert increased.change_type == "increased"
@@ -125,6 +134,7 @@ def test_change_type_auto_infers_increased_and_decreased() -> None:
         source_url=None,
         observed_at=datetime(2026, 9, 1, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert decreased is not None
     assert decreased.change_type == "decreased"
@@ -139,6 +149,7 @@ def test_change_type_falls_back_to_changed_for_non_numeric_values() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -146,6 +157,7 @@ def test_change_type_falls_back_to_changed_for_non_numeric_values() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     assert change.change_type == "changed"
@@ -168,6 +180,7 @@ def test_explicit_change_type_overrides_auto_inference() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -176,6 +189,7 @@ def test_explicit_change_type_overrides_auto_inference() -> None:
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_type="changed",
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     assert change.change_type == "changed"
@@ -190,6 +204,7 @@ def test_changed_value_emits_a_change_with_correct_previous_and_current() -> Non
         source_url="https://openai.com/news/gpt-4o-launch",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -199,6 +214,7 @@ def test_changed_value_emits_a_change_with_correct_previous_and_current() -> Non
         change_type="increased",
         confidence=0.98,
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
 
     assert change is not None
@@ -232,6 +248,7 @@ def test_different_fields_are_tracked_independently() -> None:
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     # context_window_tokens was never observed for this subject
     assert store.get_current_fact(subject, "context_window_tokens") is None
@@ -255,6 +272,7 @@ def test_reformatted_but_equivalent_value_is_a_silent_no_op() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -262,6 +280,7 @@ def test_reformatted_but_equivalent_value_is_a_silent_no_op() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is None
     assert store.field_history(subject, "input_price_usd") == []
@@ -281,6 +300,7 @@ def test_genuinely_different_numeric_value_still_registers_as_a_change() -> None
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -288,6 +308,7 @@ def test_genuinely_different_numeric_value_still_registers_as_a_change() -> None
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     assert change.change_type == "decreased"
@@ -307,6 +328,7 @@ def _change(
         ),
         current=FactObservation(value="new", snapshot_id=current_snap),
         confidence=0.9,
+        detected_at=TF_DETECTED_AT,
     )
 
 
@@ -371,6 +393,7 @@ def test_first_observation_of_a_not_disclosed_fact_is_not_a_change() -> None:
         source_url="https://openai.com/pricing",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is None
     current = store.get_current_fact(subject, "input_price_usd")
@@ -391,6 +414,7 @@ def test_disclosed_to_not_disclosed_transition_emits_change() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -398,6 +422,7 @@ def test_disclosed_to_not_disclosed_transition_emits_change() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     assert change.subject == subject
@@ -431,6 +456,7 @@ def test_not_disclosed_to_disclosed_transition_emits_change() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -438,6 +464,7 @@ def test_not_disclosed_to_disclosed_transition_emits_change() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     assert change.subject == subject
@@ -474,6 +501,7 @@ def test_repeated_not_disclosed_observation_is_a_silent_no_op_but_refreshes_prov
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -481,6 +509,7 @@ def test_repeated_not_disclosed_observation_is_a_silent_no_op_but_refreshes_prov
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is None
     assert store.field_history(subject, "input_price_usd") == []
@@ -499,6 +528,7 @@ def test_known_subjects_accumulates_across_updates() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     store.update_fact(
         b,
@@ -506,6 +536,7 @@ def test_known_subjects_accumulates_across_updates() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     assert set(store.known_subjects()) == {a, b}
 
@@ -524,6 +555,7 @@ def test_factory_is_not_called_for_a_first_observation() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     factory.assert_not_called()
 
@@ -537,6 +569,7 @@ def test_factory_is_not_called_for_an_unchanged_value() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     factory = _factory()
     store.update_fact(
@@ -545,6 +578,7 @@ def test_factory_is_not_called_for_an_unchanged_value() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     factory.assert_not_called()
 
@@ -561,6 +595,7 @@ def test_factory_is_called_exactly_once_for_a_disclosure_status_transition() -> 
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     factory = _factory()
     change = store.update_fact(
@@ -569,6 +604,7 @@ def test_factory_is_called_exactly_once_for_a_disclosure_status_transition() -> 
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     factory.assert_called_once()
@@ -585,6 +621,7 @@ def test_factory_is_not_called_for_a_first_observation_of_a_not_disclosed_fact()
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     factory.assert_not_called()
 
@@ -600,6 +637,7 @@ def test_factory_is_not_called_for_a_repeated_not_disclosed_observation() -> Non
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     factory = _factory()
     store.update_fact(
@@ -608,6 +646,7 @@ def test_factory_is_not_called_for_a_repeated_not_disclosed_observation() -> Non
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     factory.assert_not_called()
 
@@ -636,6 +675,7 @@ def test_same_subject_transitions_share_one_change_set_id_per_batch() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     # Baseline for a second field, so the field's own second update below
     # is a real change (not a first observation) too.
@@ -645,6 +685,7 @@ def test_same_subject_transitions_share_one_change_set_id_per_batch() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     first_change = store.update_fact(
         subject,
@@ -652,6 +693,7 @@ def test_same_subject_transitions_share_one_change_set_id_per_batch() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     second_change = store.update_fact(
         subject,
@@ -659,6 +701,7 @@ def test_same_subject_transitions_share_one_change_set_id_per_batch() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 21, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     assert first_change is not None
     assert second_change is not None
@@ -688,6 +731,7 @@ def test_different_subjects_get_different_change_set_ids() -> None:
             source_url=None,
             observed_at=datetime(2026, 6, 2, tzinfo=UTC),
             change_set_id_factory=_factory(),
+            detected_at=TF_DETECTED_AT,
         )
     change_a = store.update_fact(
         subject_a,
@@ -695,6 +739,7 @@ def test_different_subjects_get_different_change_set_ids() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: factory_for(subject_a),
+        detected_at=TF_DETECTED_AT,
     )
     change_b = store.update_fact(
         subject_b,
@@ -702,6 +747,7 @@ def test_different_subjects_get_different_change_set_ids() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: factory_for(subject_b),
+        detected_at=TF_DETECTED_AT,
     )
     assert change_a is not None
     assert change_b is not None
@@ -717,6 +763,7 @@ def test_factory_is_called_exactly_once_for_a_real_change() -> None:
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     factory = _factory()
     change = store.update_fact(
@@ -725,6 +772,7 @@ def test_factory_is_called_exactly_once_for_a_real_change() -> None:
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=factory,
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     factory.assert_called_once()
@@ -742,6 +790,7 @@ def test_no_placeholder_or_temporary_change_set_id_ever_reaches_a_change() -> No
         source_url=None,
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
     change = store.update_fact(
         subject,
@@ -749,6 +798,7 @@ def test_no_placeholder_or_temporary_change_set_id_ever_reaches_a_change() -> No
         source_url=None,
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=_factory(CHANGE_SET_1),
+        detected_at=TF_DETECTED_AT,
     )
     assert change is not None
     assert change.change_set_id == CHANGE_SET_1
@@ -772,6 +822,7 @@ def _seed_first_value(store: FactStore, subject: Subject) -> None:
         source_url="https://openai.com/news/gpt-4o-launch",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
 
 
@@ -793,6 +844,7 @@ def test_real_change_with_invalid_current_source_url_spends_no_id_and_preserves_
             source_url="not a valid url",
             observed_at=datetime(2026, 8, 20, tzinfo=UTC),
             change_set_id_factory=factory,
+            detected_at=TF_DETECTED_AT,
         )
     assert exc_info.value.errors()[0]["type"] == "url_parsing"
 
@@ -829,6 +881,7 @@ def test_real_change_with_invalid_confidence_spends_no_id_and_leaves_store_uncha
             source_url="https://openai.com/news/gpt-4o-256k-context",
             observed_at=datetime(2026, 8, 20, tzinfo=UTC),
             change_set_id_factory=factory,
+            detected_at=TF_DETECTED_AT,
             confidence=bad_confidence,
         )
 
@@ -857,6 +910,7 @@ def _seed_price_value(store: FactStore, subject: Subject) -> None:
         source_url="https://openai.com/news/pricing",
         observed_at=datetime(2026, 6, 2, tzinfo=UTC),
         change_set_id_factory=_factory(),
+        detected_at=TF_DETECTED_AT,
     )
 
 
@@ -883,6 +937,7 @@ def test_inconsistent_change_type_override_to_not_a_disclosure_shape_spends_no_i
             observed_at=datetime(2026, 8, 20, tzinfo=UTC),
             change_type="changed",
             change_set_id_factory=factory,
+            detected_at=TF_DETECTED_AT,
         )
 
     factory.assert_not_called()
@@ -919,11 +974,104 @@ def test_inconsistent_change_type_override_to_a_disclosure_shape_spends_no_id(
             observed_at=datetime(2026, 8, 20, tzinfo=UTC),
             change_type="disclosed",
             change_set_id_factory=factory,
+            detected_at=TF_DETECTED_AT,
         )
 
     factory.assert_not_called()
     new_id_spy.assert_not_called()
 
+    current = store.get_current_fact(subject, "input_price_usd")
+    assert current is not None
+    assert current.value == "5"
+    assert current.snapshot_id == TF_SNAP_1
+    assert store.field_history(subject, "input_price_usd") == []
+
+
+# ---------------------------------------------------------------------------
+# ADR 0008 section 5.A: FactStore.update_fact() stamps every emitted Change
+# with the caller-injected detection time exactly, never the wall clock, and
+# validates it before spending a UUID or mutating anything.
+# ---------------------------------------------------------------------------
+
+
+def test_emitted_change_carries_the_injected_detected_at_exactly() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    injected = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+        detected_at=injected,
+    )
+    change = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, 9, 5, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+        detected_at=injected,
+    )
+    assert change is not None
+    assert change.detected_at == injected
+    assert change.detected_at.microsecond == 250000
+    # detected_at is not conflated with either observation's observed_at
+    assert change.current.observed_at == datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+    assert change.previous is not None
+    assert change.previous.observed_at == datetime(2026, 6, 2, tzinfo=UTC)
+
+
+def test_non_utc_injected_detected_at_is_normalized_on_the_change() -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    ist = timezone(timedelta(hours=5, minutes=30))
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", "128000", TF_SNAP_1, FACT_1),
+        source_url=None,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+        detected_at=datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
+    )
+    change = store.update_fact(
+        subject,
+        _fact("context_window_tokens", "256000", TF_SNAP_2, TF_FACT_2),
+        source_url=None,
+        observed_at=datetime(2026, 8, 20, 9, 5, tzinfo=UTC),
+        change_set_id_factory=_factory(),
+        detected_at=datetime(2026, 8, 20, 17, 30, 0, 123456, tzinfo=ist),
+    )
+    assert change is not None
+    assert change.detected_at.tzinfo == UTC
+    assert change.detected_at == datetime(2026, 8, 20, 12, 0, 0, 123456, tzinfo=UTC)
+    assert change.detected_at.microsecond == 123456
+
+
+def test_naive_injected_detected_at_spends_no_id_and_leaves_store_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FactStore()
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    _seed_price_value(store, subject)
+
+    new_id_spy = Mock()
+    monkeypatch.setattr("ai_daily_digest.intelligence.facts.new_id", new_id_spy)
+    factory = _factory()
+
+    with pytest.raises(ValidationError):
+        store.update_fact(
+            subject,
+            _fact("input_price_usd", "10", TF_SNAP_2, TF_FACT_2),
+            source_url=None,
+            observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+            change_set_id_factory=factory,
+            detected_at=datetime(2026, 8, 20, 12, 0, 0),
+        )
+
+    factory.assert_not_called()
+    new_id_spy.assert_not_called()
     current = store.get_current_fact(subject, "input_price_usd")
     assert current is not None
     assert current.value == "5"

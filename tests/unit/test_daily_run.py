@@ -21,9 +21,10 @@ a descriptive label.
 
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from ai_daily_digest.intelligence.compare_subjects import ComparisonAssertion, ComparisonResponse
 from ai_daily_digest.intelligence.daily_run import BatchItem, run_daily
@@ -39,6 +40,10 @@ from ai_daily_digest.shared.schemas import (
     Subject,
 )
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver
+
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TDR_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
@@ -252,9 +257,10 @@ def test_batch_produces_a_digest_with_a_change_and_a_comparison() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
         compare_call_fn=_compare_fake(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens"),
     )
@@ -358,9 +364,10 @@ def test_well_grounded_comparison_still_never_auto_publishes() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
         compare_call_fn=_compare_fake(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "context_window_tokens"),
     )
@@ -443,9 +450,10 @@ def test_reversed_pair_proposal_still_renders_the_correct_non_swapped_text() -> 
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
         compare_call_fn=_compare_fake(ANTHROPIC_CLAUDE, OPENAI_GPT4O, "context_window_tokens"),
     )
@@ -527,9 +535,10 @@ def test_known_snapshot_content_is_threaded_through_to_the_final_publish_gate() 
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
     )
 
@@ -594,9 +603,10 @@ def test_one_item_raising_does_not_abort_the_rest_of_the_batch() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
     )
 
@@ -648,6 +658,7 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TDR_DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -655,6 +666,7 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TDR_DETECTED_AT,
     )
 
     resolver = InMemorySnapshotResolver(
@@ -737,9 +749,10 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=resolver,
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
     )
 
@@ -783,9 +796,10 @@ def test_unresolvable_item_is_recorded_not_dropped() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         resolve_llm_call_fn=resolve_fake,
     )
 
@@ -816,9 +830,10 @@ def test_comparison_skipped_with_fewer_than_two_resolved_subjects() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -853,9 +868,10 @@ def test_known_snapshot_ids_accumulate_across_calls() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -877,7 +893,7 @@ def test_snapshot_resolver_is_required() -> None:
     batch: list[BatchItem] = []
 
     with pytest.raises(TypeError):
-        run_daily(store, known_snapshot_ids, batch, "2026-08-20", alias_table=[])  # type: ignore[call-arg]
+        run_daily(store, known_snapshot_ids, batch, date(2026, 8, 20), alias_table=[])  # type: ignore[call-arg]
 
 
 def test_caller_supplied_snapshot_resolver_is_reused_not_replaced() -> None:
@@ -907,9 +923,10 @@ def test_caller_supplied_snapshot_resolver_is_reused_not_replaced() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=resolver,
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -949,9 +966,10 @@ def test_resolver_without_add_is_left_to_manage_its_own_contents() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=_ReadOnlyResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -987,9 +1005,10 @@ def test_recurring_subject_gets_a_new_change_set_id_on_a_later_run() -> None:
                 ),
             )
         ],
-        "2026-06-02",
+        date(2026, 6, 2),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -1011,9 +1030,10 @@ def test_recurring_subject_gets_a_new_change_set_id_on_a_later_run() -> None:
                 ),
             )
         ],
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens"
         ),
@@ -1038,9 +1058,10 @@ def test_recurring_subject_gets_a_new_change_set_id_on_a_later_run() -> None:
                 ),
             )
         ],
-        "2026-09-01",
+        date(2026, 9, 1),
         alias_table=[],
         snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "512000", "increased to 512,000 tokens"
         ),
@@ -1068,6 +1089,7 @@ def test_disclosure_transition_integrated_pipeline_run() -> None:
         source_url="https://openai.com/news/pricing-tbd",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TDR_DETECTED_AT,
     )
     known_snapshot_ids: set[uuid.UUID] = {TDR_SNAP_PRICE_WITHHELD}
     resolver = InMemorySnapshotResolver(
@@ -1109,9 +1131,10 @@ def test_disclosure_transition_integrated_pipeline_run() -> None:
         store,
         known_snapshot_ids,
         batch,
-        "2026-08-20",
+        date(2026, 8, 20),
         alias_table=[],
         snapshot_resolver=resolver,
+        batch_detected_at=TDR_DETECTED_AT,
         extract_call_fn=extract_fake,
     )
 
@@ -1132,3 +1155,154 @@ def test_disclosure_transition_integrated_pipeline_run() -> None:
     assert claim.text == "OpenAI's GPT-4o's input price (USD) is now disclosed as 5.00."
     assert set(claim.citation_snapshot_ids) == {TDR_SNAP_PRICE_DISCLOSED, TDR_SNAP_PRICE_WITHHELD}
     assert claim.validation_status == "supported"
+
+
+# ---------------------------------------------------------------------------
+# ADR 0008 section 5.A: run_daily() takes a required, caller-injected batch
+# detection time, validates it once up front, and every Change the run
+# produces carries exactly that instant as its detected_at.
+# ---------------------------------------------------------------------------
+
+
+def _seed_context_window(store: FactStore, subject: Subject, value: str, snap: uuid.UUID) -> None:
+    store.update_fact(
+        subject,
+        _fact("context_window_tokens", value, snap),
+        source_url="https://example.com/seed",
+        observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TDR_DETECTED_AT,
+    )
+
+
+def test_every_change_in_a_batch_shares_the_injected_detected_at() -> None:
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    store.register_subject(ANTHROPIC_CLAUDE)
+    _seed_context_window(store, OPENAI_GPT4O, "128000", TDR_SNAP_OPENAI_SEED)
+    _seed_context_window(store, ANTHROPIC_CLAUDE, "64000", TDR_SNAP_ANTHROPIC_SEED)
+    known_snapshot_ids: set[uuid.UUID] = {TDR_SNAP_OPENAI_SEED, TDR_SNAP_ANTHROPIC_SEED}
+
+    responses = {
+        TDR_SNAP_OPENAI_CTX: ("context_window_tokens", "256000", "to 256,000 tokens"),
+        TDR_SNAP_ANTHROPIC_CTX: ("context_window_tokens", "200000", "now 200,000 tokens"),
+    }
+
+    def extract_fake(system: str, prompt: str) -> FactExtractionResponse:
+        for snap_id, (field, value, span) in responses.items():
+            if str(snap_id) in prompt:
+                return FactExtractionResponse(
+                    facts=[
+                        FactCandidate(field=field, value=value, quoted_span=span, confidence=0.95)
+                    ]
+                )
+        return FactExtractionResponse(facts=[])
+
+    batch = [
+        BatchItem(
+            _item(TDR_ITEM_OPENAI_CTX, "GPT-4o context window"),
+            _snapshot(
+                TDR_SNAP_OPENAI_CTX,
+                TDR_ITEM_OPENAI_CTX,
+                "OpenAI increased GPT-4o's context window to 256,000 tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        ),
+        BatchItem(
+            _item(
+                TDR_ITEM_ANTHROPIC_CTX,
+                "Claude context window",
+                publisher="Anthropic",
+                source_id="anthropic_news",
+            ),
+            _snapshot(
+                TDR_SNAP_ANTHROPIC_CTX,
+                TDR_ITEM_ANTHROPIC_CTX,
+                "Anthropic said Claude's context window is now 200,000 tokens.",
+                datetime(2026, 8, 19, tzinfo=UTC),
+            ),
+        ),
+    ]
+
+    def no_comparisons(system: str, prompt: str) -> ComparisonResponse:
+        return ComparisonResponse(assertions=[])
+
+    injected = datetime(2026, 8, 20, 6, 30, 0, 987654, tzinfo=UTC)
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        batch,
+        date(2026, 8, 20),
+        alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=injected,
+        extract_call_fn=extract_fake,
+        compare_call_fn=no_comparisons,
+    )
+
+    assert result.unresolved_item_ids == []
+    assert result.failed_item_ids == []
+    all_changes = [c for cs in result.change_sets for c in cs.changes]
+    assert len(all_changes) == 2
+    assert {c.subject for c in all_changes} == {OPENAI_GPT4O, ANTHROPIC_CLAUDE}
+    for change in all_changes:
+        assert change.detected_at == injected
+        assert change.detected_at.microsecond == 987654
+
+
+def test_run_daily_rejects_a_naive_batch_detected_at_before_processing_anything() -> None:
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    known_snapshot_ids: set[uuid.UUID] = set()
+    extract_calls: list[str] = []
+
+    def extract_spy(system: str, prompt: str) -> FactExtractionResponse:
+        extract_calls.append(prompt)
+        return FactExtractionResponse(facts=[])
+
+    batch = [
+        BatchItem(
+            _item(TDR_ITEM_LAUNCH, "Introducing GPT-4o"),
+            _snapshot(
+                TDR_SNAP_LAUNCH,
+                TDR_ITEM_LAUNCH,
+                "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        )
+    ]
+
+    with pytest.raises(ValidationError):
+        run_daily(
+            store,
+            known_snapshot_ids,
+            batch,
+            date(2026, 8, 20),
+            alias_table=[],
+            snapshot_resolver=InMemorySnapshotResolver(),
+            batch_detected_at=datetime(2026, 8, 20, 12, 0, 0),
+            extract_call_fn=extract_spy,
+        )
+
+    assert extract_calls == []  # failed before any item was processed
+    assert store.get_current_fact(OPENAI_GPT4O, "context_window_tokens") is None
+
+
+def test_digest_date_is_a_real_date_end_to_end() -> None:
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    known_snapshot_ids: set[uuid.UUID] = set()
+
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        [],
+        date(2026, 8, 20),
+        alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
+        batch_detected_at=TDR_DETECTED_AT,
+        extract_call_fn=_extraction_fake("context_window_tokens", "1", "1"),
+    )
+    assert result.digest.digest_date == date(2026, 8, 20)
+    assert isinstance(result.digest.digest_date, date)
+    assert result.digest.model_dump(mode="json")["digest_date"] == "2026-08-20"

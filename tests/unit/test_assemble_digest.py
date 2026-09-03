@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -36,7 +36,7 @@ def _resolver(*snap_ids: uuid.UUID) -> InMemorySnapshotResolver:
 
 def test_empty_claims_stays_draft_not_published() -> None:
     digest = assemble_digest(
-        "2026-08-20",
+        date(2026, 8, 20),
         [],
         known_snapshot_ids=KNOWN_SNAPSHOTS,
         snapshot_resolver=InMemorySnapshotResolver(),
@@ -47,7 +47,7 @@ def test_empty_claims_stays_draft_not_published() -> None:
 
 def test_all_supported_claims_publishes() -> None:
     digest = assemble_digest(
-        "2026-08-20",
+        date(2026, 8, 20),
         [_claim([SNAPSHOT_1], CLAIM_1), _claim([SNAPSHOT_2], CLAIM_2)],
         known_snapshot_ids=KNOWN_SNAPSHOTS,
         snapshot_resolver=_resolver(SNAPSHOT_1, SNAPSHOT_2),
@@ -58,7 +58,7 @@ def test_all_supported_claims_publishes() -> None:
 
 def test_any_unsupported_claim_routes_to_review_but_keeps_all_claims() -> None:
     digest = assemble_digest(
-        "2026-08-20",
+        date(2026, 8, 20),
         [_claim([SNAPSHOT_1], CLAIM_1), _claim([SNAPSHOT_MISSING], CLAIM_2)],
         known_snapshot_ids=KNOWN_SNAPSHOTS,
         snapshot_resolver=_resolver(SNAPSHOT_1),
@@ -71,7 +71,7 @@ def test_any_unsupported_claim_routes_to_review_but_keeps_all_claims() -> None:
 
 def test_default_title_includes_the_date() -> None:
     digest = assemble_digest(
-        "2026-08-20",
+        date(2026, 8, 20),
         [_claim([SNAPSHOT_1])],
         known_snapshot_ids=KNOWN_SNAPSHOTS,
         snapshot_resolver=InMemorySnapshotResolver(),
@@ -81,7 +81,7 @@ def test_default_title_includes_the_date() -> None:
 
 def test_custom_title_is_used_verbatim() -> None:
     digest = assemble_digest(
-        "2026-08-20",
+        date(2026, 8, 20),
         [_claim([SNAPSHOT_1])],
         known_snapshot_ids=KNOWN_SNAPSHOTS,
         snapshot_resolver=InMemorySnapshotResolver(),
@@ -92,12 +92,12 @@ def test_custom_title_is_used_verbatim() -> None:
 
 def test_digest_date_and_ids_are_set() -> None:
     digest = assemble_digest(
-        "2026-08-20",
+        date(2026, 8, 20),
         [_claim([SNAPSHOT_1])],
         known_snapshot_ids=KNOWN_SNAPSHOTS,
         snapshot_resolver=InMemorySnapshotResolver(),
     )
-    assert digest.digest_date == "2026-08-20"
+    assert digest.digest_date == date(2026, 8, 20)
     assert digest.id
 
 
@@ -107,5 +107,5 @@ def test_snapshot_resolver_is_required() -> None:
     just because the compile-time check alone was skipped."""
     with pytest.raises(TypeError):
         assemble_digest(  # type: ignore[call-arg]
-            "2026-08-20", [_claim([SNAPSHOT_1])], known_snapshot_ids=KNOWN_SNAPSHOTS
+            date(2026, 8, 20), [_claim([SNAPSHOT_1])], known_snapshot_ids=KNOWN_SNAPSHOTS
         )

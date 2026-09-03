@@ -148,7 +148,16 @@ differ: a deleted record disappears, and a record whose membership-affecting fie
 a digest moving from draft to published) can enter or leave a later page. Restarting the
 traversal only resumes from the current first page; a genuinely frozen view would need a future
 `as_of` boundary. Sort keys (`first_fetched_at`, `detected_at`, `digest_date`) and every `id`
-are immutable by contract.
+are immutable by contract. The two datetime sort keys are business timestamps — authoritative,
+timezone-aware, normalized to UTC with microseconds preserved — while the `id` is an opaque
+UUID v7 tie-breaker only ([ADR 0007](adr/0007-uuid-v7-identifier-strategy.md)). Each ordering
+tuple component is enforced immutable at the shared-model boundary today
+(`shared/schemas.py`, `Field(frozen=True)` on `SourceItem.id`/`first_fetched_at`,
+`Change.id`/`detected_at`, `Digest.id`/`digest_date`; the model as a whole is not frozen, so
+fields such as `SourceItem.latest_snapshot_id` still change). Database-level enforcement of the
+same six columns is deferred to the persistence/migration PR and must use a real mechanism —
+a `BEFORE UPDATE` trigger or restricted column-update privileges, not a plain `CHECK`
+constraint ([ADR 0008](adr/0008-cursor-pagination-contract.md) section 5.D).
 
 ## Core endpoints
 
@@ -195,7 +204,11 @@ Required invariants:
 - `canonical_url` is normalized before identity comparison.
 - `dedupe_key` is derived from the normalized canonical URL and has a database uniqueness
   constraint. It may be recalculated if canonicalization rules change; `id` never changes.
-- Publisher-provided publication time remains distinct from fetch time.
+- Publisher-provided publication time (`published_at`) and `updated_at` remain distinct from
+  `first_fetched_at` — when the service first discovered the item. `first_fetched_at` is
+  required, timezone-aware, normalized to UTC (microseconds preserved), immutable, and the
+  business sort value for `GET /v1/updates` (see [Ordering](#ordering)). It is never rewritten —
+  not on a re-fetch, a content-hash change, a new snapshot, or a correction.
 - An item may have multiple snapshots.
 - A different publisher covering the same event is not deleted as a duplicate.
 - `event_id` is nullable until the intelligence workflow groups independently published items.
@@ -248,9 +261,19 @@ map explicitly in the shared model and contract tests rather than being used int
     "source_url": "https://example.com/new"
   },
   "confidence": 0.98,
+  "detected_at": "2026-08-24T09:06:12.500000Z",
   "review_status": "validated"
 }
 ```
+
+`detected_at` is when the intelligence pipeline detected this change during a batch run. It is
+**not** `current.observed_at` (when the fact was observed in a source) and **not** a publisher's
+publication time — three distinct instants. It is required, always timezone-aware and normalized
+to UTC (a timezone-naive value is rejected at the model boundary; microseconds are preserved),
+and it is the business sort value for `GET /v1/changes` (`(detected_at DESC, id DESC)`). Every
+`Change` produced by one batch run carries the exact same `detected_at` — the orchestrator
+injects one batch detection time; no model or pipeline node reads the wall clock. `detected_at`
+and the `Change` `id` are immutable by contract (see [Ordering](#ordering)).
 
 `current` is always present as an object. `previous` is `null` only for a genuine first disclosure (no prior observation of any kind exists yet) — for every other `change_type`, including a disclosure-status transition, `previous` is present as an object. Either object's own nested `value` may independently be `null`: `previous.value` is `null` when this Change is a not-previously-disclosed-to-disclosed transition (`change_type: "disclosed"` with a `previous` object present, [ADR 0006](adr/0006-disclosure-status-semantics.md)), and `current.value` is `null` when this Change is itself a disclosure-status transition to "not disclosed" (`change_type: "not_disclosed"`) — the source now explicitly withholds a fact it previously disclosed. Absence of evidence must not be described as a zero or a negative fact.
 
@@ -349,6 +372,12 @@ Digest list and detail responses use a wrapper rather than returning unowned cla
   ]
 }
 ```
+
+`digest_date` is a real calendar date, serialized as `YYYY-MM-DD` on the wire. An impossible
+value (for example `"2026-13-40"`) is rejected at the model boundary rather than stored as an
+unparseable string. It is the business sort value for `GET /v1/digests` (`(digest_date DESC,
+id DESC)`), and it and the `Digest` `id` are immutable by contract (see [Ordering](#ordering)).
+Digest uniqueness, regeneration, and version history remain a separate lifecycle decision.
 
 ## Digest claim contract
 

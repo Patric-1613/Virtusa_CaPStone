@@ -18,11 +18,20 @@ the built-in UUID7 type that shared/ids.py::Uuid7Id re-exports ships in
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    TypeAdapter,
+    model_validator,
+)
 
 from ai_daily_digest.shared.ids import Uuid7Id
 
@@ -40,6 +49,35 @@ from ai_daily_digest.shared.ids import Uuid7Id
 # in review, not hypothetical.
 Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
+
+def _normalize_to_utc(value: datetime) -> datetime:
+    """Shift an aware datetime to UTC. `astimezone` only changes the tzinfo
+    offset, never the instant, so microseconds are preserved exactly."""
+    return value.astimezone(UTC)
+
+
+# The one validation/normalization boundary for a business-ordering timestamp --
+# a pagination sort key (SourceItem.first_fetched_at, Change.detected_at). ADR
+# 0008 section 5: reject timezone-naive datetimes (the service never guesses a
+# zone), normalize aware values to UTC, preserve microseconds. `AwareDatetime`
+# does the naive rejection; `AfterValidator(_normalize_to_utc)` does the UTC
+# conversion. One definition so the model boundary here and the pre-UUID check
+# in FactStore.update_fact()/run_daily() cannot drift.
+OrderingTimestamp = Annotated[AwareDatetime, AfterValidator(_normalize_to_utc)]
+
+_ORDERING_TIMESTAMP_ADAPTER: TypeAdapter[datetime] = TypeAdapter(OrderingTimestamp)
+
+
+def normalize_ordering_timestamp(value: datetime) -> datetime:
+    """Validate and normalize a business-ordering timestamp exactly the way the
+    model boundary (`OrderingTimestamp`) does -- for callers that must check it
+    BEFORE allocating a UUID (`FactStore.update_fact()`) or before any batch
+    processing (`intelligence/daily_run.py::run_daily()`). Raises
+    `pydantic.ValidationError` for a timezone-naive value; returns the
+    UTC-normalized value otherwise (microseconds preserved)."""
+    return _ORDERING_TIMESTAMP_ADAPTER.validate_python(value)
+
+
 # ---------------------------------------------------------------------------
 # Ingestion output, intelligence input
 # ---------------------------------------------------------------------------
@@ -48,9 +86,18 @@ Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 class SourceItem(BaseModel):
     """The normalized identity and metadata of a published item. Content
     lives separately in DocumentSnapshot — an item may have multiple
-    snapshots over time; this record never holds body text itself."""
+    snapshots over time; this record never holds body text itself.
 
-    id: Uuid7Id
+    `id` and `first_fetched_at` are the `(business_sort_value, id)` ordering
+    tuple `/v1/updates` paginates on (ADR 0008 section 5). Both are
+    `Field(frozen=True)`: ordinary attribute reassignment raises. The model as
+    a whole is NOT frozen -- `latest_snapshot_id`, `updated_at` and similar
+    fields legitimately change as later snapshots arrive. Database-level
+    enforcement (a `BEFORE UPDATE` trigger or restricted column-update
+    privileges -- not a plain `CHECK` constraint) is deferred to the
+    persistence/migration PR."""
+
+    id: Uuid7Id = Field(frozen=True)
     dedupe_key: str  # sha256 of the normalized canonical_url; DB-unique
     source_id: str  # sources.yaml registry slug, e.g. "openai_news" -- a
     # human-readable configuration key, never converted to a UUID (ADR 0007).
@@ -59,7 +106,14 @@ class SourceItem(BaseModel):
     canonical_url: HttpUrl
     published_at: datetime | None = None
     updated_at: datetime | None = None
-    first_fetched_at: datetime
+    # first_fetched_at: when the service first discovered this item -- the
+    # `/v1/updates` sort key. `OrderingTimestamp` rejects a timezone-naive
+    # value and normalizes an aware one to UTC (microseconds preserved).
+    # `frozen=True`: ingestion must never rewrite it -- not on a re-fetch, a
+    # content-hash change, a new DocumentSnapshot, or any correction. Distinct
+    # from `published_at` (publisher-controlled, nullable) and `updated_at`,
+    # whose semantics this PR does not touch (ADR 0008 section 5.C).
+    first_fetched_at: OrderingTimestamp = Field(frozen=True)
     latest_snapshot_id: Uuid7Id | None = None
     # event_id: intentionally NOT Uuid7Id. It's a human-readable grouping
     # key today (e.g. "ev-gpt4o-256k" in the fixture pack), not a
@@ -370,9 +424,19 @@ class Change(BaseModel):
     The exact required shape per change_type is enforced at construction
     by _require_valid_change_shape below, not just documented as a
     convention — see validate_change_shape's own docstring for the rules
-    themselves."""
+    themselves.
 
-    id: Uuid7Id
+    `id` and `detected_at` are the `(business_sort_value, id)` ordering tuple
+    `/v1/changes` paginates on (ADR 0008 section 5). Both are
+    `Field(frozen=True)`. `detected_at` is when the intelligence pipeline
+    detected this change -- NOT `current.observed_at` (when a fact was observed
+    in a source) or when a publisher published: those are different instants
+    with different meanings. It is required, timezone-aware (naive rejected),
+    normalized to UTC with microseconds preserved, and supplied by the
+    orchestrator's injected batch detection time -- never `datetime.now()`
+    inside this model or a graph node (ADR 0008 section 5.A)."""
+
+    id: Uuid7Id = Field(frozen=True)
     change_set_id: Uuid7Id
     subject: Subject
     field: str
@@ -380,6 +444,7 @@ class Change(BaseModel):
     previous: FactObservation | None = None
     current: FactObservation
     confidence: Confidence
+    detected_at: OrderingTimestamp = Field(frozen=True)
     review_status: str = "pending"  # "pending" | "validated" | "rejected"
 
     @model_validator(mode="after")
@@ -444,8 +509,16 @@ class DigestClaim(BaseModel):
 
 
 class Digest(BaseModel):
-    id: Uuid7Id
-    digest_date: str  # YYYY-MM-DD
+    """`id` and `digest_date` are the `(business_sort_value, id)` ordering
+    tuple `/v1/digests` paginates on (ADR 0008 section 5). Both are
+    `Field(frozen=True)`. `digest_date` is a real `datetime.date` -- an
+    impossible value like `"2026-13-40"` is rejected at construction rather
+    than stored as an unparseable string -- and still serializes to exactly
+    `YYYY-MM-DD` on the wire. Digest uniqueness / regeneration / version
+    history is a separate lifecycle decision (ADR 0008 section 5.B)."""
+
+    id: Uuid7Id = Field(frozen=True)
+    digest_date: date = Field(frozen=True)  # wire: YYYY-MM-DD
     status: DigestStatus = DigestStatus.DRAFT
     title: str
     claims: list[DigestClaim] = Field(default_factory=list)

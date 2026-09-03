@@ -13,6 +13,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
@@ -39,6 +40,7 @@ from ai_daily_digest.shared.schemas import (
     DocumentSnapshot,
     SourceItem,
     Subject,
+    normalize_ordering_timestamp,
 )
 from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
@@ -189,9 +191,10 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     store: FactStore,
     known_snapshot_ids: set[uuid.UUID],
     batch: list[BatchItem],
-    digest_date: str,
+    digest_date: date,
     *,
     snapshot_resolver: SnapshotResolver,
+    batch_detected_at: datetime,
     comparison_fields: list[str] | None = None,
     alias_table: list[SubjectAlias] | None = None,
     resolve_llm_call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
@@ -236,10 +239,22 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     the allocator, threaded into `build_graph()` so its `compare` node
     can request one per subject on first use within this run only.
 
+    `batch_detected_at` is REQUIRED and caller-injected: the one instant every
+    `Change` this run produces is stamped with as its `detected_at` (the
+    `/v1/changes` sort key, ADR 0008 section 5.A). run_daily() validates and
+    UTC-normalizes it once, up front -- a timezone-naive value fails the whole
+    run before any item is processed -- then threads the normalized value into
+    build_graph() and thus into every FactStore.update_fact() call. Nothing in
+    this path reads the wall clock; pass an explicit value in tests.
+
     INTERIM SAFETY POLICY: no cross-subject comparison claim (from
     compare_subjects()) may cause the digest to auto-publish, regardless
     of its own validation status -- see _never_auto_publish_comparisons().
     """
+    # Fail fast on a bad batch detection time -- before building the graph or
+    # touching a single item (ADR 0008 section 5.A). Downstream (build_graph,
+    # update_fact, Change) all get this already-canonical UTC value.
+    normalized_batch_detected_at = normalize_ordering_timestamp(batch_detected_at)
     # _BatchAccumulator (and its change_set_ids allocator) must exist
     # BEFORE build_graph(), which closes over acc.change_set_ids the same
     # way it already closes over `store` -- the graph cannot be built
@@ -248,6 +263,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     graph = build_graph(
         store,
         acc.change_set_ids,
+        batch_detected_at=normalized_batch_detected_at,
         alias_table=alias_table,
         resolve_llm_call_fn=resolve_llm_call_fn,
         extract_call_fn=extract_call_fn,
