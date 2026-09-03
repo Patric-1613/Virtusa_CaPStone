@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import TypeAdapter
 
 from ai_daily_digest.intelligence.assemble_digest import assemble_digest
 from ai_daily_digest.intelligence.change_sets import build_change_sets
@@ -45,6 +46,38 @@ from ai_daily_digest.shared.schemas import (
 from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 logger = logging.getLogger("intelligence.daily_run")
+
+# Reuses shared/schemas.py's own `date` parsing strictness for
+# run_daily()'s digest_date string boundary, rather than a separately
+# reconstructed one -- `datetime.date.fromisoformat()` is meaningfully
+# MORE lenient than Digest's own field validation (it accepts basic
+# "YYYYMMDD" and ISO week-date strings like "2026-W35-3", each parsing
+# to a real but surprising date), which would let run_daily() silently
+# accept a string Digest(digest_date=...) itself would reject. Verified
+# empirically, not assumed, before relying on this: TypeAdapter(date)
+# rejects exactly the strings Digest's own validator rejects.
+_DATE_ADAPTER: TypeAdapter[date] = TypeAdapter(date)
+
+
+def _normalize_digest_date(digest_date: date | str) -> date:
+    """The one place run_daily()'s digest_date boundary is normalized
+    (ADR 0008 section 5.B). A `datetime` is checked FIRST and rejected
+    explicitly, not silently accepted: `datetime` is a subclass of
+    `date`, so it satisfies the `date | str` annotation structurally,
+    but pydantic's own `date` validation only accepts a `datetime` whose
+    time component is exactly midnight UTC -- silently truncating away
+    the time on that one lucky value and raising on every other one.
+    Rejecting every `datetime` outright here, before it can reach that
+    inconsistency, is safer than depending on where in the day it falls."""
+    if isinstance(digest_date, datetime):
+        raise TypeError(
+            "run_daily()'s digest_date must be a plain date or an ISO 'YYYY-MM-DD' string, "
+            f"not a datetime ({digest_date!r}) -- pass digest_date.date() explicitly if you "
+            "have a datetime"
+        )
+    if isinstance(digest_date, str):
+        return _DATE_ADAPTER.validate_python(digest_date.strip())
+    return digest_date
 
 
 @dataclass
@@ -241,8 +274,12 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
 
     digest_date accepts either a real `date` or an ISO `YYYY-MM-DD`
     string (normalized to `date` once here, at the boundary, before
-    reaching assemble_digest()/Digest -- ADR 0008 section 5.B; an
-    unparseable string raises `ValueError` from `date.fromisoformat`).
+    reaching assemble_digest()/Digest -- ADR 0008 section 5.B, see
+    _normalize_digest_date()). An unparseable or non-`YYYY-MM-DD`
+    string raises `ValidationError` -- the same strictness Digest's own
+    field validation applies, not stdlib `date.fromisoformat`'s more
+    lenient parsing. A `datetime` is rejected outright with `TypeError`,
+    not silently accepted or silently truncated.
 
     batch_detected_at (ADR 0008 section 5.A): the single timezone-aware
     detection time stamped onto every Change this run produces --
@@ -262,9 +299,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
         if batch_detected_at is not None
         else datetime.now(UTC)
     )
-    typed_digest_date = (
-        date.fromisoformat(digest_date.strip()) if isinstance(digest_date, str) else digest_date
-    )
+    typed_digest_date = _normalize_digest_date(digest_date)
     # _BatchAccumulator (and its change_set_ids allocator) must exist
     # BEFORE build_graph(), which closes over acc.change_set_ids the same
     # way it already closes over `store` -- the graph cannot be built

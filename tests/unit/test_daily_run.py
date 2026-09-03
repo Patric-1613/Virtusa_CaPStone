@@ -21,9 +21,10 @@ a descriptive label.
 
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from ai_daily_digest.intelligence.compare_subjects import ComparisonAssertion, ComparisonResponse
 from ai_daily_digest.intelligence.daily_run import BatchItem, run_daily
@@ -887,6 +888,57 @@ def test_snapshot_resolver_is_required() -> None:
 
     with pytest.raises(TypeError):
         run_daily(store, known_snapshot_ids, batch, "2026-08-20", alias_table=[])  # type: ignore[call-arg]
+
+
+# --- ADR 0008 section 5.B: run_daily()'s digest_date string boundary must
+# be exactly as strict as Digest's own field validation, not more lenient
+# -- and a datetime (a date subclass, so it type-checks against `date |
+# str` without a mypy error) must never be silently accepted or silently
+# truncated depending on whether it happens to fall on midnight UTC. ---
+
+
+def _run_daily_with_digest_date(digest_date: object) -> date:
+    store = FactStore()
+    known_snapshot_ids: set[uuid.UUID] = set()
+    result = run_daily(
+        store,
+        known_snapshot_ids,
+        [],
+        digest_date,  # type: ignore[arg-type]
+        alias_table=[],
+        snapshot_resolver=InMemorySnapshotResolver(),
+    )
+    return result.digest.digest_date
+
+
+@pytest.mark.parametrize("lenient_string", ["20260902", "2026-W35-3"])
+def test_digest_date_string_rejects_what_digest_itself_would_reject(lenient_string: str) -> None:
+    """`date.fromisoformat()` accepts these (silently resolving to a real
+    but surprising date) even though `Digest(digest_date=...)` itself
+    rejects them -- run_daily()'s own boundary must be exactly as strict,
+    not a laxer gate in front of a stricter one."""
+    with pytest.raises(ValidationError):
+        _run_daily_with_digest_date(lenient_string)
+
+
+def test_digest_date_string_still_accepts_the_documented_format() -> None:
+    assert _run_daily_with_digest_date("2026-09-02") == date(2026, 9, 2)
+
+
+def test_digest_date_rejects_a_datetime_even_at_midnight_utc() -> None:
+    """A `datetime` satisfies the `date | str` annotation structurally
+    (datetime is a date subclass) but must never be accepted -- Digest's
+    own validation would silently truncate it to a date only when the
+    time happens to be exactly midnight UTC, and reject it otherwise;
+    run_daily() must reject every datetime the same way, not depend on
+    what time of day it is."""
+    with pytest.raises(TypeError, match="datetime"):
+        _run_daily_with_digest_date(datetime(2026, 9, 2, 0, 0, 0, tzinfo=UTC))
+
+
+def test_digest_date_rejects_a_non_midnight_datetime_too() -> None:
+    with pytest.raises(TypeError, match="datetime"):
+        _run_daily_with_digest_date(datetime(2026, 9, 2, 10, 30, tzinfo=UTC))
 
 
 def test_caller_supplied_snapshot_resolver_is_reused_not_replaced() -> None:
