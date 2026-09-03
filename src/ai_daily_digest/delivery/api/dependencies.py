@@ -44,7 +44,19 @@ class ReadinessRegistry:
         checks: list[ReadinessCheck] = []
         for name in self.required_dependencies:
             try:
-                ready = await self.probes[name].is_ready()
+                result: object = await self.probes[name].is_ready()
+                if not isinstance(result, bool):
+                    LOGGER.error(
+                        "Readiness probe returned a non-boolean result",
+                        extra={
+                            "request_id": str(request_id),
+                            "dependency": name,
+                            "result_type": type(result).__name__,
+                        },
+                    )
+                    ready = False
+                else:
+                    ready = result
             # A probe may wrap any infrastructure client; every such failure
             # means "not ready" and must be reduced to a safe coarse status.
             except Exception as exc:  # pylint: disable=broad-exception-caught
