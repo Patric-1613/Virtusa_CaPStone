@@ -19,7 +19,7 @@ from pathlib import Path
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
 from ai_daily_digest.intelligence.validate import validate_claim
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Change, Digest, DigestStatus
+from ai_daily_digest.shared.schemas import Change, ClaimValidationStatus, Digest, DigestStatus
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver, SnapshotResolver
 
 # CWD-rooted, not __file__-rooted -- see loaders.py::find_repo_root's
@@ -50,7 +50,7 @@ def citation_validity(
         if validate_claim(
             c, known_snapshot_ids, snapshot_resolver=snapshot_resolver
         ).validation_status
-        == "supported"
+        == ClaimValidationStatus.SUPPORTED
     )
     return valid / len(digest.claims)
 
@@ -70,7 +70,7 @@ def unsupported_claim_count(
         if validate_claim(
             c, known_snapshot_ids, snapshot_resolver=snapshot_resolver
         ).validation_status
-        != "supported"
+        != ClaimValidationStatus.SUPPORTED
     )
 
 
