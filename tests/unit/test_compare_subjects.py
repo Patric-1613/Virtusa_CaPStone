@@ -47,6 +47,10 @@ TCMP_FACT_2 = uuid.UUID("01a01752-4de8-76d1-8df8-87108b8684b6")
 TCMP_FACT_3 = uuid.UUID("01a01c78-add0-7723-928d-a9e5afe500ef")
 TCMP_FACT_ND = uuid.UUID("01a01c78-b1b8-7383-bcbd-e6aef4ebc6f2")
 
+# ADR 0008: a fixed, deterministic detection time -- every store.update_fact()
+# call in this file uses this same value.
+DETECTED_AT = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+
 
 def _fact(
     field: str, value: str, snapshot_id: uuid.UUID, fact_id: uuid.UUID = FACT_1
@@ -89,6 +93,7 @@ def _store_with_data() -> FactStore:
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),  # never asserted in this suite
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -96,6 +101,7 @@ def _store_with_data() -> FactStore:
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -103,6 +109,7 @@ def _store_with_data() -> FactStore:
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 19, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     return store
 
@@ -155,6 +162,7 @@ def test_build_fact_table_carries_through_a_real_not_disclosed_fact() -> None:
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     rows = build_fact_table(store, [OPENAI_GPT4O], ["input_price_usd"])
     row = rows[0]
@@ -260,6 +268,7 @@ def test_equal_values_are_rendered_as_equal_not_higher_or_lower() -> None:
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -267,6 +276,7 @@ def test_equal_values_are_rendered_as_equal_not_higher_or_lower() -> None:
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
 
@@ -353,6 +363,7 @@ def test_value_unknown_on_either_side_is_rejected(caplog: pytest.LogCaptureFixtu
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     # Anthropic's context_window_tokens is never recorded.
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
@@ -379,6 +390,7 @@ def test_value_explicitly_not_disclosed_on_either_side_is_rejected(
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -386,6 +398,7 @@ def test_value_explicitly_not_disclosed_on_either_side_is_rejected(
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
 
@@ -411,6 +424,7 @@ def test_fact_table_prompt_distinguishes_unknown_from_not_disclosed() -> None:
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     # OpenAI's context_window_tokens is never recorded -- "unknown".
     rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["context_window_tokens"])
@@ -445,6 +459,7 @@ def test_malformed_stored_value_drops_only_that_candidate(
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -452,6 +467,7 @@ def test_malformed_stored_value_drops_only_that_candidate(
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         GOOGLE_GEMINI,
@@ -459,6 +475,7 @@ def test_malformed_stored_value_drops_only_that_candidate(
         source_url="https://google.com/a",
         observed_at=datetime(2026, 8, 20, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     rows = build_fact_table(
         store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE, GOOGLE_GEMINI], ["context_window_tokens"]

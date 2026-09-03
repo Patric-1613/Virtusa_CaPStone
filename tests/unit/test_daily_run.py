@@ -80,6 +80,13 @@ TDR_FACT_PRICE_WITHHELD = uuid.UUID("01a0627c-d1c1-7e32-a155-f03173402ee9")
 TDR_ITEM_PRICE_DISCLOSED = uuid.UUID("01a0627c-d1c1-7e32-a155-f04a6b9f5fac")
 TDR_SNAP_PRICE_DISCLOSED = uuid.UUID("01a0627c-d1c1-7e32-a155-f05321a1db2b")
 
+# ADR 0008: a fixed, deterministic detection time for every direct
+# store.update_fact() seed call in this file. run_daily() itself computes
+# its own batch_detected_at internally when not supplied -- these seed
+# calls are the pre-existing-history setup a real run_daily() call in the
+# same test doesn't touch.
+DETECTED_AT = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+
 
 def _item(
     item_id: uuid.UUID,
@@ -648,6 +655,7 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
         source_url="https://openai.com/a",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     store.update_fact(
         ANTHROPIC_CLAUDE,
@@ -655,6 +663,7 @@ def test_conflicting_snapshot_fails_only_that_item_and_rest_of_batch_still_runs(
         source_url="https://anthropic.com/a",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
 
     resolver = InMemorySnapshotResolver(
@@ -1068,6 +1077,7 @@ def test_disclosure_transition_integrated_pipeline_run() -> None:
         source_url="https://openai.com/news/pricing-tbd",
         observed_at=datetime(2026, 6, 1, tzinfo=UTC),
         change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=DETECTED_AT,
     )
     known_snapshot_ids: set[uuid.UUID] = {TDR_SNAP_PRICE_WITHHELD}
     resolver = InMemorySnapshotResolver(

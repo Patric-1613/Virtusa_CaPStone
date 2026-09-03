@@ -4,6 +4,7 @@ about the Python model definitions themselves."""
 
 import uuid
 from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta, timezone
 from enum import StrEnum
 
 import pytest
@@ -19,6 +20,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractedFact,
     ExtractionMethod,
     FactObservation,
+    SourceItem,
     Subject,
 )
 from tests.uuid_samples import (
@@ -27,12 +29,18 @@ from tests.uuid_samples import (
     CLAIM_1,
     DIGEST_1,
     FACT_1,
+    ITEM_1,
     SNAPSHOT_1,
     SNAPSHOT_2,
     SNAPSHOT_3,
 )
 
 SUBJECT = Subject(company="OpenAI", product="GPT-4o")
+
+# ADR 0008: a fixed, deterministic detection time -- every test that needs
+# a real Change.detected_at uses this same value, so tests never depend on
+# wall-clock time.
+DETECTED_AT = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
 
 _Builder = Callable[[float], ExtractedFact | Change]
 
@@ -56,6 +64,7 @@ def _change(confidence: float) -> Change:
         subject=SUBJECT,
         field="context_window_tokens",
         change_type="changed",
+        detected_at=DETECTED_AT,
         previous=FactObservation(value="128000", snapshot_id=SNAPSHOT_1),
         current=FactObservation(value="256000", snapshot_id=SNAPSHOT_2),
         confidence=confidence,
@@ -334,6 +343,7 @@ def _valid_change(**overrides: object) -> Change:
         "subject": SUBJECT,
         "field": "input_price_usd",
         "change_type": "changed",
+        "detected_at": DETECTED_AT,
         "previous": FactObservation(value="10", snapshot_id=SNAPSHOT_1),
         "current": FactObservation(value="5", snapshot_id=SNAPSHOT_2),
         "confidence": 0.9,
@@ -555,7 +565,7 @@ def test_claim_validation_status_rejects_invalid_strings(bad_value: str) -> None
 def _digest(status: object) -> Digest:
     return Digest(
         id=DIGEST_1,
-        digest_date="2026-09-02",
+        digest_date=date(2026, 9, 2),
         status=status,  # type: ignore[arg-type]
         title="Test digest",
     )
@@ -567,7 +577,7 @@ def test_digest_status_accepts_every_valid_member(member: DigestStatus) -> None:
 
 
 def test_digest_status_defaults_to_draft() -> None:
-    digest = Digest(id=DIGEST_1, digest_date="2026-09-02", title="Test digest")
+    digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test digest")
     assert digest.status is DigestStatus.DRAFT
 
 
@@ -690,3 +700,154 @@ def test_disclosure_status_member_satisfies_fact_row_literal() -> None:
             snapshot_id=SNAPSHOT_1,
         )
         assert row.disclosure_status == member.value
+
+
+# --- ADR 0008: pagination ordering-field invariants -- Change.detected_at,
+# SourceItem.first_fetched_at (both timezone-aware, UTC-normalized,
+# microsecond-preserving, frozen), and Digest.digest_date (a real `date`,
+# frozen). Every ordering field is also guarded against model_copy(update=
+# ...), the one path `frozen=True` alone doesn't cover. ---
+
+
+def _source_item(first_fetched_at: object) -> SourceItem:
+    return SourceItem(
+        id=ITEM_1,
+        dedupe_key="sha256:x",
+        source_id="openai_news",
+        publisher="OpenAI",
+        title="Example",
+        canonical_url="https://example.com/a",  # type: ignore[arg-type]
+        first_fetched_at=first_fetched_at,  # type: ignore[arg-type]
+    )
+
+
+NON_UTC_TZ = timezone(timedelta(hours=5, minutes=30))
+
+
+def test_change_detected_at_accepts_aware_utc_and_preserves_microseconds() -> None:
+    value = datetime(2026, 8, 20, 9, 5, 0, 123456, tzinfo=UTC)
+    change = _valid_change(detected_at=value)
+    assert change.detected_at == value
+    assert change.detected_at.microsecond == 123456
+
+
+def test_change_detected_at_normalizes_aware_non_utc_to_utc() -> None:
+    value = datetime(2026, 8, 20, 14, 35, 0, 123456, tzinfo=NON_UTC_TZ)
+    change = _valid_change(detected_at=value)
+    assert change.detected_at == value  # same instant
+    assert change.detected_at.utcoffset() == timedelta(0)
+    assert change.detected_at.microsecond == 123456
+
+
+def test_change_detected_at_rejects_naive_datetime() -> None:
+    with pytest.raises(ValidationError, match="timezone-naive"):
+        _valid_change(detected_at=datetime(2026, 8, 20, 9, 5, 0))
+
+
+def test_source_item_first_fetched_at_accepts_aware_utc_and_preserves_microseconds() -> None:
+    value = datetime(2026, 8, 20, 9, 5, 0, 123456, tzinfo=UTC)
+    item = _source_item(value)
+    assert item.first_fetched_at == value
+    assert item.first_fetched_at.microsecond == 123456
+
+
+def test_source_item_first_fetched_at_normalizes_aware_non_utc_to_utc() -> None:
+    value = datetime(2026, 8, 20, 14, 35, 0, 123456, tzinfo=NON_UTC_TZ)
+    item = _source_item(value)
+    assert item.first_fetched_at == value
+    assert item.first_fetched_at.utcoffset() == timedelta(0)
+
+
+def test_source_item_first_fetched_at_rejects_naive_datetime() -> None:
+    with pytest.raises(ValidationError, match="timezone-naive"):
+        _source_item(datetime(2026, 8, 20, 9, 5, 0))
+
+
+def test_digest_date_accepts_date_and_valid_iso_string() -> None:
+    from_date = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="t")
+    from_string = Digest(id=DIGEST_1, digest_date="2026-09-02", title="t")  # type: ignore[arg-type]
+    assert from_date.digest_date == date(2026, 9, 2)
+    assert from_string.digest_date == date(2026, 9, 2)
+
+
+@pytest.mark.parametrize("bad_value", ["2026-13-40", "", "not-a-date", "2026/09/02"])
+def test_digest_date_rejects_invalid_strings(bad_value: str) -> None:
+    with pytest.raises(ValidationError):
+        Digest(id=DIGEST_1, digest_date=bad_value, title="t")  # type: ignore[arg-type]
+
+
+def test_digest_date_serializes_to_yyyy_mm_dd() -> None:
+    digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="t")
+    assert digest.model_dump(mode="json")["digest_date"] == "2026-09-02"
+    assert '"digest_date":"2026-09-02"' in digest.model_dump_json()
+
+
+# --- Model immutability: plain attribute reassignment on a protected
+# ordering field raises ValidationError (Field(frozen=True)); model_copy(
+# update=...) on the same field raises ValueError (the guard, since
+# `frozen` alone has no effect on that path). ---
+
+
+def test_reassigning_a_protected_change_field_raises() -> None:
+    change = _valid_change()
+    with pytest.raises(ValidationError):
+        change.id = CHANGE_SET_1
+    with pytest.raises(ValidationError):
+        change.detected_at = DETECTED_AT + timedelta(days=1)
+
+
+def test_reassigning_a_protected_source_item_field_raises() -> None:
+    item = _source_item(DETECTED_AT)
+    with pytest.raises(ValidationError):
+        item.id = CHANGE_SET_1
+    with pytest.raises(ValidationError):
+        item.first_fetched_at = DETECTED_AT + timedelta(days=1)
+
+
+def test_reassigning_a_protected_digest_field_raises() -> None:
+    digest = _digest(DigestStatus.DRAFT)
+    with pytest.raises(ValidationError):
+        digest.id = CLAIM_1
+    with pytest.raises(ValidationError):
+        digest.digest_date = date(2026, 9, 3)
+
+
+def test_model_copy_on_a_protected_change_field_raises() -> None:
+    change = _valid_change()
+    with pytest.raises(ValueError, match="protected ordering field"):
+        change.model_copy(update={"id": CHANGE_SET_1})
+    with pytest.raises(ValueError, match="protected ordering field"):
+        change.model_copy(update={"detected_at": DETECTED_AT + timedelta(days=1)})
+    # A non-protected field still works.
+    copied = change.model_copy(update={"review_status": "validated"})
+    assert copied.review_status == "validated"
+
+
+def test_model_copy_on_a_protected_source_item_field_raises() -> None:
+    item = _source_item(DETECTED_AT)
+    with pytest.raises(ValueError, match="protected ordering field"):
+        item.model_copy(update={"id": CHANGE_SET_1})
+    with pytest.raises(ValueError, match="protected ordering field"):
+        item.model_copy(update={"first_fetched_at": DETECTED_AT + timedelta(days=1)})
+    copied = item.model_copy(update={"title": "New title"})
+    assert copied.title == "New title"
+
+
+def test_model_copy_on_a_protected_digest_field_raises() -> None:
+    digest = _digest(DigestStatus.DRAFT)
+    with pytest.raises(ValueError, match="protected ordering field"):
+        digest.model_copy(update={"id": CLAIM_1})
+    with pytest.raises(ValueError, match="protected ordering field"):
+        digest.model_copy(update={"digest_date": date(2026, 9, 3)})
+    copied = digest.model_copy(update={"status": DigestStatus.REVIEW})
+    assert copied.status == DigestStatus.REVIEW
+
+
+def test_model_copy_with_no_update_is_a_plain_no_op_copy() -> None:
+    """The `if not update: return` branch in _reject_protected_field_update()
+    -- model_copy() called with no update at all (the common "just clone
+    this object" case) must not be treated as touching a protected field."""
+    change = _valid_change()
+    assert change.model_copy() == change
+    assert change.model_copy(update=None) == change
+    assert change.model_copy(update={}) == change

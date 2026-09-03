@@ -235,6 +235,7 @@ map explicitly in the shared model and contract tests rather than being used int
   },
   "field": "context_window_tokens",
   "change_type": "increased",
+  "detected_at": "2026-08-20T09:05:00.000000Z",
   "previous": {
     "value": "128000",
     "observed_at": "2026-07-01T00:00:00Z",
@@ -253,6 +254,12 @@ map explicitly in the shared model and contract tests rather than being used int
 ```
 
 `current` is always present as an object. `previous` is `null` only for a genuine first disclosure (no prior observation of any kind exists yet) — for every other `change_type`, including a disclosure-status transition, `previous` is present as an object. Either object's own nested `value` may independently be `null`: `previous.value` is `null` when this Change is a not-previously-disclosed-to-disclosed transition (`change_type: "disclosed"` with a `previous` object present, [ADR 0006](adr/0006-disclosure-status-semantics.md)), and `current.value` is `null` when this Change is itself a disclosure-status transition to "not disclosed" (`change_type: "not_disclosed"`) — the source now explicitly withholds a fact it previously disclosed. Absence of evidence must not be described as a zero or a negative fact.
+
+`detected_at` (`string`, date-time, UTC) records when the intelligence pipeline detected this
+Change — not when the source published, and not a per-fact `observed_at` value. Required,
+timezone-aware, and immutable: it is the `/v1/changes` pagination ordering value (with `id` as the
+tie-breaker, see the [Pagination](#pagination) section) and is rejected outright if supplied naive
+rather than silently assumed to be UTC.
 
 Example detail wrapper returned by `GET /v1/changes/{change_id}`:
 
@@ -331,7 +338,11 @@ non-disclosure statement itself:
 
 ## Digest contract
 
-Digest list and detail responses use a wrapper rather than returning unowned claim arrays:
+Digest list and detail responses use a wrapper rather than returning unowned claim arrays.
+`digest_date` (`string`, date, `YYYY-MM-DD`) is a real calendar date, not an unvalidated string —
+an invalid value such as `"2026-13-40"` is rejected at construction. It is, with `id` as the
+tie-breaker, the `/v1/digests` pagination ordering value (see [Pagination](#pagination)) and is
+immutable for an existing digest record.
 
 ```json
 {

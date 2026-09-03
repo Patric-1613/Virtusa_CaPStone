@@ -18,11 +18,12 @@ the built-in UUID7 type that shared/ids.py::Uuid7Id re-exports ships in
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from ai_daily_digest.shared.ids import Uuid7Id
 
@@ -40,6 +41,41 @@ from ai_daily_digest.shared.ids import Uuid7Id
 # in review, not hypothetical.
 Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
+
+def validate_aware_utc_datetime(value: datetime) -> datetime:
+    """ADR 0008 sections 5.A and 5.C: every pagination ordering timestamp
+    must be timezone-aware; a naive datetime is rejected at the model
+    boundary rather than silently assumed to be UTC. An aware input is
+    normalized to UTC -- Python's `astimezone` preserves microseconds
+    exactly, it only converts the offset, so this never loses precision."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(
+            "timezone-naive datetimes are not accepted; an explicit timezone is required"
+        )
+    return value.astimezone(UTC)
+
+
+def _reject_protected_field_update(
+    update: Mapping[str, Any] | None, protected_fields: tuple[str, ...]
+) -> None:
+    """Shared guard for every pagination-ordering-field `model_copy()`
+    override below (ADR 0008 section 5.D). `model_copy(update=...)`
+    bypasses Pydantic validation entirely -- a field's own `frozen=True`
+    (which stops plain attribute assignment, e.g. `obj.id = ...`) has no
+    effect on this path, so this guard is the only thing that actually
+    stops `obj.model_copy(update={"id": ...})` from silently mutating a
+    pagination ordering key or tie-breaker. One shared implementation,
+    called once per model below, rather than the same loop hand-copied
+    per class."""
+    if not update:
+        return
+    for field_name in protected_fields:
+        if field_name in update:
+            raise ValueError(
+                f"cannot update protected ordering field {field_name!r} via model_copy (ADR 0008)"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Ingestion output, intelligence input
 # ---------------------------------------------------------------------------
@@ -48,9 +84,18 @@ Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 class SourceItem(BaseModel):
     """The normalized identity and metadata of a published item. Content
     lives separately in DocumentSnapshot — an item may have multiple
-    snapshots over time; this record never holds body text itself."""
+    snapshots over time; this record never holds body text itself.
 
-    id: Uuid7Id
+    `id`/`first_fetched_at` are the `/v1/updates` pagination ordering
+    tuple (ADR 0008 section 4) -- both `frozen=True` (plain attribute
+    reassignment raises `ValidationError`) and guarded in `model_copy()`
+    below (the one path `frozen` alone doesn't cover, since
+    `model_copy(update=...)` bypasses validation entirely). Ingestion
+    must never rewrite `first_fetched_at` on a re-fetch, a content-hash
+    change, or a new DocumentSnapshot -- it records the first time the
+    service saw the item, nothing after that moves it."""
+
+    id: Uuid7Id = Field(frozen=True)
     dedupe_key: str  # sha256 of the normalized canonical_url; DB-unique
     source_id: str  # sources.yaml registry slug, e.g. "openai_news" -- a
     # human-readable configuration key, never converted to a UUID (ADR 0007).
@@ -59,7 +104,7 @@ class SourceItem(BaseModel):
     canonical_url: HttpUrl
     published_at: datetime | None = None
     updated_at: datetime | None = None
-    first_fetched_at: datetime
+    first_fetched_at: datetime = Field(frozen=True)
     latest_snapshot_id: Uuid7Id | None = None
     # event_id: intentionally NOT Uuid7Id. It's a human-readable grouping
     # key today (e.g. "ev-gpt4o-256k" in the fixture pack), not a
@@ -71,6 +116,15 @@ class SourceItem(BaseModel):
     authors: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     language: str = "en"
+
+    @field_validator("first_fetched_at")
+    @classmethod
+    def _validate_first_fetched_at(cls, value: datetime) -> datetime:
+        return validate_aware_utc_datetime(value)
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        _reject_protected_field_update(update, ("id", "first_fetched_at"))
+        return super().model_copy(update=update, deep=deep)
 
 
 class DocumentSnapshot(BaseModel):
@@ -370,17 +424,35 @@ class Change(BaseModel):
     The exact required shape per change_type is enforced at construction
     by _require_valid_change_shape below, not just documented as a
     convention — see validate_change_shape's own docstring for the rules
-    themselves."""
+    themselves.
 
-    id: Uuid7Id
+    `id`/`detected_at` are the `/v1/changes` pagination ordering tuple
+    (ADR 0008 section 4) -- both `frozen=True` and guarded in
+    `model_copy()` below, same reasoning as `SourceItem`'s own ordering
+    fields."""
+
+    id: Uuid7Id = Field(frozen=True)
     change_set_id: Uuid7Id
     subject: Subject
     field: str
     change_type: str  # e.g. "increased", "decreased", "disclosed", "not_disclosed", "changed"
+    # detected_at: when the intelligence pipeline detected this Change --
+    # NOT when a source published, NOT when a fact was observed
+    # (FactObservation.observed_at is a different, optional field with
+    # different semantics). Supplied by the orchestrator via an injected
+    # batch-detection time threaded through FactStore.update_fact()
+    # (intelligence/facts.py) -- never `datetime.now()` inside this model
+    # or a graph node, so unit tests stay independent of wall-clock time.
+    detected_at: datetime = Field(frozen=True)
     previous: FactObservation | None = None
     current: FactObservation
     confidence: Confidence
     review_status: str = "pending"  # "pending" | "validated" | "rejected"
+
+    @field_validator("detected_at")
+    @classmethod
+    def _validate_detected_at(cls, value: datetime) -> datetime:
+        return validate_aware_utc_datetime(value)
 
     @model_validator(mode="after")
     def _require_valid_change_shape(self) -> Change:
@@ -391,6 +463,10 @@ class Change(BaseModel):
         comment for why) — one definition, not two that could drift."""
         validate_change_shape(self.change_type, self.previous, self.current)
         return self
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        _reject_protected_field_update(update, ("id", "detected_at"))
+        return super().model_copy(update=update, deep=deep)
 
 
 class ChangeSet(BaseModel):
@@ -444,8 +520,22 @@ class DigestClaim(BaseModel):
 
 
 class Digest(BaseModel):
-    id: Uuid7Id
-    digest_date: str  # YYYY-MM-DD
+    """`id`/`digest_date` are the `/v1/digests` pagination ordering tuple
+    (ADR 0008 section 4) -- both `frozen=True` and guarded in
+    `model_copy()` below. `digest_date` is a real `date`, not a bare
+    `str`: an invalid calendar date such as `"2026-13-40"` is rejected at
+    construction instead of being stored as an unparseable string; the
+    wire JSON representation stays exactly `YYYY-MM-DD` either way
+    (Pydantic serializes `date` that way by default, so existing
+    fixtures/examples remain byte-for-byte valid, ADR 0008 section
+    5.B)."""
+
+    id: Uuid7Id = Field(frozen=True)
+    digest_date: date = Field(frozen=True)
     status: DigestStatus = DigestStatus.DRAFT
     title: str
     claims: list[DigestClaim] = Field(default_factory=list)
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        _reject_protected_field_update(update, ("id", "digest_date"))
+        return super().model_copy(update=update, deep=deep)

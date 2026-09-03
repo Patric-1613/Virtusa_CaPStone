@@ -27,6 +27,10 @@ TG_SNAP_AMB = uuid.UUID("01a01788-4650-72d3-8dbb-b65bf1c69df4")
 TG_SNAP_LECHAT = uuid.UUID("01a01cae-a638-7773-9890-d0fa83b3c72c")
 TG_SNAP_UNKNOWN = uuid.UUID("01a01788-4a38-7a81-8bc9-e52f5ba7a84d")
 
+# ADR 0008: a fixed, deterministic detection time -- every build_graph()
+# call in this file uses this same value.
+DETECTED_AT = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+
 
 def _item(
     item_id: uuid.UUID, title: str, canonical_url: str = "https://openai.com/a"
@@ -76,6 +80,7 @@ def test_first_observation_produces_no_claims() -> None:
         store,
         {},
         alias_table=[],
+        batch_detected_at=DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -104,6 +109,7 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
         store,
         change_set_ids,
         alias_table=[],
+        batch_detected_at=DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
         ),
@@ -121,6 +127,7 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
         store,
         change_set_ids,
         alias_table=[],
+        batch_detected_at=DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens"
         ),
@@ -158,6 +165,7 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
         store,
         change_set_ids,
         alias_table=[],
+        batch_detected_at=DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window", confidence=0.95
         ),
@@ -178,6 +186,7 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
         store,
         change_set_ids,
         alias_table=[],
+        batch_detected_at=DETECTED_AT,
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens", confidence=0.72
         ),
@@ -218,6 +227,7 @@ def test_subject_is_registered_even_when_no_facts_are_accepted() -> None:
         store,
         {},
         alias_table=alias_table,
+        batch_detected_at=DETECTED_AT,
         extract_call_fn=lambda system, prompt: FactExtractionResponse(facts=[]),
     )
     item = _item(TG_ITEM_LECHAT, "Le Chat gets an update", canonical_url="https://mistral.ai/a")
@@ -245,6 +255,7 @@ def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:
         store,
         {},
         alias_table=[],
+        batch_detected_at=DETECTED_AT,
         resolve_llm_call_fn=resolve_fake,
         extract_call_fn=_extraction_fake("benchmark_scores", "71.2", "scored 71.2"),
     )
@@ -267,7 +278,9 @@ def test_unresolvable_item_ends_early_with_no_facts_or_claims() -> None:
     def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(confidence=0.9)  # no company/product proposed
 
-    graph = build_graph(store, {}, alias_table=[], resolve_llm_call_fn=resolve_fake)
+    graph = build_graph(
+        store, {}, batch_detected_at=DETECTED_AT, alias_table=[], resolve_llm_call_fn=resolve_fake
+    )
     item = _item(TG_ITEM_UNKNOWN, "Completely unrelated headline")
     snapshot = _snapshot(
         TG_SNAP_UNKNOWN,

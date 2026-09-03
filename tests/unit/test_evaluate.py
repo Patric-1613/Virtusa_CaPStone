@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from ai_daily_digest.intelligence.evaluate import (
     EvalResult,
@@ -34,6 +34,10 @@ from tests.uuid_samples import (
 
 KNOWN = {SNAPSHOT_1, SNAPSHOT_2}
 
+# ADR 0008: a fixed, deterministic detection time -- every Change built in
+# this file uses this same value.
+DETECTED_AT = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+
 
 def _claim(text: str, citations: list[uuid.UUID], claim_id: uuid.UUID = CLAIM_1) -> DigestClaim:
     return DigestClaim(id=claim_id, text=text, citation_snapshot_ids=citations)
@@ -52,7 +56,7 @@ def _snapshot(snap_id: uuid.UUID, text: str) -> DocumentSnapshot:
 def _digest(claims: list[DigestClaim]) -> Digest:
     return Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test",
         claims=claims,
@@ -71,6 +75,7 @@ def _change(company: str, product: str, field: str, snap_id: uuid.UUID = SNAPSHO
         subject=Subject(company=company, product=product),
         field=field,
         change_type="disclosed",
+        detected_at=DETECTED_AT,
         previous=None,
         current=FactObservation(value="x", snapshot_id=snap_id),
         confidence=0.9,

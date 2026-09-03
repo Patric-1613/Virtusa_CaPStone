@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
@@ -176,7 +176,12 @@ def main() -> None:
     digest = (
         digests[0]
         if digests
-        else Digest(id=new_id(), digest_date="", status=DigestStatus.DRAFT, title="")
+        else Digest(
+            id=new_id(),
+            digest_date=date(2026, 8, 20),
+            status=DigestStatus.DRAFT,
+            title="AI Daily Digest — Empty",
+        )
     )
 
     result = run_eval(

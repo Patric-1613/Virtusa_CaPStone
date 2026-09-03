@@ -9,6 +9,7 @@ become "published".
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from ai_daily_digest.intelligence.validate import publish_digest
 from ai_daily_digest.shared.ids import new_id
@@ -17,7 +18,7 @@ from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 
 def assemble_digest(
-    digest_date: str,
+    digest_date: date,
     claims: list[DigestClaim],
     *,
     known_snapshot_ids: set[uuid.UUID],
@@ -41,7 +42,7 @@ def assemble_digest(
         id=new_id(),
         digest_date=digest_date,
         status=DigestStatus.DRAFT,
-        title=title or f"AI Daily Digest — {digest_date}",
+        title=title or f"AI Daily Digest — {digest_date.isoformat()}",
         claims=claims,
     )
     if not claims:

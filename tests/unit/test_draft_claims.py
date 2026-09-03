@@ -9,6 +9,10 @@ from tests.uuid_samples import CHANGE_1, CHANGE_SET_1
 TDC_SNAP_CURRENT = uuid.UUID("01a01751-5000-7cb1-a364-e57f1103160f")
 TDC_SNAP_PREV = uuid.UUID("019e85a1-4800-7840-bb4d-261cc66dbf1d")
 
+# ADR 0008: a fixed, deterministic detection time -- every Change built in
+# this file uses this same value.
+DETECTED_AT = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+
 
 def _subject() -> Subject:
     return Subject(company="OpenAI", product="GPT-4o")
@@ -21,6 +25,7 @@ def test_first_disclosure_phrasing_and_single_citation() -> None:
         subject=_subject(),
         field="benchmark_scores",
         change_type="disclosed",
+        detected_at=DETECTED_AT,
         previous=None,
         current=FactObservation(
             value="71.2",
@@ -43,6 +48,7 @@ def test_increased_phrasing_cites_both_snapshots() -> None:
         subject=_subject(),
         field="context_window_tokens",
         change_type="increased",
+        detected_at=DETECTED_AT,
         previous=FactObservation(
             value="128000",
             observed_at=datetime(2026, 6, 2, tzinfo=UTC),
@@ -70,6 +76,7 @@ def test_decreased_phrasing() -> None:
         subject=_subject(),
         field="input_price_usd",
         change_type="decreased",
+        detected_at=DETECTED_AT,
         previous=FactObservation(value="10", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="5", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,
@@ -86,6 +93,7 @@ def test_generic_change_type_falls_back_to_neutral_phrasing() -> None:
         subject=_subject(),
         field="licence_terms",
         change_type="changed",
+        detected_at=DETECTED_AT,
         previous=FactObservation(value="MIT", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="Apache-2.0", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.8,
@@ -105,6 +113,7 @@ def test_field_label_matches_the_same_curated_label_compare_subjects_uses() -> N
         subject=_subject(),
         field="context_window_tokens",
         change_type="increased",
+        detected_at=DETECTED_AT,
         previous=FactObservation(value="128000", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="256000", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,
@@ -124,6 +133,7 @@ def test_transition_not_disclosed_to_disclosed_phrasing_and_dual_citations() -> 
         subject=_subject(),
         field="context_window_tokens",
         change_type="disclosed",
+        detected_at=DETECTED_AT,
         previous=FactObservation(value=None, snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="200000", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.95,
@@ -142,6 +152,7 @@ def test_transition_disclosed_to_not_disclosed_phrasing_and_dual_citations() -> 
         subject=_subject(),
         field="input_price_usd",
         change_type="not_disclosed",
+        detected_at=DETECTED_AT,
         previous=FactObservation(value="$5.00", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value=None, snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,

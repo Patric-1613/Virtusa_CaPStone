@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -63,10 +64,11 @@ class PipelineState(TypedDict, total=False):
     claims: list[DigestClaim]
 
 
-def build_graph(
+def build_graph(  # pylint: disable=too-many-arguments,too-many-locals
     store: FactStore,
     change_set_ids: dict[Subject, uuid.UUID],
     *,
+    batch_detected_at: datetime,
     alias_table: list[SubjectAlias] | None = None,
     resolve_llm_call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
     extract_call_fn: Callable[[str, str], FactExtractionResponse] | None = None,
@@ -80,9 +82,16 @@ def build_graph(
     run_daily() call (daily_run.py's `_BatchAccumulator.change_set_ids`),
     never reused across runs, since a change_set_id is only valid for one
     batch. Closed over by the `compare` node below, the same way `store`
-    already is. alias_table/*_call_fn are injectable, primarily for tests
-    — see tests/unit/test_graph.py for running this without hitting the
-    real Anthropic API.
+    already is. batch_detected_at (ADR 0008 section 5.A): the single
+    timezone-aware detection time daily_run.py computed once for this
+    whole run -- closed over by the `compare` node and passed straight
+    through to every FactStore.update_fact() call it makes. Required, no
+    default: this graph must never call `datetime.now()` itself (that
+    would make every Change's detected_at wall-clock-dependent and
+    untestable), so the caller always supplies it explicitly.
+    alias_table/*_call_fn are injectable, primarily for tests — see
+    tests/unit/test_graph.py for running this without hitting the real
+    Anthropic API.
     """
     resolved_alias_table = alias_table if alias_table is not None else load_alias_table()
 
@@ -166,6 +175,10 @@ def build_graph(
                 # `subject` via the closure, which is correct here since
                 # `subject` doesn't change again before this call resolves.
                 change_set_id_factory=lambda: get_or_create_change_set_id(change_set_ids, subject),
+                # This run's single detection time (ADR 0008 section
+                # 5.A) -- the same value for every Change this graph
+                # produces, never datetime.now() here.
+                detected_at=batch_detected_at,
                 # Without this, update_fact()'s confidence=1.0 default
                 # silently applied to every real Change regardless of
                 # the actual extraction confidence -- fact.confidence is

@@ -13,6 +13,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
@@ -39,6 +40,7 @@ from ai_daily_digest.shared.schemas import (
     DocumentSnapshot,
     SourceItem,
     Subject,
+    validate_aware_utc_datetime,
 )
 from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
@@ -189,7 +191,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     store: FactStore,
     known_snapshot_ids: set[uuid.UUID],
     batch: list[BatchItem],
-    digest_date: str,
+    digest_date: date | str,
     *,
     snapshot_resolver: SnapshotResolver,
     comparison_fields: list[str] | None = None,
@@ -197,6 +199,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     resolve_llm_call_fn: Callable[[str, str], ResolveLLMResponse] | None = None,
     extract_call_fn: Callable[[str, str], FactExtractionResponse] | None = None,
     compare_call_fn: Callable[[str, str], ComparisonResponse] | None = None,
+    batch_detected_at: datetime | None = None,
     title: str | None = None,
 ) -> DailyRunResult:
     """Runs today's batch through the per-item graph (one `graph.invoke`
@@ -236,10 +239,32 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     the allocator, threaded into `build_graph()` so its `compare` node
     can request one per subject on first use within this run only.
 
+    digest_date accepts either a real `date` or an ISO `YYYY-MM-DD`
+    string (normalized to `date` once here, at the boundary, before
+    reaching assemble_digest()/Digest -- ADR 0008 section 5.B; an
+    unparseable string raises `ValueError` from `date.fromisoformat`).
+
+    batch_detected_at (ADR 0008 section 5.A): the single timezone-aware
+    detection time stamped onto every Change this run produces --
+    supplied by the caller for a reproducible/testable run, or computed
+    once here as `datetime.now(UTC)` when omitted (the only place in the
+    whole pipeline `datetime.now()` is called; every node downstream
+    receives the already-resolved value, never calling it themselves). A
+    naive `batch_detected_at` is rejected outright, not silently
+    reinterpreted as system-local time.
+
     INTERIM SAFETY POLICY: no cross-subject comparison claim (from
     compare_subjects()) may cause the digest to auto-publish, regardless
     of its own validation status -- see _never_auto_publish_comparisons().
     """
+    run_detected_at = (
+        validate_aware_utc_datetime(batch_detected_at)
+        if batch_detected_at is not None
+        else datetime.now(UTC)
+    )
+    typed_digest_date = (
+        date.fromisoformat(digest_date.strip()) if isinstance(digest_date, str) else digest_date
+    )
     # _BatchAccumulator (and its change_set_ids allocator) must exist
     # BEFORE build_graph(), which closes over acc.change_set_ids the same
     # way it already closes over `store` -- the graph cannot be built
@@ -248,6 +273,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
     graph = build_graph(
         store,
         acc.change_set_ids,
+        batch_detected_at=run_detected_at,
         alias_table=alias_table,
         resolve_llm_call_fn=resolve_llm_call_fn,
         extract_call_fn=extract_call_fn,
@@ -274,7 +300,7 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
             logger.exception("daily_run_comparison_failed")
 
     digest = assemble_digest(
-        digest_date,
+        typed_digest_date,
         acc.claims,
         known_snapshot_ids=known_snapshot_ids,
         snapshot_resolver=snapshot_resolver,

@@ -30,6 +30,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractedFact,
     FactObservation,
     Subject,
+    validate_aware_utc_datetime,
     validate_change_shape,
 )
 
@@ -224,12 +225,13 @@ class FactStore:
         record = self._fields.get((*_subject_key(subject), field))
         return list(record.history) if record else []
 
-    def update_fact(  # pylint: disable=too-many-arguments
+    def update_fact(  # pylint: disable=too-many-arguments,too-many-locals
         # subject/fact identify what's being recorded; source_url/
-        # observed_at are provenance the caller must supply per-call
-        # (see _FieldRecord's docstring for why FactStore doesn't infer
-        # them); change_type/confidence are optional overrides for
-        # callers that know more than a bare value comparison can.
+        # observed_at/detected_at are provenance the caller must supply
+        # per-call (see _FieldRecord's docstring for why FactStore
+        # doesn't infer them); change_type/confidence are optional
+        # overrides for callers that know more than a bare value
+        # comparison can.
         self,
         subject: Subject,
         fact: ExtractedFact,
@@ -237,6 +239,7 @@ class FactStore:
         source_url: str | None,
         observed_at: datetime,
         change_set_id_factory: Callable[[], uuid.UUID],
+        detected_at: datetime,
         change_type: str | None = None,
         confidence: float = 1.0,
     ) -> Change | None:
@@ -245,6 +248,18 @@ class FactStore:
         snapshot_id parameter, deliberately: ExtractedFact already carries
         it, and a second copy is exactly the kind of thing that silently
         drifts out of sync (this file's own tests once did).
+
+        detected_at (ADR 0008 section 5.A): when the intelligence
+        pipeline detected this Change -- NOT when the source published
+        (that's `observed_at` above) and not a per-fact value, a single
+        batch-detection time the caller (graph.py's `compare` node,
+        closing over daily_run.py's per-run clock) supplies for every
+        Change produced in one run. Only ever read on the path that
+        returns a real Change (see below); a first observation or an
+        unchanged value never touches it. Must be timezone-aware --
+        Change's own field validator normalizes it to UTC and rejects a
+        naive value the same way `Change(...)` would if constructed
+        directly.
 
         change_type=None (the default) auto-infers "increased"/
         "decreased"/"changed" from the two values (_infer_change_type) —
@@ -326,13 +341,15 @@ class FactStore:
         )
 
         # Everything that can fail validation -- the confidence bound,
-        # the `current` FactObservation's source_url, and (below) the
+        # detected_at's timezone-awareness (ADR 0008 section 5.A), the
+        # `current` FactObservation's source_url, and (below) the
         # resolved change_type's own observation-shape invariant -- is
         # checked HERE, before new_id() and change_set_id_factory() run
         # and before the store is touched, so a rejected input spends no
         # UUID and leaves record.current and history exactly as they were
         # (ADR 0007's failed-processing rule).
         _CONFIDENCE_ADAPTER.validate_python(confidence)
+        detected_at = validate_aware_utc_datetime(detected_at)
         current_observation = FactObservation(
             value=fact.value,
             observed_at=observed_at,
@@ -361,6 +378,7 @@ class FactStore:
             subject=subject,
             field=fact.field,
             change_type=resolved_change_type,
+            detected_at=detected_at,
             previous=previous_observation,
             current=current_observation,
             confidence=confidence,

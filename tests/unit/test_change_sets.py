@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -6,6 +7,10 @@ from ai_daily_digest.intelligence.change_sets import build_change_sets, get_or_c
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Change, FactObservation, Subject
 from tests.uuid_samples import CHANGE_SET_1
+
+# ADR 0008: a fixed, deterministic detection time -- every Change built in
+# this file uses this same value.
+DETECTED_AT = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
@@ -44,6 +49,7 @@ def _change(
         subject=subject,
         field=field,
         change_type="changed" if previous_snap else "disclosed",
+        detected_at=DETECTED_AT,
         previous=(
             FactObservation(value="old", snapshot_id=previous_snap) if previous_snap else None
         ),
