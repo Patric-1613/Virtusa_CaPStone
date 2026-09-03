@@ -1,6 +1,6 @@
 # 0010 — FastAPI and generated OpenAPI contract authority
 
-Status: Proposed
+Status: Accepted by Persons A, B, and C
 Date: 2026-09-02
 
 ## Context
@@ -23,8 +23,9 @@ functional.
 
 This decision is coordinated through issue #32. Person C (`@chamath-wijayasundara`) is the active
 author. Persons A (`@Patric-1613`) and B (`@SujinJK`) are the review stewards because this decision
-affects the public contract and cross-module integration. ADR 0008 is reserved for pagination and
-ADR 0009 is reserved for the shared Enum policy; this ADR does not decide or implement either one.
+affects the public contract and cross-module integration. ADR 0008 owns the accepted
+cursor-pagination policy and ADR 0009 owns the accepted shared Enum policy (both accepted on
+`main`); this ADR does not decide or implement either one.
 
 ## Decision
 
@@ -331,9 +332,9 @@ under `delivery/api/`, including error envelopes, health responses, request bodi
 parameters, presentation projections, and pagination envelopes after ADR 0008. Do not place
 HTTP-only types in `shared`.
 
-ADR 0009 is merged on current `main` with `Status: Proposed`. Delivery imports and reuses its
-shared Enums only after ADR 0009 is formally accepted and its implementation is merged; Delivery
-must not redefine equivalent HTTP-local Enums.
+ADR 0009 owns the accepted shared Enum policy and is accepted on `main`. Delivery imports and
+reuses its shared Enums only after the Enum implementation has been merged; Delivery must not
+redefine equivalent HTTP-local Enums.
 
 ### API metadata and compatibility
 
@@ -485,5 +486,5 @@ The work is split into narrowly reviewable PRs:
 - ADR 0003 — quality gates.
 - ADR 0006 — disclosure status and evidence semantics.
 - ADR 0007 — UUID v7 policy and future HTTP acceptance gates.
-- ADR 0008 — pagination policy (reserved; separate decision).
-- ADR 0009 — shared Enum policy (merged with `Status: Proposed`; decided separately).
+- ADR 0008 — accepted cursor-pagination policy (decided separately).
+- ADR 0009 — accepted shared Enum policy (decided separately).
