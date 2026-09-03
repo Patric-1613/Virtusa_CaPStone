@@ -43,6 +43,10 @@ dependencies = [
   "anthropic>=0.40",
   "langgraph>=0.2",
   "uuid-utils>=0.17",
+  # fastapi: ADR 0010 selects FastAPI as the public HTTP/OpenAPI boundary.
+  # The plain package is sufficient; the standard extra would add a server
+  # runner and unrelated optional dependencies before they are needed.
+  "fastapi>=0.141.1",
 ]
 
 [dependency-groups]
@@ -57,6 +61,9 @@ dev = [
   "pytest-xdist>=3.8",
   "ruff>=0.13",
   "types-PyYAML>=6.0",
+  # httpx: FastAPI/Starlette TestClient requires it. Declare the test boundary
+  # directly rather than relying on the Anthropic SDK's transitive dependency.
+  "httpx>=0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]
