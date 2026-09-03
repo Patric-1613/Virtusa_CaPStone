@@ -18,8 +18,7 @@ from pathlib import Path
 
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
 from ai_daily_digest.intelligence.validate import validate_claim
-from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Change, ClaimValidationStatus, Digest, DigestStatus
+from ai_daily_digest.shared.schemas import Change, ClaimValidationStatus, Digest
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver, SnapshotResolver
 
 # CWD-rooted, not __file__-rooted -- see loaders.py::find_repo_root's
@@ -173,11 +172,18 @@ def main() -> None:
     known_snapshot_ids = {s.id for s in snapshots}
     snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
     changes = [change for cs in change_sets for change in cs.changes]
-    digest = (
-        digests[0]
-        if digests
-        else Digest(id=new_id(), digest_date="", status=DigestStatus.DRAFT, title="")
-    )
+    if not digests:
+        # No artificial placeholder date -- a `Digest.digest_date` is a real
+        # `datetime.date` now (ADR 0008 section 5.B), and inventing one here
+        # would put a meaningless business date into the eval report. The
+        # self-check genuinely needs a digest to score; an empty pack is a
+        # broken pack, so say so and stop.
+        raise RuntimeError(
+            f"contract fixture pack has no digests ({loader.fixtures_dir / 'digests.json'}); "
+            "the eval self-check needs at least one digest to score -- repopulate the "
+            "fixture pack (see tests/fixtures/contracts/README.md)"
+        )
+    digest = digests[0]
 
     result = run_eval(
         digest, changes, changes, known_snapshot_ids, snapshot_resolver=snapshot_resolver

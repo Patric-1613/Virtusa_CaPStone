@@ -4,6 +4,7 @@ about the Python model definitions themselves."""
 
 import uuid
 from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta, timezone
 from enum import StrEnum
 
 import pytest
@@ -19,6 +20,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractedFact,
     ExtractionMethod,
     FactObservation,
+    SourceItem,
     Subject,
 )
 from tests.uuid_samples import (
@@ -27,12 +29,17 @@ from tests.uuid_samples import (
     CLAIM_1,
     DIGEST_1,
     FACT_1,
+    ITEM_1,
     SNAPSHOT_1,
     SNAPSHOT_2,
     SNAPSHOT_3,
 )
 
 SUBJECT = Subject(company="OpenAI", product="GPT-4o")
+
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TS_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
 
 _Builder = Callable[[float], ExtractedFact | Change]
 
@@ -59,6 +66,7 @@ def _change(confidence: float) -> Change:
         previous=FactObservation(value="128000", snapshot_id=SNAPSHOT_1),
         current=FactObservation(value="256000", snapshot_id=SNAPSHOT_2),
         confidence=confidence,
+        detected_at=TS_DETECTED_AT,
     )
 
 
@@ -337,6 +345,7 @@ def _valid_change(**overrides: object) -> Change:
         "previous": FactObservation(value="10", snapshot_id=SNAPSHOT_1),
         "current": FactObservation(value="5", snapshot_id=SNAPSHOT_2),
         "confidence": 0.9,
+        "detected_at": TS_DETECTED_AT,
     }
     defaults.update(overrides)
     return Change(**defaults)  # type: ignore[arg-type]
@@ -555,7 +564,7 @@ def test_claim_validation_status_rejects_invalid_strings(bad_value: str) -> None
 def _digest(status: object) -> Digest:
     return Digest(
         id=DIGEST_1,
-        digest_date="2026-09-02",
+        digest_date=date(2026, 9, 2),
         status=status,  # type: ignore[arg-type]
         title="Test digest",
     )
@@ -567,7 +576,7 @@ def test_digest_status_accepts_every_valid_member(member: DigestStatus) -> None:
 
 
 def test_digest_status_defaults_to_draft() -> None:
-    digest = Digest(id=DIGEST_1, digest_date="2026-09-02", title="Test digest")
+    digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test digest")
     assert digest.status is DigestStatus.DRAFT
 
 
@@ -690,3 +699,139 @@ def test_disclosure_status_member_satisfies_fact_row_literal() -> None:
             snapshot_id=SNAPSHOT_1,
         )
         assert row.disclosure_status == member.value
+
+
+# ---------------------------------------------------------------------------
+# ADR 0008 section 5: the three pagination ordering tuples --
+# (SourceItem.first_fetched_at, id), (Change.detected_at, id),
+# (Digest.digest_date, id). Each business sort value must reject a
+# timezone-naive datetime, normalize an aware one to UTC with microseconds
+# intact, and be immutable (Field(frozen=True)); so must each id. The model
+# as a whole is NOT frozen -- fields like SourceItem.latest_snapshot_id
+# still change.
+# ---------------------------------------------------------------------------
+
+_IST = timezone(timedelta(hours=5, minutes=30))  # a non-UTC fixed offset
+
+
+def _source_item(**overrides: object) -> SourceItem:
+    defaults: dict[str, object] = {
+        "id": ITEM_1,
+        "dedupe_key": "sha256:abc",
+        "source_id": "openai_news",
+        "publisher": "OpenAI",
+        "title": "Something happened",
+        "canonical_url": "https://openai.com/news/x",
+        "first_fetched_at": datetime(2026, 8, 20, 9, 0, 0, 123456, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return SourceItem(**defaults)  # type: ignore[arg-type]
+
+
+def test_source_item_rejects_naive_first_fetched_at() -> None:
+    with pytest.raises(ValidationError):
+        _source_item(first_fetched_at=datetime(2026, 8, 20, 9, 0, 0))
+
+
+def test_source_item_normalizes_first_fetched_at_to_utc_preserving_microseconds() -> None:
+    aware_non_utc = datetime(2026, 8, 20, 14, 30, 0, 123456, tzinfo=_IST)
+    item = _source_item(first_fetched_at=aware_non_utc)
+    assert item.first_fetched_at.tzinfo == UTC
+    assert item.first_fetched_at == aware_non_utc  # same instant
+    assert item.first_fetched_at.hour == 9  # 14:30 IST -> 09:00 UTC
+    assert item.first_fetched_at.microsecond == 123456
+
+
+def test_source_item_id_is_immutable() -> None:
+    item = _source_item()
+    with pytest.raises(ValidationError):
+        item.id = SNAPSHOT_1
+
+
+def test_source_item_first_fetched_at_is_immutable() -> None:
+    item = _source_item()
+    with pytest.raises(ValidationError):
+        item.first_fetched_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_source_item_latest_snapshot_id_still_mutable() -> None:
+    """The model is deliberately not frozen whole -- later snapshots
+    legitimately update this field."""
+    item = _source_item(latest_snapshot_id=None)
+    item.latest_snapshot_id = SNAPSHOT_2
+    assert item.latest_snapshot_id == SNAPSHOT_2
+
+
+def test_change_requires_detected_at() -> None:
+    with pytest.raises(ValidationError):
+        _valid_change(detected_at=None)
+
+
+def test_change_rejects_naive_detected_at() -> None:
+    with pytest.raises(ValidationError):
+        _valid_change(detected_at=datetime(2026, 8, 20, 9, 0, 0))
+
+
+def test_change_normalizes_detected_at_to_utc_preserving_microseconds() -> None:
+    aware_non_utc = datetime(2026, 8, 20, 14, 30, 0, 654321, tzinfo=_IST)
+    change = _valid_change(detected_at=aware_non_utc)
+    assert change.detected_at.tzinfo == UTC
+    assert change.detected_at == aware_non_utc
+    assert change.detected_at.hour == 9
+    assert change.detected_at.microsecond == 654321
+
+
+def test_change_id_is_immutable() -> None:
+    change = _valid_change()
+    with pytest.raises(ValidationError):
+        change.id = SNAPSHOT_1
+
+
+def test_change_detected_at_is_immutable() -> None:
+    change = _valid_change()
+    with pytest.raises(ValidationError):
+        change.detected_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_change_detected_at_not_conflated_with_observed_at() -> None:
+    """detected_at (when the pipeline saw the change) and
+    current.observed_at (when the fact was observed in a source) are
+    distinct instants -- setting one must never move the other."""
+    change = _valid_change(
+        detected_at=datetime(2026, 8, 21, 0, 0, tzinfo=UTC),
+        current=FactObservation(
+            value="5",
+            observed_at=datetime(2026, 8, 20, 9, 5, tzinfo=UTC),
+            snapshot_id=SNAPSHOT_2,
+        ),
+    )
+    assert change.detected_at == datetime(2026, 8, 21, 0, 0, tzinfo=UTC)
+    assert change.current.observed_at == datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+
+
+def test_digest_rejects_impossible_date() -> None:
+    with pytest.raises(ValidationError):
+        Digest(id=DIGEST_1, digest_date="2026-13-40", title="Test")  # type: ignore[arg-type]
+
+
+def test_digest_date_is_a_real_date_internally() -> None:
+    digest = Digest(id=DIGEST_1, digest_date="2026-09-02", title="Test")  # type: ignore[arg-type]
+    assert digest.digest_date == date(2026, 9, 2)
+    assert isinstance(digest.digest_date, date)
+
+
+def test_digest_date_serializes_to_yyyy_mm_dd_on_the_wire() -> None:
+    digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test")
+    assert digest.model_dump(mode="json")["digest_date"] == "2026-09-02"
+
+
+def test_digest_id_is_immutable() -> None:
+    digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test")
+    with pytest.raises(ValidationError):
+        digest.id = SNAPSHOT_1
+
+
+def test_digest_date_is_immutable() -> None:
+    digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test")
+    with pytest.raises(ValidationError):
+        digest.digest_date = date(2026, 1, 1)

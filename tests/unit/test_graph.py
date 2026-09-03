@@ -16,6 +16,10 @@ from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem, Subject
 
 OPENAI_GPT4O = Subject(company="OpenAI", product="GPT-4o")
 
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TG_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
+
 TG_ITEM_LAUNCH = uuid.UUID("019e85d8-3680-7023-bb24-6d440e85eb11")
 TG_ITEM_256K = uuid.UUID("01a01cae-9a80-78a2-9a8a-c4d249e93d11")
 TG_ITEM_AMBIGUOUS = uuid.UUID("01a01788-3e80-76a1-9574-dc0d398c4c47")
@@ -75,6 +79,7 @@ def test_first_observation_produces_no_claims() -> None:
     graph = build_graph(
         store,
         {},
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
@@ -103,6 +108,7 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
     launch_graph = build_graph(
         store,
         change_set_ids,
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window"
@@ -120,6 +126,7 @@ def test_changed_value_flows_through_to_a_supported_claim() -> None:
     update_graph = build_graph(
         store,
         change_set_ids,
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens"
@@ -157,6 +164,7 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
     launch_graph = build_graph(
         store,
         change_set_ids,
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "128000", "128,000 token context window", confidence=0.95
@@ -177,6 +185,7 @@ def test_change_confidence_reflects_the_extracted_facts_confidence() -> None:
     update_graph = build_graph(
         store,
         change_set_ids,
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=[],
         extract_call_fn=_extraction_fake(
             "context_window_tokens", "256000", "increased to 256,000 tokens", confidence=0.72
@@ -217,6 +226,7 @@ def test_subject_is_registered_even_when_no_facts_are_accepted() -> None:
     graph = build_graph(
         store,
         {},
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=alias_table,
         extract_call_fn=lambda system, prompt: FactExtractionResponse(facts=[]),
     )
@@ -244,6 +254,7 @@ def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:
     graph = build_graph(
         store,
         {},
+        batch_detected_at=TG_DETECTED_AT,
         alias_table=[],
         resolve_llm_call_fn=resolve_fake,
         extract_call_fn=_extraction_fake("benchmark_scores", "71.2", "scored 71.2"),
@@ -267,7 +278,13 @@ def test_unresolvable_item_ends_early_with_no_facts_or_claims() -> None:
     def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
         return ResolveLLMResponse(confidence=0.9)  # no company/product proposed
 
-    graph = build_graph(store, {}, alias_table=[], resolve_llm_call_fn=resolve_fake)
+    graph = build_graph(
+        store,
+        {},
+        batch_detected_at=TG_DETECTED_AT,
+        alias_table=[],
+        resolve_llm_call_fn=resolve_fake,
+    )
     item = _item(TG_ITEM_UNKNOWN, "Completely unrelated headline")
     snapshot = _snapshot(
         TG_SNAP_UNKNOWN,
@@ -280,3 +297,57 @@ def test_unresolvable_item_ends_early_with_no_facts_or_claims() -> None:
     assert result["subject"] is None
     assert result.get("facts", []) == []
     assert result.get("claims", []) == []
+
+
+def test_produced_change_carries_the_injected_batch_detected_at() -> None:
+    """ADR 0008 section 5.A: every Change the graph produces is stamped
+    with exactly the caller-injected batch_detected_at, normalized to
+    UTC with microseconds intact -- no graph node reads the wall clock."""
+    store = FactStore()
+    store.register_subject(OPENAI_GPT4O)
+    change_set_ids: dict[Subject, uuid.UUID] = {}
+    injected = datetime(2026, 8, 20, 6, 30, 0, 987654, tzinfo=UTC)
+
+    launch_graph = build_graph(
+        store,
+        change_set_ids,
+        batch_detected_at=injected,
+        alias_table=[],
+        extract_call_fn=_extraction_fake(
+            "context_window_tokens", "128000", "128,000 token context window"
+        ),
+    )
+    launch_graph.invoke(
+        {
+            "item": _item(TG_ITEM_LAUNCH, "Introducing GPT-4o"),
+            "snapshot": _snapshot(
+                TG_SNAP_LAUNCH,
+                TG_ITEM_LAUNCH,
+                "OpenAI is launching GPT-4o with a 128,000 token context window.",
+                datetime(2026, 6, 2, tzinfo=UTC),
+            ),
+        }
+    )
+
+    update_graph = build_graph(
+        store,
+        change_set_ids,
+        batch_detected_at=injected,
+        alias_table=[],
+        extract_call_fn=_extraction_fake("context_window_tokens", "256000", "to 256,000 tokens"),
+    )
+    result = update_graph.invoke(
+        {
+            "item": _item(TG_ITEM_256K, "GPT-4o now supports a 256k token context window"),
+            "snapshot": _snapshot(
+                TG_SNAP_256K,
+                TG_ITEM_256K,
+                "OpenAI today increased GPT-4o's context window to 256,000 tokens.",
+                datetime(2026, 8, 20, tzinfo=UTC),
+            ),
+        }
+    )
+
+    assert len(result["changes"]) == 1
+    assert result["changes"][0].detected_at == injected
+    assert result["changes"][0].detected_at.microsecond == 987654

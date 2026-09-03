@@ -30,6 +30,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractedFact,
     FactObservation,
     Subject,
+    normalize_ordering_timestamp,
     validate_change_shape,
 )
 
@@ -224,7 +225,7 @@ class FactStore:
         record = self._fields.get((*_subject_key(subject), field))
         return list(record.history) if record else []
 
-    def update_fact(  # pylint: disable=too-many-arguments
+    def update_fact(  # pylint: disable=too-many-arguments,too-many-locals
         # subject/fact identify what's being recorded; source_url/
         # observed_at are provenance the caller must supply per-call
         # (see _FieldRecord's docstring for why FactStore doesn't infer
@@ -236,6 +237,7 @@ class FactStore:
         *,
         source_url: str | None,
         observed_at: datetime,
+        detected_at: datetime,
         change_set_id_factory: Callable[[], uuid.UUID],
         change_type: str | None = None,
         confidence: float = 1.0,
@@ -245,6 +247,21 @@ class FactStore:
         snapshot_id parameter, deliberately: ExtractedFact already carries
         it, and a second copy is exactly the kind of thing that silently
         drifts out of sync (this file's own tests once did).
+
+        `observed_at` vs `detected_at` — two different instants, never
+        conflated: `observed_at` is when the fact was observed in a source
+        (the caller passes the snapshot's `fetched_at`) and becomes the
+        emitted Change's `previous`/`current` `FactObservation.observed_at`
+        provenance; `detected_at` is when THIS pipeline run detected the
+        change and becomes `Change.detected_at`, the `/v1/changes` sort key
+        (ADR 0008 section 5.A). `detected_at` is required and caller-injected
+        (the orchestrator's one batch detection time — see
+        graph.py/daily_run.py); this method never reads the wall clock. It is
+        validated and UTC-normalized as the very first thing update_fact()
+        does — before `register_subject()`, before any `_fields` entry,
+        before `new_id()` or `change_set_id_factory()` — so a timezone-naive
+        or otherwise invalid value spends no UUID and leaves the store
+        completely unchanged.
 
         change_type=None (the default) auto-infers "increased"/
         "decreased"/"changed" from the two values (_infer_change_type) —
@@ -296,6 +313,11 @@ class FactStore:
         citing its original, increasingly stale snapshot — it's a no-op
         for Change purposes, not a no-op for "what's the freshest
         evidence for this fact"."""
+        # Validate/normalize the injected detection time FIRST -- before any
+        # store mutation at all -- so a naive/invalid value raises without
+        # having touched _known_subjects, _fields, or spent a UUID (ADR 0008
+        # section 5.A; ADR 0007's failed-processing rule).
+        normalized_detected_at = normalize_ordering_timestamp(detected_at)
         self.register_subject(subject)
         key = (*_subject_key(subject), fact.field)
         record = self._fields.setdefault(key, _FieldRecord())
@@ -364,6 +386,7 @@ class FactStore:
             previous=previous_observation,
             current=current_observation,
             confidence=confidence,
+            detected_at=normalized_detected_at,
         )
 
         # The Change constructed and validated -- only now advance the store.

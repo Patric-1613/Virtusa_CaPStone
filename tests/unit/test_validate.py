@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -61,7 +61,7 @@ def test_claim_with_no_citations_is_unsupported() -> None:
 def test_validate_digest_forces_review_on_any_unsupported_claim() -> None:
     digest = Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test digest",
         claims=[_claim([SNAPSHOT_1], CLAIM_1), _claim([SNAPSHOT_MISSING], CLAIM_2)],
@@ -75,7 +75,7 @@ def test_validate_digest_forces_review_on_any_unsupported_claim() -> None:
 def test_validate_digest_never_upgrades_status_on_its_own() -> None:
     digest = Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test digest",
         claims=[_claim([SNAPSHOT_1], CLAIM_1)],
@@ -90,7 +90,7 @@ def test_validate_digest_requires_a_snapshot_resolver() -> None:
     proven here by the call itself failing, not by behavior."""
     digest = Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test digest",
         claims=[_claim([SNAPSHOT_1], CLAIM_1)],
@@ -102,7 +102,7 @@ def test_validate_digest_requires_a_snapshot_resolver() -> None:
 def test_publish_digest_publishes_only_when_everything_supported() -> None:
     digest = Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test digest",
         claims=[_claim([SNAPSHOT_1], CLAIM_1), _claim([SNAPSHOT_2], CLAIM_2)],
@@ -116,7 +116,7 @@ def test_publish_digest_publishes_only_when_everything_supported() -> None:
 def test_publish_digest_routes_to_review_instead_of_publishing() -> None:
     digest = Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test digest",
         claims=[_claim([], CLAIM_1)],
@@ -131,7 +131,7 @@ def test_publish_digest_requires_a_snapshot_resolver() -> None:
     without a real resolver either."""
     digest = Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test digest",
         claims=[_claim([SNAPSHOT_1], CLAIM_1)],
