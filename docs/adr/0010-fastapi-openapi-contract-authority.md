@@ -1,6 +1,6 @@
 # 0010 — FastAPI and generated OpenAPI contract authority
 
-Status: Proposed
+Status: Accepted by Persons A, B, and C
 Date: 2026-09-02
 
 ## Context

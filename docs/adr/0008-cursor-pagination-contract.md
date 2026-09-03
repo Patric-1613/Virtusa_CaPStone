@@ -1,6 +1,6 @@
 # 0008 — Cursor pagination contract for list endpoints
 
-Status: Proposed
+Status: Accepted by Persons A, B, and C
 Date: 2026-09-02
 
 Person A authors and owns this ADR. Persons B and C must review and approve it before the
