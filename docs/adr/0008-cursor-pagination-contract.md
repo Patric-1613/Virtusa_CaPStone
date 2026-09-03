@@ -209,22 +209,39 @@ it is safe as an ordering key:
 #### 5.D Ordering-field and ID immutability (all endpoints)
 
 Every ordering tuple in section 4 is `(business_sort_value, id)`; both components must be
-immutable for the life of the record.
+immutable for the life of the record. The **protected ordering columns** are:
 
-- Each `id` (`SourceItem.id`, `Change.id`, `Digest.id`) is already opaque and immutable under
-  ADR 0007; this ADR restates that it is also the pagination tie-breaker and must never be
-  reassigned.
-- The three business sort fields (`first_fetched_at`, `detected_at`, `digest_date`) are
-  immutable per sections 5.A–5.C.
-- The implementation must **prevent ordinary reassignment** of both the resource `id` and the
-  business ordering field — plain attribute assignment must not succeed.
-- Application code must **not bypass this with `model_copy(update=...)`** on an ordering field
-  or an `id`. ADR 0009 already records that `model_copy(update=...)` skips Pydantic
-  validation; for these fields the rule is stronger — they are not updated by copy at all.
-- **Pydantic-only immutability is not sufficient.** Future persistence implementations must
-  also prohibit `UPDATE`s to these columns (a trigger, a check constraint, or a repository
-  that exposes no update path for them). Model-level and storage-level enforcement are both
-  required.
+- `SourceItem.id`
+- `SourceItem.first_fetched_at`
+- `Change.id`
+- `Change.detected_at`
+- `Digest.id`
+- `Digest.digest_date`
+
+Immutability is enforced in **three separate layers**, none of which substitutes for another:
+
+1. **Model-level freezing.** Each `id` is already opaque and immutable under ADR 0007; the
+   three business sort fields are immutable per sections 5.A–5.C. The implementation must
+   **prevent ordinary reassignment** of every protected column — plain attribute assignment
+   must not succeed.
+2. **Repository restriction (defence in depth).** The repository interface exposes **no
+   update path** for the protected columns. This is genuine, useful protection, but it is
+   **application-level** protection and must not be described as storage-level enforcement — a
+   direct SQL statement or a different client bypasses it entirely.
+3. **Storage-level enforcement.** The database itself must reject a change to an existing
+   protected value. A normal PostgreSQL `CHECK` constraint is **not sufficient**: it validates
+   only the resulting row and cannot compare `OLD` with `NEW`, so it cannot tell "this value
+   was always X" from "this value just changed to X". Storage-level enforcement must use a
+   mechanism capable of rejecting a change to an existing value, such as:
+   - a `BEFORE UPDATE` trigger that raises on any change to a protected column; or
+   - appropriately restricted column-level `UPDATE` privileges for the application database
+     role.
+   The exact mechanism is chosen in the future database schema / migration PR — this
+   documentation PR does not select or implement a trigger or privilege design.
+
+Application code must also **not bypass model-level freezing with `model_copy(update=...)`**
+on a protected column. ADR 0009 already records that `model_copy(update=...)` skips Pydantic
+validation; for these fields the rule is stronger — they are not updated by copy at all.
 
 #### Delivery of the section 5 changes
 
@@ -521,8 +538,8 @@ one, because Phase 1 is not snapshot isolation:**
 **Mutating an ordering value (`sort_value` or `id`) of an existing record is prohibited** — it
 would break the scoped guarantee for that record, and the fix is to prevent the mutation, not
 to work around it in pagination. `first_fetched_at`, `detected_at`, `digest_date`, and every
-`id` are immutable by contract and enforced at both the model and persistence layers
-(sections 5.A–5.D).
+`id` are immutable by contract and enforced across the three layers in section 5.D — model
+freezing, repository restriction, and database storage-level enforcement.
 
 ### 12. Public summary models
 
@@ -747,6 +764,15 @@ those errors onto an HTTP 400 or 422 response is tested in the endpoint PRs, not
 - Concurrency behaviour is verified against the real persistence boundary: a deleted record is
   absent from its page; a record whose membership-affecting field changes enters or leaves a
   later page; newer and backdated inserts behave as section 11 describes.
+- *Protected-column immutability (one test per protected column in section 5.D —
+  `SourceItem.id`, `SourceItem.first_fetched_at`, `Change.id`, `Change.detected_at`,
+  `Digest.id`, `Digest.digest_date`):* an attempt to modify that column on an existing row
+  proves that (1) the database **rejects the update**; (2) the transaction is **rolled back or
+  otherwise handled safely** — no partial write; (3) the **previously stored value is
+  unchanged** when re-read; and (4) the repository API exposes **no ordinary mutation path**
+  for that field. These tests do not assert which storage mechanism (trigger vs. restricted
+  `UPDATE` privilege) is in use — only that a direct update attempt fails and the value
+  survives.
 
 **Configuration — the config-provider PR.** A signing key shorter than 32 bytes is rejected at
 startup by the configuration layer, not silently accepted by the codec.
@@ -793,10 +819,11 @@ startup by the configuration layer, not silently accepted by the codec.
   fingerprint and the repository query, so the two cannot disagree; the repository interface
   takes canonical typed filters, not raw request strings.
 - The shared-model prerequisites — `first_fetched_at` invariants, the new `Change.detected_at`
-  field, `Digest.digest_date` as `date`, ordering-field/`id` immutability at both the model and
-  persistence layers, and the `FactStore.update_fact()` / `assemble_digest` / `evaluate`
-  call-site changes — must be implemented in their own PR (section 13, PR 2), serialized after
-  Person B's Enum work releases `shared/schemas.py`, and must not be folded into the Enum PR.
+  field, `Digest.digest_date` as `date`, ordering-field/`id` immutability across model,
+  repository, and storage layers (section 5.D), and the `FactStore.update_fact()` /
+  `assemble_digest` / `evaluate` call-site changes — must be implemented in their own PR
+  (section 13, PR 2), serialized after Person B's Enum work releases `shared/schemas.py`, and
+  must not be folded into the Enum PR.
 - Public route integration waits for a real repository boundary; a `NotImplementedError`-only
   adapter is not an acceptable production dependency for shipping an endpoint.
 
@@ -808,8 +835,10 @@ This ADR does not decide, and must not be read as deciding:
 - the FastAPI application factory, error-envelope handlers, OpenAPI metadata, `operationId`
   conventions, or `/docs` exposure (ADR 0010, Person C);
 - database schema, indexes, or migrations;
-- the exact Python mechanism for model-level ordering-field immutability, or the exact
-  `intelligence/evaluate.py` empty-digest replacement — PR 2 chooses these within the
+- the exact Python mechanism for model-level ordering-field immutability, the exact
+  storage-level enforcement mechanism (`BEFORE UPDATE` trigger vs. restricted column-level
+  `UPDATE` privilege — chosen in the future database schema / migration PR), or the exact
+  `intelligence/evaluate.py` empty-digest replacement — each is chosen later within the
   constraints of section 5;
 - digest uniqueness, regeneration, correction, or version-history policy — a separate
   digest-lifecycle decision (section 5.B);
