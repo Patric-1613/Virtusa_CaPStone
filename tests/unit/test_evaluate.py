@@ -1,11 +1,14 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+
+import pytest
 
 from ai_daily_digest.intelligence.evaluate import (
     EvalResult,
     change_recall,
     citation_validity,
     duplicate_rate,
+    main,
     run_eval,
     unsupported_claim_count,
 )
@@ -34,6 +37,10 @@ from tests.uuid_samples import (
 
 KNOWN = {SNAPSHOT_1, SNAPSHOT_2}
 
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TE_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
+
 
 def _claim(text: str, citations: list[uuid.UUID], claim_id: uuid.UUID = CLAIM_1) -> DigestClaim:
     return DigestClaim(id=claim_id, text=text, citation_snapshot_ids=citations)
@@ -52,7 +59,7 @@ def _snapshot(snap_id: uuid.UUID, text: str) -> DocumentSnapshot:
 def _digest(claims: list[DigestClaim]) -> Digest:
     return Digest(
         id=DIGEST_1,
-        digest_date="2026-08-20",
+        digest_date=date(2026, 8, 20),
         status=DigestStatus.DRAFT,
         title="Test",
         claims=claims,
@@ -74,6 +81,7 @@ def _change(company: str, product: str, field: str, snap_id: uuid.UUID = SNAPSHO
         previous=None,
         current=FactObservation(value="x", snapshot_id=snap_id),
         confidence=0.9,
+        detected_at=TE_DETECTED_AT,
     )
 
 
@@ -196,3 +204,18 @@ def test_run_eval_combines_all_four_metrics() -> None:
     assert result.duplicate_rate == 0.0
     assert result.change_recall == 1.0
     assert "100%" in result.as_table_row("test")
+
+
+def test_main_fails_loudly_when_the_fixture_pack_has_no_digests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0008 section 5.B: Digest.digest_date is a real datetime.date now,
+    so the old empty-fixture fallback (Digest(digest_date="", ...)) is gone.
+    An empty digest fixture pack must produce an explicit, deterministic
+    failure naming the file -- never an invented business date."""
+    from ai_daily_digest.intelligence.loaders import FixtureLoader
+
+    monkeypatch.setattr(FixtureLoader, "load_digests", lambda self: [])
+
+    with pytest.raises(RuntimeError, match=r"no digests.*digests\.json"):
+        main()

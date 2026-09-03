@@ -9,6 +9,10 @@ from tests.uuid_samples import CHANGE_1, CHANGE_SET_1
 TDC_SNAP_CURRENT = uuid.UUID("01a01751-5000-7cb1-a364-e57f1103160f")
 TDC_SNAP_PREV = uuid.UUID("019e85a1-4800-7840-bb4d-261cc66dbf1d")
 
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TDC_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
+
 
 def _subject() -> Subject:
     return Subject(company="OpenAI", product="GPT-4o")
@@ -29,6 +33,7 @@ def test_first_disclosure_phrasing_and_single_citation() -> None:
             source_url="https://openai.com/a",  # type: ignore[arg-type]
         ),
         confidence=0.9,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     assert "now disclosed as 71.2" in claim.text
@@ -56,6 +61,7 @@ def test_increased_phrasing_cites_both_snapshots() -> None:
             source_url="https://openai.com/a",  # type: ignore[arg-type]
         ),
         confidence=0.98,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     assert "increased to 256000" in claim.text
@@ -73,6 +79,7 @@ def test_decreased_phrasing() -> None:
         previous=FactObservation(value="10", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="5", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     assert "decreased to 5" in claim.text
@@ -89,6 +96,7 @@ def test_generic_change_type_falls_back_to_neutral_phrasing() -> None:
         previous=FactObservation(value="MIT", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="Apache-2.0", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.8,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     assert "changed from MIT to Apache-2.0" in claim.text
@@ -108,6 +116,7 @@ def test_field_label_matches_the_same_curated_label_compare_subjects_uses() -> N
         previous=FactObservation(value="128000", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="256000", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     expected_label = COMPARABLE_FIELDS["context_window_tokens"].lower()
@@ -127,6 +136,7 @@ def test_transition_not_disclosed_to_disclosed_phrasing_and_dual_citations() -> 
         previous=FactObservation(value=None, snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value="200000", snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.95,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     assert "now disclosed as 200000" in claim.text
@@ -145,6 +155,7 @@ def test_transition_disclosed_to_not_disclosed_phrasing_and_dual_citations() -> 
         previous=FactObservation(value="$5.00", snapshot_id=TDC_SNAP_PREV),
         current=FactObservation(value=None, snapshot_id=TDC_SNAP_CURRENT),
         confidence=0.9,
+        detected_at=TDC_DETECTED_AT,
     )
     claim = draft_change_claim(change)
     assert "is no longer disclosed (previously $5.00)" in claim.text

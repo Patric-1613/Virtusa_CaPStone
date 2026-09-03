@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -18,6 +19,10 @@ TCS_SNAP_A = uuid.UUID("01a01c77-b7b8-7d21-bcde-e9caadc8d8c0")
 TCS_SNAP_B = uuid.UUID("01a01c77-bba0-7cd0-a773-1c8948b3ece7")
 TCS_SNAP_C = uuid.UUID("01a01c77-bf88-7c11-be32-9458f9269a2c")
 TCS_SNAP_NEW = uuid.UUID("01a01c77-c370-7ec1-871d-c00132333847")
+
+# The orchestrator's injected batch detection time (ADR 0008 section 5.A) --
+# .250000 microseconds on purpose, so tests can assert it survives intact.
+TCS_DETECTED_AT = datetime(2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC)
 
 
 def _change(
@@ -49,6 +54,7 @@ def _change(
         ),
         current=FactObservation(value="new", snapshot_id=current_snap),
         confidence=0.9,
+        detected_at=TCS_DETECTED_AT,
     )
 
 

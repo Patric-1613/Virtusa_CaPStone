@@ -52,7 +52,15 @@ session; don't just append to them solo.
   `digests.json`'s second claim ("has not disclosed its context window")
   with actual evidence rather than an inferred absence.
 - `change_sets.json` — one `ChangeSet` containing one `Change`, both
-  `previous` and `current` citing real snapshot ids and source URLs.
+  `previous` and `current` citing real snapshot ids and source URLs. The
+  `Change` carries `detected_at` — when the intelligence pipeline detected
+  the change (ADR 0008 section 5.A), distinct from `current.observed_at`.
+  The fixture value ends in `.500000Z` on purpose: it is evidence that the
+  UTC/microsecond-preserving normalization keeps sub-second precision
+  intact through the loader.
+- `digests.json` — `digest_date` is a real calendar date on the wire
+  (`YYYY-MM-DD`); the loader parses it to a `datetime.date` (ADR 0008
+  section 5.B).
 - `extracted_facts.json` — one `ExtractedFact` per (snapshot, field),
   all `extraction_method: "llm_structured_output"` with a model + prompt
   version recorded, per the contract's reproducibility requirement.
