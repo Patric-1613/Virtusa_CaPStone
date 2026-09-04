@@ -517,7 +517,7 @@ def upgrade() -> None:
         sa.Column("company_key", sa.String(length=255), nullable=False),
         sa.Column("product_key", sa.String(length=255), nullable=False),
         sa.Column("field", sa.String(length=255), nullable=False),
-        sa.Column("value", sa.JSON(), nullable=True),
+        sa.Column("value", sa.Text(), nullable=True),
         sa.Column("disclosure_status", sa.String(length=32), nullable=False),
         sa.Column("extraction_method", sa.String(length=32), nullable=False),
         sa.Column("extraction_model", sa.String(length=255), nullable=True),
