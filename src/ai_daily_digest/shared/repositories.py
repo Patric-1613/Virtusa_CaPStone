@@ -42,4 +42,3 @@ class SourceItemFeedRepository(Protocol):
             A sequence of up to limit + 1 SourceItem instances matching the filters and
             keyset predicate.
         """
-        ...

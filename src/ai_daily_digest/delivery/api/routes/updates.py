@@ -47,7 +47,7 @@ router = APIRouter(prefix="/v1", tags=["updates"])
         422: {"model": ErrorEnvelope, "description": "Invalid query parameter or filter."},
     },
 )
-async def get_updates(
+async def get_updates(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     request: Request,
     cursor_codec: Annotated[CursorCodec, Depends(get_cursor_codec)],
     repository: Annotated[SourceItemFeedRepository, Depends(get_source_item_feed_repository)],
@@ -78,7 +78,8 @@ async def get_updates(
         ),
     ] = None,
 ) -> Response | Page[UpdateSummary]:
-    """Return a cursor-paginated list of source updates ordered by (first_fetched_at DESC, id DESC)."""
+    """Return a cursor-paginated list of source updates ordered by
+    (first_fetched_at DESC, id DESC)."""
     raw_filters: dict[str, FilterInput] = {}
     if publisher is not None:
         raw_filters["publisher"] = publisher

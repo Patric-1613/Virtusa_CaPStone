@@ -32,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 type RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
-def create_app(
+def create_app(  # pylint: disable=too-many-arguments
     *,
     docs_enabled: bool = True,
     required_dependencies: Iterable[str] = (),
