@@ -75,6 +75,7 @@ async def _create_source_and_snapshot(
         content_text="Sample snapshot text",
     )
     session.add(item)
+    await session.flush()
     session.add(snapshot)
     await session.flush()
     return item, snapshot

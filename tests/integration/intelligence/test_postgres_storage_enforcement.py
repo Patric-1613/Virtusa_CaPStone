@@ -88,6 +88,7 @@ async def _make_source_and_snapshot(
         content_text="Sample text for snapshot",
     )
     session.add(item)
+    await session.flush()
     session.add(snapshot)
     await session.flush()
     return item, snapshot
@@ -137,6 +138,7 @@ async def test_changes_immutability_and_value_survival() -> None:
                 created_at=BASE_TIME,
             )
             session.add(cs)
+            await session.flush()
             session.add(change)
             await session.commit()
 
@@ -413,7 +415,9 @@ async def test_published_digest_immutability_and_gate() -> None:
                 created_at=BASE_TIME,
             )
             session.add(digest)
+            await session.flush()
             session.add(claim)
+            await session.flush()
             session.add(citation)
             await session.flush()
 
@@ -502,6 +506,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     created_at=BASE_TIME,
                 )
             )
+            await session.flush()
             c1_id = new_id()
             session.add(
                 DigestClaimModel(
@@ -513,6 +518,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     created_at=BASE_TIME,
                 )
             )
+            await session.flush()
             session.add(
                 DigestClaimCitationModel(
                     claim_id=c1_id,
@@ -521,6 +527,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     created_at=BASE_TIME,
                 )
             )
+            await session.flush()
 
             # Digest 2 for the same date
             session.add(
@@ -532,6 +539,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     created_at=BASE_TIME,
                 )
             )
+            await session.flush()
             c2_id = new_id()
             session.add(
                 DigestClaimModel(
@@ -543,6 +551,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     created_at=BASE_TIME,
                 )
             )
+            await session.flush()
             session.add(
                 DigestClaimCitationModel(
                     claim_id=c2_id,
