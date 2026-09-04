@@ -1,14 +1,12 @@
 # 0005 — Structured cross-subject comparisons and typed snapshot content resolution
 
-Status: Accepted (design) — accepted by Person A 2026-08-28, pending Person C's confirmation.
-**Accepted as the agreed design, NOT as scope for PR #5.** Implementation is explicitly moved to a
-separate follow-up issue/PR, per Person A's MVP-scoping decision — see that follow-up for
-implementation status once it exists. PR #5 ships with the interim safety nets this ADR's Context
-section describes (`_never_auto_publish_comparisons()`, fail-closed content grounding) and none of
-the structural changes below.
-**Person C's review is temporarily deferred to keep PR #5 moving, not skipped — it must happen
-before any delivery/API/ingestion work depends on this decision, and before the follow-up
-implementation issue is started.**
+Status: Accepted. Authored by Person B; accepted by Person A on 2026-08-28 and confirmed by
+Person C on 2026-09-04.
+
+Implementation was intentionally excluded from the original PR #5 scope and later completed under
+[issue #6](https://github.com/Patric-1613/Virtusa_CaPStone/issues/6), beginning with commit
+`c64e282`. The typed `SnapshotResolver`, structured comparison assertions, deterministic rendering,
+and fail-closed publication behavior described below are present on `main`.
 Date: 2026-08-27
 
 ## Context

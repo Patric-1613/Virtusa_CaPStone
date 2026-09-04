@@ -1,10 +1,8 @@
 # 0004 — ExtractedFact keeps its quoted_span and confidence
 
-Status: Accepted by Person A (2026-08-27, with one clarification — see "Enforcement" below),
-pending Person C's confirmation of this shared-contract change.
-**Person C's review is temporarily deferred to keep PR #5 moving, not skipped — it must happen
-before any delivery/API/ingestion work depends on this decision.** This is not yet a full
-three-owner-signed-off contract change.
+Status: Accepted. Authored by Person B; accepted by Person A on 2026-08-27 and confirmed by
+Person C on 2026-09-04 after the model-level enforcement was strengthened to reject empty or
+whitespace-only LLM evidence spans.
 Date: 2026-08-26
 
 ## Context
@@ -33,7 +31,8 @@ always populates both for LLM-extracted facts. Both are optional (additive, non-
 enforced at the model level, not only by `intelligence/extract_facts.py`'s own construction code
 and `tests/contract/test_fixture_contract.py`. `ExtractedFact` has a `model_validator(mode="after")`
 (`_require_evidence_for_llm_facts` in `shared/schemas.py`) that raises if an LLM-attributed fact is
-built without both fields set, regardless of which code path constructs it. Deterministic facts
+built without a non-empty `quoted_span` and a set `confidence`, regardless of which code path
+constructs it. Deterministic facts
 (`extraction_method == "deterministic"`) are unaffected — they don't always have a natural quote to
 attach, per this ADR's own Decision above.
 
