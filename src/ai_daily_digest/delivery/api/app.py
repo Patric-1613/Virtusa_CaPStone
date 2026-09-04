@@ -93,5 +93,6 @@ def create_app(  # pylint: disable=too-many-arguments
 
     install_exception_handlers(app)
     app.include_router(health_router)
-    app.include_router(updates_router)
+    if source_item_feed_repository is not None:
+        app.include_router(updates_router)
     return app

@@ -26,7 +26,7 @@ from ai_daily_digest.delivery.api.pagination import (
     canonicalize_filters,
 )
 from ai_daily_digest.delivery.api.schemas import UpdateSummary
-from ai_daily_digest.shared.repositories import SourceItemFeedRepository
+from ai_daily_digest.shared.repositories import FeedFilter, SourceItemFeedRepository
 
 __all__ = ["UPDATES_RESOURCE", "UPDATES_SORT", "router"]
 
@@ -118,16 +118,15 @@ async def get_updates(  # pylint: disable=too-many-arguments,too-many-positional
             )
 
     canonical_dict = canonical_filters.as_dict()
-    filter_publisher: str | None = None
-    filter_source_id: str | None = None
-    if "publisher" in canonical_dict and isinstance(canonical_dict["publisher"], str):
-        filter_publisher = canonical_dict["publisher"]
-    if "source_id" in canonical_dict and isinstance(canonical_dict["source_id"], str):
-        filter_source_id = canonical_dict["source_id"]
+    publisher_val = canonical_dict.get("publisher")
+    source_id_val = canonical_dict.get("source_id")
+    feed_filter = FeedFilter(
+        publisher=str(publisher_val) if publisher_val is not None else None,
+        source_id=str(source_id_val) if source_id_val is not None else None,
+    )
 
     items = await repository.list_source_items(
-        publisher=filter_publisher,
-        source_id=filter_source_id,
+        feed_filter=feed_filter,
         after=after,
         limit=limit,
     )

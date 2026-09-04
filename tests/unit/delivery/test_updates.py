@@ -6,6 +6,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,8 +14,15 @@ from pydantic import HttpUrl
 
 from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope
+from ai_daily_digest.delivery.api.pagination import (
+    CursorCodec,
+    build_cursor_payload,
+    canonicalize_filters,
+)
+from ai_daily_digest.delivery.api.routes.updates import UPDATES_RESOURCE, UPDATES_SORT
 from ai_daily_digest.delivery.api.schemas import UpdateSummary
 from ai_daily_digest.shared.ids import new_id
+from ai_daily_digest.shared.repositories import FeedFilter, SourceItemFeedRepository
 from ai_daily_digest.shared.schemas import SourceItem
 
 TEST_KEY = b"\x2a" * 32
@@ -30,16 +38,16 @@ class InMemorySourceItemFeedRepository:
     async def list_source_items(
         self,
         *,
-        publisher: str | None = None,
-        source_id: str | None = None,
+        feed_filter: FeedFilter | None = None,
         after: tuple[datetime, uuid.UUID] | None = None,
         limit: int = 20,
     ) -> Sequence[SourceItem]:
         filtered = self._items
-        if publisher is not None:
-            filtered = [item for item in filtered if item.publisher == publisher]
-        if source_id is not None:
-            filtered = [item for item in filtered if item.source_id == source_id]
+        if feed_filter is not None:
+            if feed_filter.publisher is not None:
+                filtered = [item for item in filtered if item.publisher == feed_filter.publisher]
+            if feed_filter.source_id is not None:
+                filtered = [item for item in filtered if item.source_id == feed_filter.source_id]
 
         ordered = sorted(filtered, key=lambda x: (x.first_fetched_at, x.id), reverse=True)
 
@@ -147,10 +155,25 @@ def test_get_updates_multi_page_traversal() -> None:
     assert [x["title"] for x in p3["items"]] == ["Item 0"]
     assert p3["next_cursor"] is None
 
-    # Page 4 (after end)
-    # Construct a valid cursor pointing past the end by using Page 2's cursor with limit=1, or resume
-    resp_empty = client.get("/v1/updates", params={"limit": 2})
+    # Page 4 (after end): query with valid cursor pointing to the final item (Item 0)
+    codec = CursorCodec(TEST_KEY)
+    last_item = items[0]  # Item 0
+    canonical_filters = canonicalize_filters(
+        resource=UPDATES_RESOURCE,
+        sort=UPDATES_SORT,
+        filters={},
+    )
+    past_end_payload = build_cursor_payload(
+        filters=canonical_filters,
+        last_sort_value=last_item.first_fetched_at,
+        last_id=last_item.id,
+    )
+    past_end_cursor = codec.encode(past_end_payload)
+    resp_empty = client.get(f"/v1/updates?limit=2&cursor={past_end_cursor}")
     assert resp_empty.status_code == 200
+    p_empty = resp_empty.json()
+    assert p_empty["items"] == []
+    assert p_empty["next_cursor"] is None
 
 
 def test_get_updates_empty_repository() -> None:
@@ -227,14 +250,17 @@ def test_get_updates_invalid_limit(invalid_limit: object) -> None:
     ],
 )
 def test_get_updates_invalid_cursor(bad_cursor: str) -> None:
-    repo = InMemorySourceItemFeedRepository([])
-    client = TestClient(create_app(source_item_feed_repository=repo, cursor_signing_key=TEST_KEY))
+    mock_repo = AsyncMock(spec=SourceItemFeedRepository)
+    client = TestClient(
+        create_app(source_item_feed_repository=mock_repo, cursor_signing_key=TEST_KEY)
+    )
 
     response = client.get(f"/v1/updates?cursor={bad_cursor}")
     assert response.status_code == 400
     payload = ErrorEnvelope.model_validate(response.json())
     assert payload.error.code == "invalid_cursor"
     assert payload.error.message == "The pagination cursor is invalid for this request."
+    mock_repo.list_source_items.assert_not_called()
 
 
 def test_get_updates_canonical_filtering() -> None:
@@ -302,12 +328,12 @@ def test_get_updates_cursor_filter_fingerprint_mismatch() -> None:
     assert payload.error.code == "invalid_cursor"
 
 
-def test_get_updates_unconfigured_repository_fails_safely() -> None:
+def test_get_updates_omitted_when_repository_not_configured() -> None:
     client = TestClient(create_app(source_item_feed_repository=None))
     response = client.get("/v1/updates")
-    assert response.status_code == 500
-    payload = ErrorEnvelope.model_validate(response.json())
-    assert payload.error.code == "internal_error"
+    assert response.status_code == 404
+    openapi = client.get("/openapi.json").json()
+    assert "/v1/updates" not in openapi.get("paths", {})
 
 
 def test_create_app_requires_cursor_key_when_repository_configured() -> None:
