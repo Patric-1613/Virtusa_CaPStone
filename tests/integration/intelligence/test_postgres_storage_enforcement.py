@@ -131,6 +131,7 @@ async def test_changes_immutability_and_value_survival() -> None:
                 product_key="gpt-4",
                 field="pricing",
                 change_type="disclosed",
+                confidence=1.0,
                 current_value="$20",
                 current_observed_at=snap.fetched_at,
                 current_snapshot_id=snap.id,
@@ -353,6 +354,7 @@ async def test_changeset_change_subject_consistency_rejection() -> None:
                 product_key="claude",  # MISMATCH!
                 field="pricing",
                 change_type="disclosed",
+                confidence=1.0,
                 current_value="$20",
                 current_observed_at=snap.fetched_at,
                 current_snapshot_id=snap.id,
