@@ -35,7 +35,7 @@ The following is the exact proposal Persons A, B, and C are being asked to accep
 | Initial tables | `source_items` and immutable `document_snapshots` only. |
 | IDs and identity | Application-generated UUID v7. Five `source_items` fields are immutable after insertion and enforced by a storage trigger: `id`, `first_fetched_at`, `dedupe_key`, `source_id`, `canonical_url`. |
 | Transactions | The ingestion service owns one `AsyncSession` transaction per ingested item; the repository is bound to it, may flush, and never commits or rolls back on its own. The service commits once, after all three writes succeed; any exception rolls the whole item back. |
-| Snapshot ownership/latest pointer | Composite FK proves ownership; a conditional update advances the pointer only to the newest `(fetched_at, id)`. |
+| Snapshot ownership/latest pointer | Composite FK proves ownership; a single conditional update advances `latest_snapshot_id` **and** the allowed-mutable source-item metadata together, only when the candidate snapshot's `(fetched_at, id)` is newer than the currently selected snapshot. Finding the source item on an existing `dedupe_key` never writes metadata by itself — an older or duplicate candidate updates neither the pointer nor the metadata. |
 | Lists | `authors` and normalized `tags` use PostgreSQL `text[]` in Phase 1; the normalization rules are new behaviour implemented in the persistence PR. |
 | Immutability | Restricted repository methods plus PostgreSQL triggers: a row-level `BEFORE UPDATE` guard on the five `source_items` identity fields, and row-level `BEFORE UPDATE`/`BEFORE DELETE` plus a statement-level `BEFORE TRUNCATE` guard on `document_snapshots`. Triggers cover ordinary DML while enabled; a restricted runtime database role is a production gate. |
 | Cross-module reads | A narrow async read Protocol lives in `shared/`; its PostgreSQL adapter remains ingestion-owned. |
@@ -325,9 +325,11 @@ is fixed in section 12; this section fixes layer 3.
    `source_id`, and `canonical_url` are **not** Pydantic-frozen — they are identity fields
    rather than ADR 0008 ordering-tuple components, so layers 2 and 3 hold them immutable.
 2. **Repository restriction — this PR.** The ingestion write protocol (section 12) exposes
-   **no method that updates a protected column.** `upsert_source_item` writes the
-   allowed-mutable set only; there is no setter for any of the five `source_items` identity
-   fields, no generic `update(**fields)` passthrough, no `id` reassignment. This is
+   **no method that updates a protected column.** `find_or_create_source_item` never writes
+   metadata for an existing row and sets identity fields exactly once, at insert;
+   `advance_latest_snapshot_and_metadata` writes only the allowed-mutable set, and only under
+   its newest-wins condition. Neither exposes a setter for any of the five `source_items`
+   identity fields, a generic `update(**fields)` passthrough, or `id` reassignment. This is
    application-level defence in depth — a direct SQL statement bypasses it, which is why
    layer 3 exists.
 3. **Storage-level enforcement — PL/pgSQL triggers created in the initial Alembic migration,
@@ -426,18 +428,29 @@ Lives next to its only implementer and only caller, in `src/ai_daily_digest/inge
 
 Responsibilities:
 
-- `upsert_source_item(...) -> SourceItem` — create-or-find by canonical `dedupe_key`. On
-  find, **preserve all five identity fields** (`id`, `first_fetched_at`, `dedupe_key`,
-  `source_id`, `canonical_url`) and update only an explicit allowed-mutable set (`publisher`,
-  `title`, `published_at`, `updated_at`, `authors`, `tags`, `language`, `event_id`). The five
-  identity fields are never named on the update path; the section 11 trigger backstops that.
+- `find_or_create_source_item(...) -> SourceItem` — create-or-find by canonical `dedupe_key`.
+  **On find, it writes nothing** — it never updates the allowed-mutable metadata set
+  (`publisher`, `title`, `published_at`, `updated_at`, `authors`, `tags`, `language`,
+  `event_id`) for an existing row, only reads it back. **On create**, the new row is inserted
+  with its initial metadata — set once, before the item has any snapshot. The five identity
+  fields (`id`, `first_fetched_at`, `dedupe_key`, `source_id`, `canonical_url`) are written
+  exactly once, at that insert, and never again; the section 11 trigger backstops that. This
+  method's contract is deliberately **not** "upsert" — an upsert implies find-and-write, and
+  this repository operation must never write on find (see section 13 for why).
 - `add_snapshot_if_new(source_item_id, content_hash, ...) -> DocumentSnapshot` — insert only
   when `(source_item_id, content_hash)` is new; return the existing row otherwise. Never a
   second row for identical content.
-- `advance_latest_snapshot(source_item_id, snapshot_id) -> bool` — after the snapshot row
-  exists, conditionally advance `latest_snapshot_id` only when the candidate belongs to the
-  item and its `(fetched_at, id)` tuple is newer than the current tuple (same transaction,
-  section 13). Return whether the pointer advanced.
+- `advance_latest_snapshot_and_metadata(source_item_id, snapshot_id, metadata) -> bool` —
+  after the snapshot row exists, **conditionally advances `latest_snapshot_id` and the
+  allowed-mutable metadata together, under the exact same condition**: only when the
+  candidate belongs to the item and its `(fetched_at, id)` tuple is newer than the currently
+  referenced snapshot's tuple (same transaction, section 13). An older or equal candidate
+  advances **neither** the pointer nor the metadata — there is no path where one moves without
+  the other. Return whether the update applied. The method's name and signature exist
+  specifically to make that joint condition part of the contract, replacing the earlier
+  `advance_latest_snapshot(source_item_id, snapshot_id) -> bool` shape, which advanced the
+  pointer conditionally but left metadata writes to a separate, unconditional step — the
+  regression this section corrects (see section 13).
 - Every method runs inside the **caller-supplied `AsyncSession` transaction** (section 13). A
   method may `flush()`, but **never `commit()` or `rollback()`** — transaction control belongs
   to the ingestion service alone.
@@ -587,44 +600,75 @@ review on every `shared/` addition and on `delivery/api/app.py`.
   the repository never opens its own.
 - Repository methods may **run queries and `flush()`**; they **must never independently
   `commit()` or `rollback()`**.
-- The service **commits once**, only after the source-item upsert, the snapshot insertion, and
-  the latest-pointer update have **all** succeeded.
+- The service **commits once**, only after the source-item find-or-create, the snapshot
+  insertion, and the combined pointer-and-metadata update have **all** succeeded.
 - Any exception rolls back the **service-owned** transaction (see "Rollback behaviour" below).
 
 **Per-item write sequence** (all inside that one transaction):
 
-1. Upsert the source item: `INSERT INTO source_items (…) ON CONFLICT (dedupe_key) DO UPDATE
-   SET <allowed-mutable columns only> RETURNING *`. The `DO UPDATE` set-list never names
-   `id`, `first_fetched_at`, `dedupe_key`, `source_id`, or `canonical_url` (and the trigger
-   backstops that).
+1. **Find or create the source item, writing no metadata on find:**
+   `INSERT INTO source_items (id, dedupe_key, source_id, publisher, title, canonical_url,
+   first_fetched_at, published_at, updated_at, authors, tags, language, event_id) VALUES (…)
+   ON CONFLICT (dedupe_key) DO NOTHING RETURNING *`; if no row is returned (the item already
+   existed), `SELECT * FROM source_items WHERE dedupe_key = :key`. **Neither branch writes the
+   allowed-mutable metadata columns for an existing row.** A brand-new item's initial metadata
+   is set exactly once, at this insert, before it has any snapshot — matching the requirement
+   that "a new item may be inserted with its initial metadata before its first snapshot is
+   attached." The five identity fields are never named on any later write; the trigger
+   backstops that.
 2. If the content hash is new: `INSERT INTO document_snapshots (…) ON CONFLICT
    (source_item_id, content_hash) DO NOTHING RETURNING id`; if no row is returned, `SELECT
    id` for the existing `(source_item_id, content_hash)`.
-3. If a new snapshot was inserted, update `latest_snapshot_id` in the **same** transaction only
-   when the new snapshot's `(fetched_at, id)` tuple is newer than the currently referenced
-   snapshot's tuple. A conditional update/subquery enforces this comparison in PostgreSQL. This
-   prevents two concurrent, different-content fetches from committing out of order and leaving an
-   older snapshot marked as latest. The composite FK from section 9 proves the selected snapshot
-   belongs to this item. `updated_at` records the accepted metadata refresh independently.
-4. The service issues its **single commit**. The source-item row, the snapshot row, and
-   `latest_snapshot_id` become visible **atomically**.
+3. **If, and only if, a new snapshot was inserted**, run **one** conditional `UPDATE
+   source_items SET latest_snapshot_id = :snap_id, publisher = :publisher, title = :title,
+   published_at = :published_at, updated_at = :updated_at, authors = :authors, tags = :tags,
+   language = :language, event_id = :event_id WHERE id = :item_id AND (the new snapshot's
+   (fetched_at, id) is newer than the currently referenced snapshot's, or latest_snapshot_id
+   IS NULL)` in the **same** transaction. **The pointer and the eight allowed-mutable metadata
+   columns advance together, gated by the exact same condition — there is no path where one
+   updates and the other does not.** A conditional subquery/join enforces the `(fetched_at,
+   id)` comparison in PostgreSQL. This is the corrected Phase-1 decision: the earlier design
+   advanced `latest_snapshot_id` conditionally (step 3) but wrote metadata unconditionally on
+   every upsert (old step 1), so an **older** concurrent fetch's metadata write could commit
+   after, and silently overwrite, a **newer** fetch's metadata — even though the older fetch's
+   own pointer update correctly lost the comparison. Combining pointer and metadata into one
+   conditionally-gated statement removes that window entirely: an older or duplicate candidate
+   updates **neither**. The composite FK from section 9 proves the selected snapshot belongs to
+   this item.
+4. The service issues its **single commit**. The source-item row (found or inserted), the
+   snapshot row, and the combined pointer-and-metadata update become visible **atomically**.
+
+**Phase-1 limitation — stated explicitly, not hidden.** A duplicate fetch that produces **no**
+new snapshot (step 2 finds the content hash already recorded) never reaches step 3, and
+therefore does **not** independently refresh source-item metadata: a re-fetch of unchanged
+content never updates `publisher`/`title`/`authors`/etc. even if the source's metadata (not its
+content) changed since the last fetch — for example a publisher rename observed only through a
+byte-identical re-fetch. This is a deliberate MVP trade-off, not an oversight: metadata refresh
+is tied to "a new snapshot arrived," never to "a fetch happened, content or not." **Deferred
+decision:** whether a metadata-only change (no content-hash change) should trigger its own,
+separately-conditioned metadata-refresh path is left to a future ADR/PR once a real need is
+observed; Phase 1 does not build that path speculatively.
 
 **Uniqueness-conflict handling:** the two `UNIQUE` constraints (`source_items.dedupe_key`,
 `document_snapshots (source_item_id, content_hash)`) are the single source of truth.
-Concurrent runs race on the `INSERT`; `ON CONFLICT DO NOTHING`/`DO UPDATE` makes the loser
-converge on the winner's row via the `RETURNING`/re-`SELECT`. No duplicate row; no error
-surfaced to the run.
+Concurrent runs race on the `INSERT`; `ON CONFLICT DO NOTHING` makes the loser converge on the
+winner's row via the `RETURNING`/re-`SELECT` — step 1 never uses `DO UPDATE`, so there is no
+conflict-time metadata write to race on at all. No duplicate row; no error surfaced to the run.
 
 **Retry / idempotency:** re-running the same item recomputes the same `dedupe_key` and
 `content_hash`, hits the same conflict paths, and converges to the same rows.
-`advance_latest_snapshot` is conditional and idempotent: the same snapshot is a no-op, an
-older snapshot cannot move the pointer backwards, and only a newer same-item snapshot can
-advance it.
+`advance_latest_snapshot_and_metadata` is conditional and idempotent: the same snapshot is a
+no-op, an older snapshot can move **neither** the pointer **nor** the metadata backwards, and
+only a newer same-item snapshot advances either — because they are the same `UPDATE`, "either"
+always means "both."
 
-**No partial `snapshot exists but latest_snapshot_id inconsistent` state:** steps 2 and 3 are
-in one transaction and land on the service's single commit. A crash before that commit rolls
-both back. At every commit boundary, `latest_snapshot_id` is either `NULL` or points at a
-real, existing snapshot of that item.
+**No partial state — pointer, metadata, or otherwise:** steps 2 and 3 are in one transaction
+and land on the service's single commit; step 3's pointer and metadata columns are written by
+**one** `UPDATE` statement, so a losing concurrent transaction cannot advance one and not the
+other, and a crash before commit rolls both back together. At every commit boundary,
+`latest_snapshot_id` is either `NULL` or points at a real, existing snapshot of that item, and
+the mutable metadata always corresponds to whichever snapshot `latest_snapshot_id` currently
+names — never to an older, already-superseded fetch.
 
 **Rollback behaviour:** any exception in the per-item transaction (an unexpected unique
 violation, a trigger `RAISE`, a lost connection) makes the **service** roll back its one
@@ -633,8 +677,8 @@ transaction:
 - **for a new item**, the failed attempt persists **no rows** — no `source_items` row and no
   `document_snapshots` row;
 - **for an existing item**, rollback **preserves the rows committed by earlier runs** and
-  discards **only** the changes this attempt made in this transaction (the metadata update, a
-  new snapshot insert, a pointer advance);
+  discards **only** the changes this attempt made in this transaction (a new snapshot insert,
+  and the combined pointer-and-metadata update if the candidate was newer);
 - the collection run records the item as failed and continues (`docs/ARCHITECTURE.md`: "One
   source failure does not abort others").
 
@@ -754,9 +798,23 @@ latest-snapshot ordering.
   rejected at the model/storage boundaries; ordinary `UPDATE`, `DELETE`, **and `TRUNCATE`** on
   `document_snapshots` are each rejected by their trigger, the transaction rolls back, and the
   pre-existing rows are unchanged on re-read;
-- **latest-pointer concurrency** — two different snapshots committed out of arrival order (on
-  separate connections) still leave the greatest `(fetched_at, id)` selected, and an older
-  retry cannot regress the pointer;
+- **latest-pointer-and-metadata concurrency** (the Finding 1 regression fix) — four required
+  cases:
+  1. two different snapshots, carrying different mutable metadata, committed **out of arrival
+     order** (on separate connections) leave **both** `latest_snapshot_id` **and** the mutable
+     source-item metadata (`publisher`, `title`, `published_at`, `updated_at`, `authors`,
+     `tags`, `language`, `event_id`) corresponding to the **same** greatest `(fetched_at, id)`
+     candidate — never one advanced and the other stale;
+  2. an **older retry** (a candidate whose `(fetched_at, id)` loses the comparison) regresses
+     **neither** the pointer **nor** the metadata — both remain exactly as the newer candidate
+     left them;
+  3. a **losing concurrent transaction cannot partially update metadata** — because the pointer
+     and metadata columns are written by one conditional `UPDATE`, a transaction whose
+     candidate loses the `(fetched_at, id)` comparison writes **zero** of the eight mutable
+     columns, not some;
+  4. a duplicate-content fetch that carries **different** metadata than what is stored (no new
+     `content_hash`, so no new snapshot) leaves the stored metadata **unchanged** — this is the
+     documented Phase-1 limitation above, proven by a test rather than left implicit;
 - **list normalization** (new Phase-1 behaviour, section 10) — author/tag trimming, Unicode
   NFC normalization, empty removal, stable deduplication, and tag case-folding are
   deterministic;
@@ -812,11 +870,13 @@ contains exactly:
   create → `alembic upgrade head` → run tests → dispose connections → `alembic downgrade base`
   where practical → drop the database; a per-test transaction-rollback fixture for
   non-committing tests; a separate-connection helper for concurrency tests),
-  `test_source_item_repository.py`, `test_migrations.py`
+  `test_source_item_repository.py` (find-vs-create metadata behaviour; the four
+  latest-pointer-and-metadata concurrency cases from section 15), `test_migrations.py`
   (`upgrade`→`downgrade`→`upgrade`; the application objects vanish then reappear identically
   while Alembic keeps its own `alembic_version` table), `test_immutability_triggers.py` (all
   five `source_items` identity fields; snapshot `UPDATE` / `DELETE` / `TRUNCATE`),
-  `test_ingestion_transaction.py` (service-owned commit/rollback for new and existing items).
+  `test_ingestion_transaction.py` (service-owned commit/rollback for new and existing items;
+  the combined pointer-and-metadata `UPDATE` never applies partially).
 - **`tests/unit/ingestion/`** — the in-memory fake repository and its tests.
 - **`.github/workflows/ci.yml`** — `postgres:17` service on the `tests` job, `DATABASE_URL`
   pointed at it, and the job configured to fail if the integration harness cannot provision or
@@ -970,7 +1030,11 @@ These do not block the first persistence PR, but must be resolved before deploym
   triggers;
 - connection-pool sizing, `statement_timeout`, and connect-timeout values, tuned to the
   deployment;
-- the production `psycopg` packaging choice (`[binary]` vs `[c]` vs system `libpq`).
+- the production `psycopg` packaging choice (`[binary]` vs `[c]` vs system `libpq`);
+- **independent metadata refresh for a duplicate-content fetch** (section 13) — Phase 1
+  deliberately does not refresh `publisher`/`title`/etc. when a re-fetch produces no new
+  snapshot; whether that gap is worth a separately-conditioned metadata-only refresh path is
+  left for a future ADR/PR once a real need is observed, not built speculatively here.
 
 ## References
 
