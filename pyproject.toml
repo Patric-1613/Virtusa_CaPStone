@@ -50,7 +50,14 @@ dependencies = [
   # sqlalchemy: ADR 0002 §12.3 and ADR 0011 select SQLAlchemy 2 async sessions
   # as the persistence foundation for all three modules.
   "sqlalchemy>=2.0",
+  # psycopg: ADR 0002 §5 and §17 select psycopg 3 as the official PostgreSQL async driver.
+  # Binary distribution is specified for cross-platform local development and CI portability.
+  "psycopg[binary]>=3.2",
+  # alembic: ADR 0002 §12.5 and §17 establish a single shared Alembic migration timeline
+  # across ingestion and intelligence persistence foundations.
+  "alembic>=1.13",
 ]
+
 
 [dependency-groups]
 dev = [
@@ -117,6 +124,7 @@ addopts = [
 ]
 testpaths = ["tests"]
 markers = [
+  "unit: fast in-memory unit tests",
   "contract: shared-contract tests",
   "integration: tests that use a real infrastructure boundary",
   "e2e: end-to-end system tests",

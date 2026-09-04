@@ -1,4 +1,4 @@
-"""Integration tests for intelligence persistence foundation — ADR 0011."""
+"""Unit tests for intelligence persistence models and repository logic — ADR 0011."""
 
 from __future__ import annotations
 
@@ -23,13 +23,13 @@ from ai_daily_digest.shared.schemas import (
     Subject,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.unit
 
 BASE_TIME = datetime(2026, 9, 4, 12, 0, 0, 0, tzinfo=UTC)
 
 
 def run_async(coro_fn: Callable[..., Coroutine[Any, Any, None]]) -> Callable[..., None]:
-    """Decorator to run async integration test deterministically."""
+    """Decorator to run async unit test deterministically."""
 
     def wrapper(*args: Any, **kwargs: Any) -> None:
         asyncio.run(coro_fn(*args, **kwargs))

@@ -18,6 +18,51 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- -----------------------------------------------------------------------------
+-- Source Items and Document Snapshots Immutability Triggers — ADR 0002 §11
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION check_source_items_immutability()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id THEN
+        RAISE EXCEPTION 'source_items.id is immutable';
+    END IF;
+    IF NEW.first_fetched_at IS DISTINCT FROM OLD.first_fetched_at THEN
+        RAISE EXCEPTION 'source_items.first_fetched_at is immutable';
+    END IF;
+    IF NEW.dedupe_key IS DISTINCT FROM OLD.dedupe_key THEN
+        RAISE EXCEPTION 'source_items.dedupe_key is immutable';
+    END IF;
+    IF NEW.source_id IS DISTINCT FROM OLD.source_id THEN
+        RAISE EXCEPTION 'source_items.source_id is immutable';
+    END IF;
+    IF NEW.canonical_url IS DISTINCT FROM OLD.canonical_url THEN
+        RAISE EXCEPTION 'source_items.canonical_url is immutable';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_protect_source_items_immutability
+BEFORE UPDATE ON source_items
+FOR EACH ROW
+EXECUTE FUNCTION check_source_items_immutability();
+
+CREATE TRIGGER trg_protect_document_snapshots_immutable_update
+BEFORE UPDATE ON document_snapshots
+FOR EACH ROW
+EXECUTE FUNCTION reject_row_mutation();
+
+CREATE TRIGGER trg_protect_document_snapshots_immutable_delete
+BEFORE DELETE ON document_snapshots
+FOR EACH ROW
+EXECUTE FUNCTION reject_row_mutation();
+
+CREATE TRIGGER trg_protect_document_snapshots_immutable_truncate
+BEFORE TRUNCATE ON document_snapshots
+FOR EACH STATEMENT
+EXECUTE FUNCTION reject_table_truncate();
+
+-- -----------------------------------------------------------------------------
 -- Extracted Facts Immutability and Provenance Triggers
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION validate_fact_observed_at()
