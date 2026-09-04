@@ -16,11 +16,16 @@ from ai_daily_digest.delivery.api.errors import (
     error_response,
     install_exception_handlers,
 )
+from ai_daily_digest.delivery.api.pagination import CursorCodec
 from ai_daily_digest.delivery.api.routes.health import router as health_router
+from ai_daily_digest.delivery.api.routes.updates import router as updates_router
 from ai_daily_digest.shared.ids import new_id
+from ai_daily_digest.shared.repositories import SourceItemFeedRepository
 
 API_TITLE = "AI Daily Digest API"
 API_VERSION = "0.1.0"
+
+_DEFAULT_SIGNING_KEY = b"\x00" * 32
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +37,9 @@ def create_app(
     docs_enabled: bool = True,
     required_dependencies: Iterable[str] = (),
     readiness_probes: Mapping[str, ReadinessProbe] | None = None,
+    source_item_feed_repository: SourceItemFeedRepository | None = None,
+    cursor_codec: CursorCodec | None = None,
+    cursor_signing_key: bytes | None = None,
 ) -> FastAPI:
     """Create an independent, side-effect-free FastAPI application instance."""
     readiness_registry = build_readiness_registry(
@@ -49,6 +57,14 @@ def create_app(
         servers=None,
     )
     app.state.readiness_registry = readiness_registry
+    app.state.source_item_feed_repository = source_item_feed_repository
+
+    if cursor_codec is not None:
+        app.state.cursor_codec = cursor_codec
+    elif cursor_signing_key is not None:
+        app.state.cursor_codec = CursorCodec(cursor_signing_key)
+    else:
+        app.state.cursor_codec = CursorCodec(_DEFAULT_SIGNING_KEY)
 
     @app.middleware("http")
     async def add_request_context(request: Request, call_next: RequestHandler) -> Response:
@@ -74,4 +90,5 @@ def create_app(
 
     install_exception_handlers(app)
     app.include_router(health_router)
+    app.include_router(updates_router)
     return app

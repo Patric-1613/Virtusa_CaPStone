@@ -44,24 +44,25 @@ def test_openapi_metadata_is_explicit_safe_and_openapi_3_1() -> None:
         assert forbidden not in serialized
 
 
-def test_only_implemented_health_paths_appear_in_openapi() -> None:
+def test_only_implemented_paths_appear_in_openapi() -> None:
     schema = create_app().openapi()
 
-    assert set(schema["paths"]) == {"/v1/health/live", "/v1/health/ready"}
+    assert set(schema["paths"]) == {"/v1/health/live", "/v1/health/ready", "/v1/updates"}
     assert set(schema["paths"]["/v1/health/live"]) == {"get"}
     assert set(schema["paths"]["/v1/health/ready"]) == {"get"}
+    assert set(schema["paths"]["/v1/updates"]) == {"get"}
 
 
 def test_operation_ids_are_explicit_unique_and_stable_snake_case() -> None:
     operations = _operations(create_app().openapi())
     operation_ids = [operation["operationId"] for operation in operations]
 
-    assert operation_ids == ["get_health_live", "get_health_ready"]
+    assert set(operation_ids) == {"get_health_live", "get_health_ready", "get_updates"}
     assert len(operation_ids) == len(set(operation_ids))
     assert all(re.fullmatch(r"[a-z][a-z0-9_]*", operation_id) for operation_id in operation_ids)
 
 
-def test_health_and_error_component_names_and_responses_are_stable() -> None:
+def test_schema_component_names_and_responses_are_stable() -> None:
     schema = create_app().openapi()
     component_names = set(schema["components"]["schemas"])
 
@@ -69,8 +70,10 @@ def test_health_and_error_component_names_and_responses_are_stable() -> None:
         "ErrorBody",
         "ErrorEnvelope",
         "LiveResponse",
+        "Page_UpdateSummary_",
         "ReadinessCheckResponse",
         "ReadyResponse",
+        "UpdateSummary",
         "Uuid7Id",
     }
     ready_responses = schema["paths"]["/v1/health/ready"]["get"]["responses"]
@@ -78,6 +81,16 @@ def test_health_and_error_component_names_and_responses_are_stable() -> None:
         "/ReadyResponse"
     )
     assert ready_responses["503"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ErrorEnvelope"
+    )
+    updates_responses = schema["paths"]["/v1/updates"]["get"]["responses"]
+    assert updates_responses["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/Page_UpdateSummary_"
+    )
+    assert updates_responses["400"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ErrorEnvelope"
+    )
+    assert updates_responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ErrorEnvelope"
     )
 
