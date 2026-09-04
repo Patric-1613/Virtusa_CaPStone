@@ -283,7 +283,7 @@ class ExtractedFact(BaseModel):
                     "value=None (ADR 0006) -- a fact can't state a value and also "
                     "claim none was given"
                 )
-            if not self.quoted_span:
+            if self.quoted_span is None or not self.quoted_span.strip():
                 raise ValueError(
                     "ExtractedFact with disclosure_status='not_disclosed' must have a "
                     "non-empty quoted_span citing the actual non-disclosure statement "
