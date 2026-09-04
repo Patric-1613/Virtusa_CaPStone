@@ -113,8 +113,11 @@ def test_schema_component_names_and_responses_are_stable() -> None:
 
 
 def test_interactive_docs_flag_does_not_change_executable_openapi() -> None:
-    assert _full_app().openapi() == create_app(
-        source_item_feed_repository=AsyncMock(spec=SourceItemFeedRepository),
-        cursor_signing_key=_TEST_KEY,
-        docs_enabled=False,
-    ).openapi()
+    assert (
+        _full_app().openapi()
+        == create_app(
+            source_item_feed_repository=AsyncMock(spec=SourceItemFeedRepository),
+            cursor_signing_key=_TEST_KEY,
+            docs_enabled=False,
+        ).openapi()
+    )
