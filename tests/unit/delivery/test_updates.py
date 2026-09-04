@@ -308,3 +308,9 @@ def test_get_updates_unconfigured_repository_fails_safely() -> None:
     assert response.status_code == 500
     payload = ErrorEnvelope.model_validate(response.json())
     assert payload.error.code == "internal_error"
+
+
+def test_create_app_requires_cursor_key_when_repository_configured() -> None:
+    repo = InMemorySourceItemFeedRepository([])
+    with pytest.raises(ValueError, match="cursor_codec or cursor_signing_key is required"):
+        create_app(source_item_feed_repository=repo)

@@ -25,8 +25,6 @@ from ai_daily_digest.shared.repositories import SourceItemFeedRepository
 API_TITLE = "AI Daily Digest API"
 API_VERSION = "0.1.0"
 
-_DEFAULT_SIGNING_KEY = b"\x00" * 32
-
 LOGGER = logging.getLogger(__name__)
 
 type RequestHandler = Callable[[Request], Awaitable[Response]]
@@ -63,8 +61,13 @@ def create_app(  # pylint: disable=too-many-arguments
         app.state.cursor_codec = cursor_codec
     elif cursor_signing_key is not None:
         app.state.cursor_codec = CursorCodec(cursor_signing_key)
+    elif source_item_feed_repository is not None:
+        raise ValueError(
+            "cursor_codec or cursor_signing_key is required when "
+            "source_item_feed_repository is configured"
+        )
     else:
-        app.state.cursor_codec = CursorCodec(_DEFAULT_SIGNING_KEY)
+        app.state.cursor_codec = None
 
     @app.middleware("http")
     async def add_request_context(request: Request, call_next: RequestHandler) -> Response:
