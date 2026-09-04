@@ -16,7 +16,6 @@ from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope
 from ai_daily_digest.delivery.api.pagination import (
     CursorCodec,
-    build_cursor_payload,
     canonicalize_filters,
 )
 from ai_daily_digest.delivery.api.routes.updates import UPDATES_RESOURCE, UPDATES_SORT
@@ -155,20 +154,21 @@ def test_get_updates_multi_page_traversal() -> None:
     assert [x["title"] for x in p3["items"]] == ["Item 0"]
     assert p3["next_cursor"] is None
 
-    # Page 4 (after end): query with valid cursor pointing to the final item (Item 0)
+    # Page 4 (past end): synthesise a valid cursor pointing to the position of the final
+    # returned item so the repository is asked for items strictly before it, returning []
+    # without needing to reach into implementation details.
     codec = CursorCodec(TEST_KEY)
-    last_item = items[0]  # Item 0
     canonical_filters = canonicalize_filters(
         resource=UPDATES_RESOURCE,
         sort=UPDATES_SORT,
         filters={},
     )
-    past_end_payload = build_cursor_payload(
+    last_item_json = p3["items"][-1]  # Item 0 — the oldest item returned on page 3
+    past_end_cursor = codec.next_cursor(
         filters=canonical_filters,
-        last_sort_value=last_item.first_fetched_at,
-        last_id=last_item.id,
+        last_sort_value=datetime.fromisoformat(last_item_json["first_fetched_at"]),
+        last_id=uuid.UUID(last_item_json["id"]),
     )
-    past_end_cursor = codec.encode(past_end_payload)
     resp_empty = client.get(f"/v1/updates?limit=2&cursor={past_end_cursor}")
     assert resp_empty.status_code == 200
     p_empty = resp_empty.json()

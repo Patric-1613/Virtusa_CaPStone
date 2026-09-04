@@ -120,9 +120,11 @@ async def get_updates(  # pylint: disable=too-many-arguments,too-many-positional
     canonical_dict = canonical_filters.as_dict()
     publisher_val = canonical_dict.get("publisher")
     source_id_val = canonical_dict.get("source_id")
+    # CanonicalFilterValue is str | bool | None; only str is valid for FeedFilter fields.
+    # Narrowing with isinstance avoids accidental bool-to-str coercion (ADR 0008 §7).
     feed_filter = FeedFilter(
-        publisher=str(publisher_val) if publisher_val is not None else None,
-        source_id=str(source_id_val) if source_id_val is not None else None,
+        publisher=publisher_val if isinstance(publisher_val, str) else None,
+        source_id=source_id_val if isinstance(source_id_val, str) else None,
     )
 
     items = await repository.list_source_items(
