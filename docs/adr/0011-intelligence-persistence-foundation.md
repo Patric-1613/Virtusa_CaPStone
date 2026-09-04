@@ -18,7 +18,7 @@ The intelligence module currently holds its operational state in-memory:
 To support end-to-end trace journeys, historical auditability, and the `/v1/changes` and `/v1/digests` endpoints defined in `docs/API_CONTRACT.md`, intelligence requires a concrete PostgreSQL persistence foundation.
 
 This design mirrors the architectural rigor and discipline of the persistence foundation established in [ADR 0002](0002-postgres-pgvector.md) (Status: Proposed):
-- **Business chronology ordering tuples:** [ADR 0007](0007-uuid-v7-identifier-strategy.md) establishes that business chronology derives exclusively from an explicit business timestamp, with UUIDv7 serving solely as an opaque tie-breaker. Keyset pagination ordering tuples mandated by [ADR 0008](0008-cursor-pagination-contract.md) (`(detected_at DESC, id DESC)` for `/v1/changes`, `(digest_date DESC, id DESC)` for `/v1/digests`) and current-fact resolution (`(observed_at DESC, extraction_version DESC, id DESC)`) adhere strictly to this `(business_timestamp, id)` paradigm.
+- **Business chronology ordering tuples:** [ADR 0007](0007-uuid-v7-identifier-strategy.md) establishes that business chronology derives exclusively from an explicit business timestamp, with UUIDv7 serving solely as an opaque tie-breaker. Keyset pagination ordering tuples mandated by [ADR 0008](0008-cursor-pagination-contract.md) (`(detected_at DESC, id DESC)` for `/v1/changes`, `(digest_date DESC, id DESC)` for `/v1/digests`) adhere strictly to this `(business_timestamp, id)` paradigm. Current-fact resolution uses the four-part tuple `(observed_at DESC, snapshot_id DESC, extraction_version DESC, id DESC)`: `observed_at` is the sole business chronology; `snapshot_id` is an opaque deterministic tie-breaker — never decoded, never independent business chronology, exactly like `id` elsewhere — used only when two distinct snapshots share one `observed_at`; `extraction_version` is compared strictly after `snapshot_id`, so it orders corrections *within* one already-identified snapshot and never lets a higher version number from a different, unrelated snapshot outrank a lower one from the correct snapshot; `id` remains the final unique tie-breaker.
 - **Canonical subject identity:** Following `FactStore._subject_key()` (`intelligence/facts.py:115-118`), subjects are keyed in the database by canonical normalized strings (`company_key`, `product_key`) computed via `normalise_name()`, preventing duplicate records from incidental casing, whitespace, or punctuation differences.
 - **Cross-table relational consistency:** Composite foreign keys guarantee that a `Change` cannot reference a `ChangeSet` belonging to a different subject, and that `current_facts` cannot reference an `extracted_facts` row with mismatched subject, field, timestamp, or extraction version (mirroring the referential integrity pattern in ADR 0002 §9).
 - **Three-layer immutability enforcement:** As established in [ADR 0008](0008-cursor-pagination-contract.md) §5.D and ADR 0002 §11, immutability is guaranteed across model freezing, repository method restriction, and database storage-level trigger enforcement.
@@ -64,7 +64,7 @@ The shared contracts and intelligence domain models already define the required 
 | 2 | **`changes` immutability & shape enforcement** | `BEFORE UPDATE` trigger on `changes` enforcing immutability of **all columns except `review_status`**; `BEFORE DELETE` and `BEFORE TRUNCATE` triggers rejecting removal. Database `CHECK` constraint mirroring `validate_change_shape()`. | Fulfills [ADR 0008](0008-cursor-pagination-contract.md) §5.D storage-level immutability for the keyset ordering tuple `(detected_at DESC, id DESC)` and protects historical Change evidence against deletion or truncation. Mirroring `validate_change_shape()` in SQL prevents contradictory or corrupt rows (e.g. `not_disclosed` with a non-null current value, or partial observations without timestamps) from being permanently frozen into storage. Only `review_status` transitions are mutable. | Protecting only `(id, detected_at)`. Rejected: allows silent mutation or deletion of historical evidence. Omitting shape CHECK constraints. Rejected: allows invalid rows to be inserted and permanently locked. |
 | 3 | **`digests` table, immutability & publish uniqueness** | Native `DATE` column for `digest_date`; `BEFORE UPDATE` trigger on `(id, digest_date)`. Once `status = 'published'`, `title` is permanently frozen, and status cannot transition away from `published`. Unique partial index `uq_digests_one_published_per_date` on `(digest_date) WHERE status = 'published'`. | Fulfills [ADR 0008](0008-cursor-pagination-contract.md) §5.B, §5.D, and §12 for `/v1/digests` ordering `(digest_date DESC, id DESC)`. Retried or reprocessed daily pipeline runs require publish idempotency: multiple draft attempts for a date are legitimate during drafting/review, but exactly one published digest may exist per calendar date. An attempt to publish a second digest fails closed at the database level. | Unconstrained updates or string-based date storage. Rejected: string dates permit invalid days and mutable ordering fields break keyset pagination traversals. Omitting the unique publish index was rejected because it allows duplicate published digests on retry. |
 | 4 | **Referential integrity & provenance derivation** | `ChangeSet.previous_snapshot_ids` and `current_snapshot_ids` are derived on read from immutable `changes` rows ordered by first occurrence (`MIN(position) ASC`). `digest_claim_citations` uses a normalized join table with `ON DELETE RESTRICT`. `source_url` is derived via JOIN (`document_snapshots` → `source_items.canonical_url`) rather than stored denormalized on `extracted_facts` and `changes`. `observed_at` is stored on `extracted_facts` and `changes` and strictly enforced against `document_snapshots.fetched_at` via `INSERT` triggers. Once a digest is published, its child claims and citations are frozen against insert, update, reassignment, or delete. | Deriving ChangeSet citations directly from `changes` eliminates a redundant join table (`change_set_snapshot_citations`), avoids position/reassignment maintenance, and guarantees zero drift and first-occurrence order preservation by construction. Deriving `source_url` at read time via the immutable snapshot chain (`document_snapshots` and `source_items` are immutable per ADR 0002 §11) eliminates redundant text storage and mathematically precludes drift. Retaining `observed_at` on `extracted_facts` and `changes` is strictly required for keyset indexing and composite FK checks with `current_facts`. | PostgreSQL `UUID[]` arrays. Rejected: arrays cannot enforce foreign-key constraints in PostgreSQL, allowing dangling snapshot IDs or silent deletion of primary evidence. Storing an unenforced denormalized `source_url` on `extracted_facts` and `changes` was rejected because it duplicates immutable parent data and risks drift. |
-| 5 | **Current-fact resolution, consistency & advancement** | Current fact resolved via explicit `(observed_at DESC, extraction_version DESC, id DESC)` ordering. Dedicated `current_facts` pointer table stores `fact_id` and `extraction_version` (integer revision). Updated conditionally: `(current_facts.observed_at, current_facts.extraction_version, current_facts.fact_id) < (EXCLUDED.observed_at, EXCLUDED.extraction_version, EXCLUDED.fact_id)` with `RETURNING fact_id`. Composite FK `(fact_id, company_key, product_key, field, observed_at, extraction_version)` proves pointer consistency. Batch-level advisory locking on `(subject, field)` in lexicographical order. | Conforms strictly to [ADR 0007](0007-uuid-v7-identifier-strategy.md) lines 154-161 (UUID is an opaque tie-breaker, never primary chronology). Within the same snapshot, higher `extraction_version` supersedes older versions. Advisory locking on `(subject, field)` serializes read-compare-advance sequences, eliminating first-write races and ensuring a concurrent writer computes its Change against the newly committed state rather than a stale read. Using `RETURNING fact_id` directly controls Change emission: if zero rows return, no pointer advanced, and no Change is produced. | Resolving current fact by highest `id`. Rejected: violates ADR 0007. Allowing UUID order to determine which extraction version wins. Rejected: UUID has no version semantics. Leaving `current_facts` with only a single-column FK on `fact_id`. Rejected: allows direct SQL writes to create pointer rows with mixed identity or divergent timestamps. |
+| 5 | **Current-fact resolution, consistency & advancement** | Current fact resolved via explicit `(observed_at DESC, snapshot_id DESC, extraction_version DESC, id DESC)` ordering — `observed_at` is business chronology; `snapshot_id` is the opaque deterministic tie-breaker when two distinct snapshots share one `observed_at`; `extraction_version` orders corrections only *within* one already-matched snapshot; `id` is the final unique tie-breaker. Dedicated `current_facts` pointer table stores `fact_id`, `snapshot_id`, and `extraction_version` (integer revision). Updated conditionally: `(current_facts.observed_at, current_facts.snapshot_id, current_facts.extraction_version, current_facts.fact_id) < (EXCLUDED.observed_at, EXCLUDED.snapshot_id, EXCLUDED.extraction_version, EXCLUDED.fact_id)` with `RETURNING fact_id`. Composite FK `(fact_id, company_key, product_key, field, snapshot_id, observed_at, extraction_version)` proves pointer consistency, including that the pointer's `snapshot_id` matches its referenced `extracted_facts` row. Batch-level advisory locking on `(subject, field)` in lexicographical order. | Conforms strictly to [ADR 0007](0007-uuid-v7-identifier-strategy.md) lines 154-161 (UUID is an opaque tie-breaker, never primary chronology) — `snapshot_id` is used exactly the same way `id` already is, compared only after the business timestamp, never decoded. Within the same snapshot, higher `extraction_version` supersedes older versions; across *different* snapshots, `extraction_version` is never compared at all, because a version number carries no meaning outside the snapshot that produced it. Advisory locking on `(subject, field)` serializes read-compare-advance sequences, eliminating first-write races and ensuring a concurrent writer computes its Change against the newly committed state rather than a stale read. Using `RETURNING fact_id` directly controls Change emission: if zero rows return, no pointer advanced, and no Change is produced. | Resolving current fact by highest `id`. Rejected: violates ADR 0007. Allowing UUID order to determine which extraction version wins. Rejected: UUID has no version semantics. Comparing `extraction_version` before, or without, `snapshot_id`. Rejected: `(observed_at, extraction_version, id)` alone lets a higher version number from an unrelated (possibly older-arriving) snapshot outrank a lower version from the correct, newer snapshot merely because the number is larger — extraction_version has no cross-snapshot ordering meaning. Leaving `current_facts` with only a single-column FK on `fact_id`. Rejected: allows direct SQL writes to create pointer rows with mixed identity or divergent timestamps. |
 | 6 | **Canonical subject identity & consistency** | `subjects` primary key is `(company_key, product_key)` derived via `normalise_name()`, storing original `company`/`product` display values (first-seen wins). Child tables (`extracted_facts`, `current_facts`, `change_sets`, `changes`) key on `(company_key, product_key)`. `change_sets` enforces `UNIQUE (id, company_key, product_key)`; `changes` references it via composite FK `(change_set_id, company_key, product_key)`. | Replicates `FactStore._subject_key()` in SQL so that equivalent inputs (`"OpenAI"` / `"openai"` / `"OpenAI."`) collide deterministically into a single subject. The composite FK on `changes` mirrors ADR 0002 §9 (`source_items.latest_snapshot_id` → `document_snapshots(id, source_item_id)`), ensuring a Change cannot reference a ChangeSet belonging to a different subject. | Raw `PRIMARY KEY (company, product)`. Rejected: allows duplicate subject rows due to casing or punctuation differences. Plain `change_set_id` FK on `changes`. Rejected: permits a Change to reference a ChangeSet with a mismatched subject. |
 | 7 | **Correction policy & versioned re-extraction** | Integer `extraction_version >= 1` assigned by the pipeline. `uq_extracted_facts_attempt` on `(snapshot_id, company_key, product_key, field, extraction_version)`. Correcting the current snapshot updates `current_facts` to the new version but **emits NO Change**. Correcting an older snapshot appends to history without advancing `current_facts` and emits no Change. | When an extractor is corrected (e.g. parser bug fix or prompt improvement), the underlying source observation did not change; emitting a business Change would mislead subscribers into believing pricing or features changed. A `Change` requires distinct snapshots across time. Identical retries re-read and verify all 10 immutable fact attributes, failing closed on discrepancy. | Emitting a normal Change on extraction correction. Rejected: generates false business changes. Scoping uniqueness only to model/prompt. Rejected: deterministic extractions have null models/prompts, causing permanent conflicts on code updates. |
 | 8 | **Explicit position columns for child list reconstruction** | Explicit `position INTEGER NOT NULL CHECK (position >= 0)` on `changes` (`UNIQUE (change_set_id, position)`), `digest_claims` (`UNIQUE (digest_id, position)`), and `digest_claim_citations` (`UNIQUE (claim_id, position)`). Reconstructed via `ORDER BY position ASC`. | Domain collections have deterministic sequence assigned by the pipeline during construction. Storing explicit 0-indexed or 1-indexed `position` columns guarantees exact sequence reproduction across database round-trips without relying on UUIDv7 timestamps or heuristic creation order. | Reconstructing order via `ORDER BY id ASC`. Rejected: conflates opaque identifier generation with pipeline sequence, creating ungrounded chronological assumptions. |
@@ -137,9 +137,11 @@ CREATE TABLE extracted_facts (
     CONSTRAINT uq_extracted_facts_attempt
         UNIQUE (snapshot_id, company_key, product_key, field, extraction_version),
 
-    -- Target of composite FK from current_facts proving pointer-row consistency:
+    -- Target of composite FK from current_facts proving pointer-row consistency
+    -- (snapshot_id included so the pointer's snapshot cannot be spoofed independently
+    -- of observed_at/extraction_version -- see the corrected ordering tuple below):
     CONSTRAINT uq_extracted_facts_composite_identity
-        UNIQUE (id, company_key, product_key, field, observed_at, extraction_version),
+        UNIQUE (id, company_key, product_key, field, snapshot_id, observed_at, extraction_version),
 
     -- Mirror Python-side evidence invariants from shared/schemas.py:
     CONSTRAINT chk_extracted_facts_disclosure_value CHECK (
@@ -156,9 +158,11 @@ CREATE TABLE extracted_facts (
     )
 );
 
--- Chronological business ordering index:
+-- Chronological business ordering index -- observed_at is business chronology; snapshot_id
+-- is the opaque tie-breaker for equal observed_at; extraction_version orders corrections only
+-- within one already-matched snapshot; id is the final unique tie-breaker:
 CREATE INDEX idx_extracted_facts_subject_field_chronology
-    ON extracted_facts (company_key, product_key, field, observed_at DESC, extraction_version DESC, id DESC);
+    ON extracted_facts (company_key, product_key, field, observed_at DESC, snapshot_id DESC, extraction_version DESC, id DESC);
 
 CREATE INDEX idx_extracted_facts_snapshot_id
     ON extracted_facts (snapshot_id);
@@ -213,14 +217,20 @@ CREATE TABLE current_facts (
     product_key         TEXT NOT NULL,
     field               TEXT NOT NULL,
     fact_id             UUID NOT NULL,
+    -- snapshot_id: opaque deterministic tie-breaker when two distinct snapshots share one
+    -- observed_at. Compared BEFORE extraction_version in the ordering tuple below, so a
+    -- correction's extraction_version only ever orders revisions within this one snapshot.
+    snapshot_id         UUID NOT NULL,
     observed_at         TIMESTAMPTZ NOT NULL,
     extraction_version  INTEGER NOT NULL CHECK (extraction_version >= 1),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (company_key, product_key, field),
     FOREIGN KEY (company_key, product_key) REFERENCES subjects(company_key, product_key) ON DELETE RESTRICT,
-    -- Composite ownership FK proving pointer-row consistency with extracted_facts:
-    FOREIGN KEY (fact_id, company_key, product_key, field, observed_at, extraction_version)
-        REFERENCES extracted_facts(id, company_key, product_key, field, observed_at, extraction_version) ON DELETE RESTRICT
+    -- Composite ownership FK proving pointer-row consistency with extracted_facts --
+    -- including that this pointer's snapshot_id genuinely matches the referenced fact's
+    -- snapshot_id, not just its observed_at/extraction_version:
+    FOREIGN KEY (fact_id, company_key, product_key, field, snapshot_id, observed_at, extraction_version)
+        REFERENCES extracted_facts(id, company_key, product_key, field, snapshot_id, observed_at, extraction_version) ON DELETE RESTRICT
 );
 
 -- -----------------------------------------------------------------------------
@@ -680,7 +690,8 @@ Observations for a subject are processed as a **batch unit**. To eliminate race 
 2. **Locked Read of Current State:**
    Inside the advisory lock, the worker queries the up-to-date current pointer and fact for each field:
    ```sql
-   SELECT cf.fact_id, cf.observed_at, cf.extraction_version, ef.value, ef.quoted_span, ef.snapshot_id, ef.disclosure_status
+   SELECT cf.fact_id, cf.snapshot_id, cf.observed_at, cf.extraction_version,
+          ef.value, ef.quoted_span, ef.disclosure_status
    FROM current_facts cf
    JOIN extracted_facts ef ON ef.id = cf.fact_id
    WHERE cf.company_key = :company_key
@@ -693,17 +704,23 @@ Observations for a subject are processed as a **batch unit**. To eliminate race 
    - **Append Facts to History:** Insert all extracted facts into `extracted_facts` with idempotent retry/conflict handling.
    - **Conditional Pointer Updates:**
      ```sql
-     INSERT INTO current_facts (company_key, product_key, field, fact_id, observed_at, extraction_version, updated_at)
-     VALUES (:company_key, :product_key, :field, :fact_id, :observed_at, :extraction_version, clock_timestamp())
+     INSERT INTO current_facts (company_key, product_key, field, fact_id, snapshot_id, observed_at, extraction_version, updated_at)
+     VALUES (:company_key, :product_key, :field, :fact_id, :snapshot_id, :observed_at, :extraction_version, clock_timestamp())
      ON CONFLICT (company_key, product_key, field) DO UPDATE
      SET fact_id            = EXCLUDED.fact_id,
+         snapshot_id        = EXCLUDED.snapshot_id,
          observed_at        = EXCLUDED.observed_at,
          extraction_version = EXCLUDED.extraction_version,
          updated_at         = clock_timestamp()
-     WHERE (current_facts.observed_at, current_facts.extraction_version, current_facts.fact_id) <
-           (EXCLUDED.observed_at, EXCLUDED.extraction_version, EXCLUDED.fact_id)
+     WHERE (current_facts.observed_at, current_facts.snapshot_id, current_facts.extraction_version, current_facts.fact_id) <
+           (EXCLUDED.observed_at, EXCLUDED.snapshot_id, EXCLUDED.extraction_version, EXCLUDED.fact_id)
      RETURNING fact_id;
      ```
+     `snapshot_id` is compared immediately after `observed_at` and before `extraction_version`
+     in this row-value comparison, exactly matching the ordering tuple in Decision 5: two
+     candidates sharing one `observed_at` resolve deterministically by `snapshot_id`, and
+     `extraction_version` only breaks a tie *after* `snapshot_id` has already matched (i.e.
+     within one snapshot) — never across two different snapshots.
    - **Change Decision & Emission:**
      - For each field, if the conditional update returns 0 rows (the observation is older or an identical revision), or if the value matches current state: **no Change is produced** for that field.
      - If the conditional update returns `fact_id` and the observation represents a genuine delta across different source snapshots: a `Change` is constructed.
@@ -712,13 +729,14 @@ Observations for a subject are processed as a **batch unit**. To eliminate race 
 
 ### 5.2 Correction Policy vs. Replay Idempotency
 
-1. **Explicit `extraction_version` Assignment:**
-   The extraction pipeline (`intelligence/extract_facts.py`) passes an explicit `extraction_version: int`. Standard extraction passes version `1`. When an extractor is corrected (e.g. deterministic parser fix, revised prompt, or updated model), the orchestrator assigns the next revision (`MAX(extraction_version) + 1`), ensuring each attempt is deterministically ordered.
+1. **Explicit, Snapshot-Scoped `extraction_version` Assignment:**
+   The extraction pipeline (`intelligence/extract_facts.py`) passes an explicit `extraction_version: int`. Standard extraction passes version `1`. When an extractor is corrected (e.g. deterministic parser fix, revised prompt, or updated model), the orchestrator assigns the next revision as `MAX(extraction_version) + 1` **scoped to that one `snapshot_id`** (`(snapshot_id, company_key, product_key, field)` — the same grouping `uq_extracted_facts_attempt` enforces), never as a global maximum across every snapshot for the subject/field. `extraction_version` is therefore only ever deterministically ordered *within* one snapshot; comparing it across two different snapshots is meaningless, which is exactly why the current-fact ordering tuple in Decision 5 compares `snapshot_id` first.
 
 2. **Correction Policy (No False Business Changes):**
-   - When a correction is re-extracted against the **current snapshot**, it carries an incremented `extraction_version` and identical `observed_at`. Because `(observed_at, extraction_version, id)` is strictly greater, the conditional update advances `current_facts` to point to the corrected fact.
+   - When a correction is re-extracted against the **current snapshot**, it carries the **same** `snapshot_id` and identical `observed_at` as the fact `current_facts` already points to, but an incremented `extraction_version`. Because `snapshot_id` matches exactly and `extraction_version` is strictly greater, `(observed_at, snapshot_id, extraction_version, id)` is strictly greater at the `extraction_version` position — the conditional update advances `current_facts` to point to the corrected fact. `extraction_version` is compared only *after* `snapshot_id` has already tied, so this comparison is scoped entirely to corrections of that one snapshot.
    - **Crucial Invariant:** Correcting an extractor's interpretation of an existing snapshot **emits NO product Change**. The real-world source document did not change. Emitting a `Change` would mislead subscribers and corrupt chronological change feeds. A `Change` requires distinct snapshots over time.
-   - When an **older historical snapshot** is corrected, its `observed_at` is older than `current_facts.observed_at`. The conditional update returns 0 rows, leaving `current_facts` untouched while the corrected fact is preserved in append-only history.
+   - When an **older historical snapshot** is corrected, its `observed_at` is older than `current_facts.observed_at` (or, on a rarer tie, its `snapshot_id` loses the tie-break). The conditional update returns 0 rows, leaving `current_facts` untouched while the corrected fact is preserved in append-only history.
+   - **Cross-snapshot non-comparability, stated explicitly:** `extraction_version` carries **no meaning across different snapshots**. A `snapshot_id` for a different, unrelated snapshot with `extraction_version = 5` can never outrank a lower `extraction_version` on the correct, current snapshot merely because `5 > 1` — the tuple comparison never reaches `extraction_version` unless `snapshot_id` already matched. This is the concrete failure mode the corrected `(observed_at, snapshot_id, extraction_version, id)` ordering prevents; the earlier `(observed_at, extraction_version, id)` tuple (without `snapshot_id`) did not prevent it.
 
 3. **Replay Verification on Same Attempt:**
    Re-running the pipeline on the same snapshot with an identical `extraction_version` hits `ON CONFLICT (snapshot_id, company_key, product_key, field, extraction_version) DO NOTHING`:
@@ -832,15 +850,18 @@ Per [ADR 0008](0008-cursor-pagination-contract.md) §14, any persistence impleme
 4. **No repository update path:** The repository protocol and implementation expose no methods for mutating protected columns.
 
 Additional required integration test suites:
-- **`current_facts` pointer-row consistency test:** Directly attempting to insert into `current_facts` with a `fact_id` whose `observed_at`, `extraction_version`, `company_key`, `product_key`, or `field` differs from the referenced `extracted_facts` row fails with a foreign key violation.
+- **`current_facts` pointer-row consistency test:** Directly attempting to insert into `current_facts` with a `fact_id` whose `observed_at`, `snapshot_id`, `extraction_version`, `company_key`, `product_key`, or `field` differs from the referenced `extracted_facts` row fails with a foreign key violation — specifically including a `current_facts` row that names the *correct* `fact_id` but a **mismatched `snapshot_id`** (a candidate composite pointer consistency cannot silently accept).
 - **Two-connection concurrent read/compare & advance tests:**
   - *Case 1 (Waiting writer is newer):* Connection 1 processes fact A → B. Connection 2 processes fact C (newer than B). Connection 2 blocks on the advisory lock. Upon waking, Connection 2 reads committed state B and records Change as B → C with exact values.
   - *Case 2 (Waiting writer is older):* Connection 1 processes fact B. Connection 2 processes fact A (older). Connection 2 blocks on the advisory lock. Upon waking, Connection 2's conditional update returns 0 rows, advances nothing, and emits no Change.
   - *Case 3 (First-write race):* Two connections attempt the initial observation for a subject+field concurrently. Both serialize on the advisory lock without failing on an empty pointer table.
 - **Correction vs. Replay semantics tests:**
-  - *Correction of current snapshot:* Incrementing `extraction_version` on the current snapshot advances `current_facts` to the corrected row but emits **no Change**.
+  - *Correction of current snapshot:* Incrementing `extraction_version` on the current snapshot (same `snapshot_id`, same `observed_at`) advances `current_facts` to the corrected row but emits **no Change**.
   - *Correction of older snapshot:* Incrementing `extraction_version` on an older snapshot appends to `extracted_facts` history, updates 0 rows in `current_facts`, and emits no Change.
   - *Replay verification:* Replaying identical extraction version hits `ON CONFLICT DO NOTHING`, re-reads all 10 attributes, and succeeds. Replaying with mismatched attributes fails closed.
+  - *Higher extraction version wins for the same snapshot:* two extraction attempts against the identical `snapshot_id` with `extraction_version = 1` then `extraction_version = 2` leave `current_facts` pointing at version 2.
+  - *Cross-snapshot version non-comparability:* `extraction_version = 5` recorded against an **older or unrelated** `snapshot_id` does **not** outrank `extraction_version = 1` on the current, correct `snapshot_id` merely because `5 > 1` — the conditional update returns 0 rows and `current_facts` is unchanged, proving `snapshot_id` is compared before `extraction_version`, not the reverse.
+  - *Equal `observed_at`, distinct `snapshot_id`:* two facts for the same `(company_key, product_key, field)`, from two different snapshots that happen to share an identical `observed_at`, resolve deterministically via `snapshot_id` — never via `extraction_version` or `id` — as the tie-breaker; running the pair in both arrival orders produces the same winner.
 - **ChangeSet citation derivation test:** Verify that querying `ChangeSet.previous_snapshot_ids` and `current_snapshot_ids` dynamically from `changes` produces exact, deduplicated snapshot ID lists preserving domain first-occurrence order (`MIN(position) ASC`), specifically tested using repeated snapshot IDs whose UUID sort order intentionally differs from Change position.
 - **Merged transaction atomicity test:** An intentional error during Change insertion rolls back the fact append, pointer advancement, changeset, and changes together, ensuring zero partial writes.
 - **`changes` immutability, deletion, and truncation protection tests:**
@@ -905,7 +926,7 @@ The following areas are explicitly deferred to separate decisions and implementa
   - Confirms schema compatibility with `source_items` and `document_snapshots` (referential integrity from `extracted_facts.snapshot_id`, `changes.current_snapshot_id`, and citations).
   - Confirms canonical subject keying `(company_key, product_key)` matches `normalise_name()` semantics.
   - Confirms composite `(change_set_id, company_key, product_key)` FK enforces subject consistency across changes and change sets.
-  - Confirms `current_facts` composite FK proves pointer consistency against `extracted_facts`.
+  - Confirms `current_facts` composite FK (including `snapshot_id`) proves pointer consistency against `extracted_facts`, and that the corrected `(observed_at, snapshot_id, extraction_version, id)` ordering never lets a higher `extraction_version` on a different snapshot outrank a lower one on the correct snapshot.
   - Confirms shared database kernel alignment with ADR 0002 §12.3 (`shared/db/`).
 - [ ] **Person B (Intelligence Steward — Author):**
   - Confirms all domain invariants from `FactStore`, `Change`, and `Digest` are preserved.
