@@ -35,3 +35,5 @@ node_modules/
 
 # Obsidian — optional local vault state
 .obsidian/
+.claude/
+

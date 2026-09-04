@@ -47,6 +47,9 @@ dependencies = [
   # The plain package is sufficient; the standard extra would add a server
   # runner and unrelated optional dependencies before they are needed.
   "fastapi>=0.141.1",
+  # sqlalchemy: ADR 0002 §12.3 and ADR 0011 select SQLAlchemy 2 async sessions
+  # as the persistence foundation for all three modules.
+  "sqlalchemy>=2.0",
 ]
 
 [dependency-groups]
@@ -64,6 +67,8 @@ dev = [
   # httpx: FastAPI/Starlette TestClient requires it. Declare the test boundary
   # directly rather than relying on the Anthropic SDK's transitive dependency.
   "httpx>=0.28.1",
+  # aiosqlite: async SQLite driver for local in-memory integration testing
+  "aiosqlite>=0.20.0",
 ]
 
 [tool.hatch.build.targets.wheel]
