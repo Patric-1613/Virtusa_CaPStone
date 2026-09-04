@@ -1,4 +1,5 @@
 """Unit tests for intelligence persistence models and repository logic — ADR 0011."""
+# pylint: disable=too-many-locals
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
+from ai_daily_digest.intelligence.db.models import ChangeSetModel
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.shared.db.engine import create_engine, create_session_factory
 from ai_daily_digest.shared.db.metadata import Base
@@ -197,7 +199,8 @@ async def test_current_facts_advance_4_tuple_ordering() -> None:
         res3 = await store.advance_current_facts(subject, rec1)
         assert res3["pricing"] is False
 
-        # Step 4: Test equal-time snapshots with different extraction versions (Issue #56 / ADR 0011)
+        # Step 4: Test equal-time snapshots with different extraction versions
+        # (Issue #56 / ADR 0011)
         # Higher extraction version for same snapshot supersedes lower version:
         f2_v2 = ExtractedFact(
             id=new_id(),
@@ -250,18 +253,15 @@ async def test_detect_and_persist_changes_across_snapshots() -> None:
             extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
-        # First observation emits a "disclosed" Change
+        # First observation: establishes baseline state without emitting a business Change
         changes1 = await store.detect_and_persist_changes(
-            subject, [fact1], snapshot_observed_at=t1, extraction_version=1
+            subject, [fact1], snapshot_observed_at=t1, detected_at=t1, extraction_version=1
         )
-        assert len(changes1) == 1
-        assert changes1[0].change_type == "disclosed"
-        assert changes1[0].current.value == "8k"
-        assert changes1[0].previous is None
+        assert len(changes1) == 0
 
         # Second observation across distinct snapshot emits a "changed" Change
         changes2 = await store.detect_and_persist_changes(
-            subject, [fact2], snapshot_observed_at=t2, extraction_version=1
+            subject, [fact2], snapshot_observed_at=t2, detected_at=t2, extraction_version=1
         )
         assert len(changes2) == 1
         assert changes2[0].change_type == "changed"
@@ -300,15 +300,15 @@ async def test_correction_on_current_snapshot_emits_no_change() -> None:
             extraction_method=ExtractionMethod.DETERMINISTIC,
         )
 
-        # Version 1 initial observation emits Change
+        # Version 1 initial observation establishes baseline state without emitting Change
         changes1 = await store.detect_and_persist_changes(
-            subject, [fact_v1], snapshot_observed_at=t1, extraction_version=1
+            subject, [fact_v1], snapshot_observed_at=t1, detected_at=t1, extraction_version=1
         )
-        assert len(changes1) == 1
+        assert len(changes1) == 0
 
         # Version 2 correction on SAME snapshot advances pointer but emits NO Change!
         changes2 = await store.detect_and_persist_changes(
-            subject, [fact_v2], snapshot_observed_at=t1, extraction_version=2
+            subject, [fact_v2], snapshot_observed_at=t1, detected_at=t1, extraction_version=2
         )
         assert len(changes2) == 0
 
@@ -353,8 +353,12 @@ async def test_derive_changeset_citations_first_occurrence_order() -> None:
             disclosure_status=DisclosureStatus.DISCLOSED,
             extraction_method=ExtractionMethod.DETERMINISTIC,
         )
-        await store.detect_and_persist_changes(subject, [f_prev1], snapshot_observed_at=t1)
-        await store.detect_and_persist_changes(subject, [f_prev2], snapshot_observed_at=t2)
+        await store.detect_and_persist_changes(
+            subject, [f_prev1], snapshot_observed_at=t1, detected_at=t1
+        )
+        await store.detect_and_persist_changes(
+            subject, [f_prev2], snapshot_observed_at=t2, detected_at=t2
+        )
 
         # Now observe snap3 modifying both param_b then param_a
         f_curr1 = ExtractedFact(
@@ -378,6 +382,7 @@ async def test_derive_changeset_citations_first_occurrence_order() -> None:
             subject,
             [f_curr1, f_curr2],
             snapshot_observed_at=t3,
+            detected_at=t3,
             change_set_id=cs_id,
         )
         assert len(changes) == 2
@@ -385,8 +390,77 @@ async def test_derive_changeset_citations_first_occurrence_order() -> None:
         # Derive citations
         current_ids, previous_ids = await store.derive_changeset_citations(cs_id)
         assert current_ids == [snap3.id]
-        # Previous citations should follow first occurrence: param_b was first (snap2), param_a was second (snap1)
+        # Previous citations should follow first occurrence:
+        # param_b was first (snap2), param_a was second (snap1)
         assert previous_ids == [snap2.id, snap1.id]
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+@run_async
+async def test_multi_field_batch_shares_single_changeset_id() -> None:
+    """A multi-field batch without explicit change_set_id shares one ID across all Changes."""
+    engine, session = await _init_session()
+    try:
+        store = PostgresFactStore(session)
+        subject = Subject(company="Anthropic", product="Claude")
+
+        t1 = BASE_TIME
+        t2 = BASE_TIME + timedelta(hours=1)
+        _, snap1 = await _create_source_and_snapshot(session, fetched_at=t1)
+        _, snap2 = await _create_source_and_snapshot(session, fetched_at=t2)
+
+        # Prime base facts
+        f_p1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap1.id,
+            field="f1",
+            value="v1",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_p2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap1.id,
+            field="f2",
+            value="v2",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        await store.detect_and_persist_changes(
+            subject, [f_p1, f_p2], snapshot_observed_at=t1, detected_at=t1
+        )
+
+        # Multi-field modification on snap2 without passing change_set_id
+        f_c1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap2.id,
+            field="f1",
+            value="v1_modified",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_c2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap2.id,
+            field="f2",
+            value="v2_modified",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        changes = await store.detect_and_persist_changes(
+            subject, [f_c1, f_c2], snapshot_observed_at=t2, detected_at=t2
+        )
+        assert len(changes) == 2
+        # All returned Change objects must share the exact same change_set_id
+        assert changes[0].change_set_id == changes[1].change_set_id
+        batch_id = changes[0].change_set_id
+
+        # Verify ChangeSetModel exists in database with this batch_id
+        cs = await session.get(ChangeSetModel, batch_id)
+        assert cs is not None
+        assert cs.id == batch_id
     finally:
         await session.close()
         await engine.dispose()

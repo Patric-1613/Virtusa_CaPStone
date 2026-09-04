@@ -227,61 +227,86 @@ class PostgresFactStore:
         res = await self._session.execute(stmt)
         return {cf.field: (cf, ef) for cf, ef in res.all()}
 
+    async def _upsert_current_fact(
+        self,
+        *,
+        company_key: str,
+        product_key: str,
+        fact: ExtractedFactModel,
+        now_dt: datetime,
+        is_sqlite: bool,
+    ) -> bool:
+        fid = fact.id.hex if is_sqlite else fact.id
+        sid = fact.snapshot_id.hex if is_sqlite else fact.snapshot_id
+        obs = (
+            fact.observed_at.isoformat()
+            if is_sqlite and hasattr(fact.observed_at, "isoformat")
+            else fact.observed_at
+        )
+        upd = now_dt.isoformat() if is_sqlite else now_dt
+
+        stmt = text("""
+            INSERT INTO current_facts
+                (company_key, product_key, field, fact_id, snapshot_id, observed_at,
+                 extraction_version, updated_at)
+            VALUES (:company_key, :product_key, :field, :fact_id, :snapshot_id, :observed_at,
+                    :extraction_version, :updated_at)
+            ON CONFLICT (company_key, product_key, field)
+            DO UPDATE SET
+                fact_id = EXCLUDED.fact_id,
+                snapshot_id = EXCLUDED.snapshot_id,
+                observed_at = EXCLUDED.observed_at,
+                extraction_version = EXCLUDED.extraction_version,
+                updated_at = EXCLUDED.updated_at
+            WHERE EXCLUDED.observed_at > current_facts.observed_at
+               OR (EXCLUDED.observed_at = current_facts.observed_at
+                   AND EXCLUDED.extraction_version > current_facts.extraction_version)
+            RETURNING fact_id
+        """)
+        result = await self._session.execute(
+            stmt,
+            {
+                "company_key": company_key,
+                "product_key": product_key,
+                "field": fact.field,
+                "fact_id": fid,
+                "snapshot_id": sid,
+                "observed_at": obs,
+                "extraction_version": fact.extraction_version,
+                "updated_at": upd,
+            },
+        )
+        return result.first() is not None
+
     async def advance_current_facts(
         self,
         subject: Subject,
         recorded_facts: Sequence[ExtractedFactModel],
     ) -> dict[str, bool]:
-        """Conditionally advance current_facts using the 4-part ordering tuple.
+        """Conditionally advance current_facts using PostgreSQL atomic upsert.
 
-        Tuple comparison: (observed_at, snapshot_id, extraction_version, fact_id).
+        Executes atomic INSERT ... ON CONFLICT DO UPDATE
+        WHERE EXCLUDED.observed_at > current_facts.observed_at.
         Returns a dict mapping field_name -> bool (True if the pointer advanced).
         """
         ck, pk = _subject_keys(subject)
         advanced_map: dict[str, bool] = {}
+        now_dt = datetime.now(UTC)
+
+        bind = self._session.get_bind()
+        is_sqlite = bind is not None and bind.dialect.name == "sqlite"
 
         for fact in recorded_facts:
-            current = await self._session.get(CurrentFactModel, (ck, pk, fact.field))
-            if current is None:
-                # First observation: always advance
-                new_current = CurrentFactModel(
-                    company_key=ck,
-                    product_key=pk,
-                    field=fact.field,
-                    fact_id=fact.id,
-                    snapshot_id=fact.snapshot_id,
-                    observed_at=fact.observed_at,
-                    extraction_version=fact.extraction_version,
-                    updated_at=datetime.now(UTC),
-                )
-                self._session.add(new_current)
-                await self._session.flush()
-                advanced_map[fact.field] = True
-            else:
-                # Compare 4-tuple: (observed_at, snapshot_id, extraction_version, fact_id)
-                current_tuple = (
-                    _ensure_utc(current.observed_at),
-                    current.snapshot_id,
-                    current.extraction_version,
-                    current.fact_id,
-                )
-                candidate_tuple = (
-                    _ensure_utc(fact.observed_at),
-                    fact.snapshot_id,
-                    fact.extraction_version,
-                    fact.id,
-                )
-                if current_tuple < candidate_tuple:
-                    current.fact_id = fact.id
-                    current.snapshot_id = fact.snapshot_id
-                    current.observed_at = fact.observed_at
-                    current.extraction_version = fact.extraction_version
-                    current.updated_at = datetime.now(UTC)
-                    await self._session.flush()
-                    advanced_map[fact.field] = True
-                else:
-                    advanced_map[fact.field] = False
+            advanced = await self._upsert_current_fact(
+                company_key=ck,
+                product_key=pk,
+                fact=fact,
+                now_dt=now_dt,
+                is_sqlite=is_sqlite,
+            )
+            advanced_map[fact.field] = advanced
 
+        await self._session.flush()
         return advanced_map
 
     async def detect_and_persist_changes(  # pylint: disable=too-many-arguments,too-many-locals
@@ -290,8 +315,8 @@ class PostgresFactStore:
         facts: Sequence[ExtractedFact],
         *,
         snapshot_observed_at: datetime,
+        detected_at: datetime,
         extraction_version: int = 1,
-        detected_at: datetime | None = None,
         change_set_id: uuid.UUID | None = None,
     ) -> list[Change]:
         """Detect and persist changes atomically under an advisory lock.
@@ -303,6 +328,9 @@ class PostgresFactStore:
         - Distinct snapshot differences emit valid Changes with explicit positions.
         - Entire batch commits atomically.
         """
+        detection_time = normalize_ordering_timestamp(detected_at)
+        resolved_change_set_id = change_set_id or new_id()
+
         ck, pk = _subject_keys(subject)
         fields = [f.field for f in facts]
         await self.lock_subject_fields(subject, fields)
@@ -332,7 +360,6 @@ class PostgresFactStore:
         # Advance current facts conditionally
         advanced_map = await self.advance_current_facts(subject, recorded_facts)
 
-        detection_time = normalize_ordering_timestamp(detected_at or datetime.now(UTC))
         candidate_changes: list[Change] = []
         fact_by_field = {f.field: f for f in recorded_facts}
 
@@ -343,45 +370,43 @@ class PostgresFactStore:
             candidate_fact = fact_by_field[field_name]
             prior = prior_state.get(field_name)
 
-            if prior is not None:
-                # INVARIANT: Correction of the same snapshot must NOT emit a business Change!
-                if prior.snapshot_id == candidate_fact.snapshot_id:
-                    continue
+            if prior is None:
+                # Genuine first observation: establishes baseline state
+                # without emitting a business Change
+                continue
 
-                # Check if values actually differ
-                if (
-                    prior.value == candidate_fact.value
-                    and prior.disclosure_status == candidate_fact.disclosure_status
-                ):
-                    continue
+            # INVARIANT: Correction of the same snapshot must NOT emit a business Change!
+            if prior.snapshot_id == candidate_fact.snapshot_id:
+                continue
 
-                prev_obs = FactObservation(
-                    value=prior.value,
-                    observed_at=prior.observed_at,
-                    snapshot_id=prior.snapshot_id,
-                )
-            else:
-                prev_obs = None
+            # Check if values actually differ
+            if (
+                prior.value == candidate_fact.value
+                and prior.disclosure_status == candidate_fact.disclosure_status
+            ):
+                continue
 
+            prev_obs = FactObservation(
+                value=prior.value,
+                observed_at=prior.observed_at,
+                snapshot_id=prior.snapshot_id,
+            )
             curr_obs = FactObservation(
                 value=candidate_fact.value,
                 observed_at=_ensure_utc(candidate_fact.observed_at),
                 snapshot_id=candidate_fact.snapshot_id,
             )
 
-            change_type = str(
-                _infer_change_type(prev_obs.value if prev_obs else None, curr_obs.value)
-            )
+            change_type = str(_infer_change_type(prev_obs.value, curr_obs.value))
             conf: Confidence = (
                 candidate_fact.confidence if candidate_fact.confidence is not None else 1.0
             )
 
-            cs_id = change_set_id or new_id()
             validate_change_shape(change_type, prev_obs, curr_obs)
 
             change_obj = Change(
                 id=new_id(),
-                change_set_id=cs_id,
+                change_set_id=resolved_change_set_id,
                 detected_at=detection_time,
                 subject=subject,
                 field=field_name,
@@ -397,9 +422,8 @@ class PostgresFactStore:
             return []
 
         # Allocate or use provided ChangeSet ID (consistent for all changes in this detection batch)
-        cs_id = candidate_changes[0].change_set_id
         cs_model = ChangeSetModel(
-            id=cs_id,
+            id=resolved_change_set_id,
             company_key=ck,
             product_key=pk,
             review_status="pending",
@@ -412,7 +436,7 @@ class PostgresFactStore:
             ch_model = ChangeModel(
                 id=change.id,
                 detected_at=change.detected_at,
-                change_set_id=cs_id,
+                change_set_id=resolved_change_set_id,
                 position=position,
                 company_key=ck,
                 product_key=pk,

@@ -6,7 +6,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import Callable, Coroutine
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -29,6 +29,9 @@ from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.shared.db.engine import create_engine
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import (
+    DisclosureStatus,
+    ExtractedFact,
+    ExtractionMethod,
     Subject,
 )
 
@@ -708,5 +711,149 @@ async def test_concurrent_writer_advisory_lock_serialization() -> None:
             "worker1_releasing_lock",
             "worker2_acquired_lock",
         ]
+    finally:
+        await engine.dispose()
+
+
+# -----------------------------------------------------------------------------
+# 10. Composite Ownership FK on latest_snapshot_id Rejection
+# -----------------------------------------------------------------------------
+@run_async
+async def test_source_item_latest_snapshot_composite_fk_rejection() -> None:
+    """Prove setting latest_snapshot_id to a snapshot of a different source item is rejected."""
+    engine = _get_engine()
+    sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            item1, snap1 = await _make_source_and_snapshot(session)
+            _, snap2 = await _make_source_and_snapshot(session)
+            await session.commit()
+
+        # Step 1: Reject setting item1.latest_snapshot_id to snap2 (which belongs to item2)
+        async with sessionmaker() as session:
+            i1 = await session.get(SourceItemRow, item1.id)
+            assert i1 is not None
+            i1.latest_snapshot_id = snap2.id
+            with pytest.raises(DBAPIError):
+                await session.flush()
+            await session.rollback()
+
+        # Step 2: Valid setting to item1's own snapshot succeeds
+        async with sessionmaker() as session:
+            i1 = await session.get(SourceItemRow, item1.id)
+            assert i1 is not None
+            i1.latest_snapshot_id = snap1.id
+            await session.commit()
+
+        async with sessionmaker() as session:
+            i1 = await session.get(SourceItemRow, item1.id)
+            assert i1 is not None
+            assert i1.latest_snapshot_id == snap1.id
+    finally:
+        await engine.dispose()
+
+
+# -----------------------------------------------------------------------------
+# 11. Atomic Current-Pointer Advancement: 3 Outcomes Across Separate Transactions
+# -----------------------------------------------------------------------------
+@run_async
+async def test_current_facts_atomic_upsert_concurrency_outcomes() -> None:  # pylint: disable=too-many-locals
+    """Prove all 3 outcomes: first-write, newer-writer-wins, older-writer-ignored."""
+    engine = _get_engine()
+    sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        subject = Subject(company="AtomicCo", product="EngineZ")
+        t_early = BASE_TIME
+        t_mid = BASE_TIME + timedelta(hours=1)
+        t_late = BASE_TIME + timedelta(hours=2)
+
+        async with sessionmaker() as setup_session:
+            _, snap_early = await _make_source_and_snapshot(setup_session, fetched_at=t_early)
+            _, snap_mid = await _make_source_and_snapshot(setup_session, fetched_at=t_mid)
+            _, snap_late = await _make_source_and_snapshot(setup_session, fetched_at=t_late)
+            await setup_session.commit()
+
+        f_early = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_early.id,
+            field="speed",
+            value="100mph",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_mid = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_mid.id,
+            field="speed",
+            value="150mph",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_late = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_late.id,
+            field="speed",
+            value="200mph",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        # ---------------------------------------------------------------------
+        # Outcome 1: First-write (no prior row, insert succeeds)
+        # ---------------------------------------------------------------------
+        async with sessionmaker() as session1:
+            store1 = PostgresFactStore(session1)
+            rec_mid = await store1.record_extracted_facts(
+                subject, [f_mid], snapshot_observed_at=t_mid, extraction_version=1
+            )
+            res1 = await store1.advance_current_facts(subject, rec_mid)
+            assert res1["speed"] is True
+            await session1.commit()
+
+        async with sessionmaker() as session_verify:
+            cf1 = await session_verify.get(CurrentFactModel, ("atomicco", "enginez", "speed"))
+            assert cf1 is not None
+            assert cf1.fact_id == f_mid.id
+            assert cf1.observed_at == t_mid
+
+        # ---------------------------------------------------------------------
+        # Outcome 2: Older-writer-ignored (an earlier observed_at is dropped)
+        # ---------------------------------------------------------------------
+        async with sessionmaker() as session2:
+            store2 = PostgresFactStore(session2)
+            rec_early = await store2.record_extracted_facts(
+                subject, [f_early], snapshot_observed_at=t_early, extraction_version=1
+            )
+            res2 = await store2.advance_current_facts(subject, rec_early)
+            # Must be False because t_early < t_mid
+            assert res2["speed"] is False
+            await session2.commit()
+
+        async with sessionmaker() as session_verify:
+            cf2 = await session_verify.get(CurrentFactModel, ("atomicco", "enginez", "speed"))
+            assert cf2 is not None
+            # Row remains unchanged at mid values
+            assert cf2.fact_id == f_mid.id
+            assert cf2.observed_at == t_mid
+
+        # ---------------------------------------------------------------------
+        # Outcome 3: Newer-writer-wins (a later observed_at overwrites)
+        # ---------------------------------------------------------------------
+        async with sessionmaker() as session3:
+            store3 = PostgresFactStore(session3)
+            rec_late = await store3.record_extracted_facts(
+                subject, [f_late], snapshot_observed_at=t_late, extraction_version=1
+            )
+            res3 = await store3.advance_current_facts(subject, rec_late)
+            # Must be True because t_late > t_mid
+            assert res3["speed"] is True
+            await session3.commit()
+
+        async with sessionmaker() as session_verify:
+            cf3 = await session_verify.get(CurrentFactModel, ("atomicco", "enginez", "speed"))
+            assert cf3 is not None
+            # Row overwritten with late values
+            assert cf3.fact_id == f_late.id
+            assert cf3.observed_at == t_late
     finally:
         await engine.dispose()

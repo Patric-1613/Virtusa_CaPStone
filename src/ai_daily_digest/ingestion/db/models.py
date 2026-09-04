@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import (
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -51,15 +52,20 @@ class SourceItemRow(Base):
     event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     latest_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("document_snapshots.id", ondelete="RESTRICT", onupdate="RESTRICT"),
         nullable=True,
     )
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["latest_snapshot_id", "id"],
+            ["document_snapshots.id", "document_snapshots.source_item_id"],
+            name="fk_source_items_latest_snapshot_composite",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
         Index("idx_source_items_pagination", "first_fetched_at", "id"),
         Index("idx_source_items_publisher", "publisher"),
         Index("idx_source_items_source_id", "source_id"),
-        UniqueConstraint("id", "latest_snapshot_id", name="uq_source_items_id_latest_snapshot"),
     )
 
 
