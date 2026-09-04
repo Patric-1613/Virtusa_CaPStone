@@ -94,6 +94,28 @@ async def _make_source_and_snapshot(
     return item, snapshot
 
 
+async def _ensure_subject(
+    session: AsyncSession,
+    *,
+    company_key: str = "openai",
+    product_key: str = "gpt-4",
+    company: str = "OpenAI",
+    product: str = "GPT-4",
+) -> SubjectModel:
+    sub = await session.get(SubjectModel, (company_key, product_key))
+    if sub is None:
+        sub = SubjectModel(
+            company_key=company_key,
+            product_key=product_key,
+            company=company,
+            product=product,
+            created_at=BASE_TIME,
+        )
+        session.add(sub)
+        await session.flush()
+    return sub
+
+
 # -----------------------------------------------------------------------------
 # 1. Reject Update / Safe Rollback / Value Survival / No Repo Mutation Path
 # -----------------------------------------------------------------------------
@@ -107,15 +129,7 @@ async def test_changes_immutability_and_value_survival() -> None:
             cs_id = new_id()
             c_id = new_id()
 
-            sub = SubjectModel(
-                company_key="openai",
-                product_key="gpt-4",
-                company="OpenAI",
-                product="GPT-4",
-                created_at=BASE_TIME,
-            )
-            session.add(sub)
-            await session.flush()
+            await _ensure_subject(session, company_key="openai", product_key="gpt-4")
 
             cs = ChangeSetModel(
                 id=cs_id,
@@ -225,15 +239,7 @@ async def test_extracted_facts_truncate_rejection() -> None:
         f_id = new_id()
         async with sessionmaker() as session:
             _, snap = await _make_source_and_snapshot(session)
-            sub = SubjectModel(
-                company_key="openai",
-                product_key="gpt-4",
-                company="OpenAI",
-                product="GPT-4",
-                created_at=BASE_TIME,
-            )
-            session.add(sub)
-            await session.flush()
+            await _ensure_subject(session, company_key="openai", product_key="gpt-4")
 
             fact = ExtractedFactModel(
                 id=f_id,
@@ -317,23 +323,14 @@ async def test_changeset_change_subject_consistency_rejection() -> None:
     try:
         async with sessionmaker() as session:
             _, snap = await _make_source_and_snapshot(session)
-            sub1 = SubjectModel(
-                company_key="openai",
-                product_key="gpt-4",
-                company="OpenAI",
-                product="GPT-4",
-                created_at=BASE_TIME,
-            )
-            sub2 = SubjectModel(
+            await _ensure_subject(session, company_key="openai", product_key="gpt-4")
+            await _ensure_subject(
+                session,
                 company_key="anthropic",
                 product_key="claude",
                 company="Anthropic",
                 product="Claude",
-                created_at=BASE_TIME,
             )
-            session.add(sub1)
-            session.add(sub2)
-            await session.flush()
 
             cs_id = new_id()
             cs = ChangeSetModel(
@@ -592,15 +589,7 @@ async def test_referential_integrity_and_deletion_restrictions() -> None:
     try:
         async with sessionmaker() as session:
             _, snap = await _make_source_and_snapshot(session)
-            sub = SubjectModel(
-                company_key="openai",
-                product_key="gpt-4",
-                company="OpenAI",
-                product="GPT-4",
-                created_at=BASE_TIME,
-            )
-            session.add(sub)
-            await session.flush()
+            await _ensure_subject(session, company_key="openai", product_key="gpt-4")
 
             fact = ExtractedFactModel(
                 id=new_id(),
@@ -642,16 +631,7 @@ async def test_current_facts_composite_foreign_key_consistency() -> None:
         async with sessionmaker() as session:
             _, snap1 = await _make_source_and_snapshot(session)
             _, snap2 = await _make_source_and_snapshot(session)
-
-            sub = SubjectModel(
-                company_key="openai",
-                product_key="gpt-4",
-                company="OpenAI",
-                product="GPT-4",
-                created_at=BASE_TIME,
-            )
-            session.add(sub)
-            await session.flush()
+            await _ensure_subject(session, company_key="openai", product_key="gpt-4")
 
             f_id = new_id()
             fact = ExtractedFactModel(
