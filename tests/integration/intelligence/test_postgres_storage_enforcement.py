@@ -262,7 +262,7 @@ async def test_extracted_facts_truncate_rejection() -> None:
             with pytest.raises(
                 DBAPIError, match="Table extracted_facts is append-only: truncate is prohibited"
             ):
-                await session.execute(text("TRUNCATE TABLE extracted_facts"))
+                await session.execute(text("TRUNCATE TABLE extracted_facts CASCADE"))
             await session.rollback()
 
             # Record survived
@@ -403,7 +403,7 @@ async def test_published_digest_immutability_and_gate() -> None:
                 id=c_id,
                 digest_id=d_id,
                 position=0,
-                claim_text="Supported Claim",
+                text="Supported Claim",
                 validation_status="supported",
                 created_at=BASE_TIME,
             )
@@ -450,7 +450,7 @@ async def test_published_digest_immutability_and_gate() -> None:
             ):
                 await session.execute(
                     text("""
-                        INSERT INTO digest_claims (id, digest_id, position, claim_text, validation_status, created_at)
+                        INSERT INTO digest_claims (id, digest_id, position, text, validation_status, created_at)
                         VALUES (:id, :d_id, 1, 'Late Claim', 'supported', :now)
                     """),
                     {"id": new_id(), "d_id": d_id, "now": BASE_TIME},
@@ -512,7 +512,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     id=c1_id,
                     digest_id=d1_id,
                     position=0,
-                    claim_text="Claim 1",
+                    text="Claim 1",
                     validation_status="supported",
                     created_at=BASE_TIME,
                 )
@@ -545,7 +545,7 @@ async def test_publish_idempotency_one_published_per_date() -> None:
                     id=c2_id,
                     digest_id=d2_id,
                     position=0,
-                    claim_text="Claim 2",
+                    text="Claim 2",
                     validation_status="supported",
                     created_at=BASE_TIME,
                 )
