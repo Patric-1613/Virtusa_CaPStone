@@ -420,19 +420,25 @@ EXECUTE FUNCTION reject_table_truncate();"""
 
 
 def upgrade() -> None:
-    """Explicit static creation of all ingestion and intelligence persistence tables and triggers."""
+    """Explicit static creation of all ingestion and intelligence persistence tables and
+    triggers. Column/constraint/index definitions below were regenerated via
+    `alembic revision --autogenerate` against the real `Base.metadata` (models.py) and hand-
+    verified against it column-by-column, replacing an earlier hand-written version that had
+    drifted from the ORM models in several places (wrong CHECK values, JSON columns that should
+    have been Text, a length-32 cap on a deliberately-open column, missing/renamed indexes)."""
     # 1. subjects
     op.create_table(
         "subjects",
-        sa.Column("company_key", sa.String(length=255), nullable=False),
-        sa.Column("product_key", sa.String(length=255), nullable=False),
-        sa.Column("company", sa.String(length=255), nullable=False),
-        sa.Column("product", sa.String(length=255), nullable=False),
+        sa.Column("company_key", sa.Text(), nullable=False),
+        sa.Column("product_key", sa.Text(), nullable=False),
+        sa.Column("company", sa.Text(), nullable=False),
+        sa.Column("product", sa.Text(), nullable=False),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("company_key", "product_key", name="pk_subjects"),
     )
 
-    # 2. source_items
+    # 2. source_items — created WITHOUT the latest_snapshot_id FK yet; document_snapshots
+    # doesn't exist until step 3, and the two tables reference each other (ADR 0002 §9).
     op.create_table(
         "source_items",
         sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
@@ -514,25 +520,33 @@ def upgrade() -> None:
         "extracted_facts",
         sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("snapshot_id", sa.Uuid(as_uuid=True), nullable=False),
-        sa.Column("company_key", sa.String(length=255), nullable=False),
-        sa.Column("product_key", sa.String(length=255), nullable=False),
-        sa.Column("field", sa.String(length=255), nullable=False),
+        sa.Column("company_key", sa.Text(), nullable=False),
+        sa.Column("product_key", sa.Text(), nullable=False),
+        sa.Column("field", sa.Text(), nullable=False),
         sa.Column("value", sa.Text(), nullable=True),
         sa.Column("disclosure_status", sa.String(length=32), nullable=False),
-        sa.Column("extraction_method", sa.String(length=32), nullable=False),
-        sa.Column("extraction_model", sa.String(length=255), nullable=True),
-        sa.Column("prompt_version", sa.String(length=64), nullable=True),
+        sa.Column("extraction_method", sa.String(length=64), nullable=False),
+        sa.Column("extraction_model", sa.Text(), nullable=True),
+        sa.Column("prompt_version", sa.Text(), nullable=True),
         sa.Column("extraction_version", sa.Integer(), nullable=False),
         sa.Column("quoted_span", sa.Text(), nullable=True),
         sa.Column("confidence", sa.Float(), nullable=True),
         sa.Column("observed_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.CheckConstraint(
-            "confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)",
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
             name="chk_extracted_facts_confidence",
         ),
         sa.CheckConstraint(
             "extraction_version >= 1", name="chk_extracted_facts_extraction_version"
+        ),
+        sa.CheckConstraint(
+            "disclosure_status IN ('disclosed', 'not_disclosed')",
+            name="chk_extracted_facts_disclosure_status",
+        ),
+        sa.CheckConstraint(
+            "extraction_method IN ('deterministic', 'llm_structured_output')",
+            name="chk_extracted_facts_extraction_method",
         ),
         sa.ForeignKeyConstraint(
             ["company_key", "product_key"],
@@ -555,7 +569,7 @@ def upgrade() -> None:
             "snapshot_id",
             "observed_at",
             "extraction_version",
-            name="uq_extracted_facts_composite_target",
+            name="uq_extracted_facts_composite_identity",
         ),
         sa.UniqueConstraint(
             "snapshot_id",
@@ -563,22 +577,30 @@ def upgrade() -> None:
             "product_key",
             "field",
             "extraction_version",
-            name="uq_extracted_facts_deterministic_dedupe",
+            name="uq_extracted_facts_attempt",
         ),
     )
-    op.create_index("idx_extracted_facts_snapshot", "extracted_facts", ["snapshot_id"])
+    op.create_index("idx_extracted_facts_snapshot_id", "extracted_facts", ["snapshot_id"])
     op.create_index(
-        "idx_extracted_facts_subject_field",
+        "idx_extracted_facts_subject_field_chronology",
         "extracted_facts",
-        ["company_key", "product_key", "field", "observed_at"],
+        [
+            "company_key",
+            "product_key",
+            "field",
+            "observed_at",
+            "snapshot_id",
+            "extraction_version",
+            "id",
+        ],
     )
 
     # 6. current_facts
     op.create_table(
         "current_facts",
-        sa.Column("company_key", sa.String(length=255), nullable=False),
-        sa.Column("product_key", sa.String(length=255), nullable=False),
-        sa.Column("field", sa.String(length=255), nullable=False),
+        sa.Column("company_key", sa.Text(), nullable=False),
+        sa.Column("product_key", sa.Text(), nullable=False),
+        sa.Column("field", sa.Text(), nullable=False),
         sa.Column("fact_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("snapshot_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("observed_at", sa.TIMESTAMP(timezone=True), nullable=False),
@@ -620,19 +642,10 @@ def upgrade() -> None:
     op.create_table(
         "change_sets",
         sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
-        sa.Column("company_key", sa.String(length=255), nullable=False),
-        sa.Column("product_key", sa.String(length=255), nullable=False),
-        sa.Column(
-            "review_status",
-            sa.String(length=32),
-            server_default="pending",
-            nullable=False,
-        ),
+        sa.Column("company_key", sa.Text(), nullable=False),
+        sa.Column("product_key", sa.Text(), nullable=False),
+        sa.Column("review_status", sa.Text(), server_default="pending", nullable=False),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "review_status IN ('pending', 'approved', 'rejected')",
-            name="chk_change_sets_review_status",
-        ),
         sa.ForeignKeyConstraint(
             ["company_key", "product_key"],
             ["subjects.company_key", "subjects.product_key"],
@@ -644,58 +657,37 @@ def upgrade() -> None:
             "id",
             "company_key",
             "product_key",
-            name="uq_change_sets_subject_composite",
+            name="uq_change_sets_id_subject",
         ),
     )
-    op.create_index("idx_change_sets_subject", "change_sets", ["company_key", "product_key"])
 
     # 8. changes
     op.create_table(
         "changes",
         sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("detected_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("change_set_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("position", sa.Integer(), nullable=False),
-        sa.Column("company_key", sa.String(length=255), nullable=False),
-        sa.Column("product_key", sa.String(length=255), nullable=False),
-        sa.Column("field", sa.String(length=255), nullable=False),
-        sa.Column("change_type", sa.String(length=32), nullable=False),
+        sa.Column("company_key", sa.Text(), nullable=False),
+        sa.Column("product_key", sa.Text(), nullable=False),
+        sa.Column("field", sa.Text(), nullable=False),
+        # change_type is deliberately an OPEN string (ADR 0009) — no CHECK/length cap here,
+        # unlike the closed enum-backed columns above.
+        sa.Column("change_type", sa.Text(), nullable=False),
         sa.Column("confidence", sa.Float(), nullable=False),
-        sa.Column(
-            "review_status",
-            sa.String(length=32),
-            server_default="pending",
-            nullable=False,
-        ),
-        sa.Column("previous_value", sa.JSON(), nullable=True),
+        sa.Column("review_status", sa.Text(), server_default="pending", nullable=False),
+        sa.Column("previous_value", sa.Text(), nullable=True),
         sa.Column("previous_observed_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("previous_snapshot_id", sa.Uuid(as_uuid=True), nullable=True),
-        sa.Column("current_value", sa.JSON(), nullable=True),
+        sa.Column("current_value", sa.Text(), nullable=True),
         sa.Column("current_observed_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("current_snapshot_id", sa.Uuid(as_uuid=True), nullable=False),
-        sa.Column("detected_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "confidence >= 0.0 AND confidence <= 1.0",
-            name="chk_changes_confidence",
-        ),
+        sa.CheckConstraint("confidence >= 0 AND confidence <= 1", name="chk_changes_confidence"),
         sa.CheckConstraint("position >= 0", name="chk_changes_position"),
-        sa.CheckConstraint(
-            "review_status IN ('pending', 'approved', 'rejected')",
-            name="chk_changes_review_status",
-        ),
         sa.ForeignKeyConstraint(
             ["change_set_id", "company_key", "product_key"],
-            [
-                "change_sets.id",
-                "change_sets.company_key",
-                "change_sets.product_key",
-            ],
-            name="fk_changes_change_set_subject",
-            ondelete="RESTRICT",
-        ),
-        sa.ForeignKeyConstraint(
-            ["change_set_id"],
-            ["change_sets.id"],
+            ["change_sets.id", "change_sets.company_key", "change_sets.product_key"],
             name="fk_changes_change_set",
             ondelete="RESTRICT",
         ),
@@ -708,33 +700,30 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["current_snapshot_id"],
             ["document_snapshots.id"],
-            name="fk_changes_curr_snapshot_id",
+            name="fk_changes_current_snapshot_id",
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["previous_snapshot_id"],
             ["document_snapshots.id"],
-            name="fk_changes_prev_snapshot_id",
+            name="fk_changes_previous_snapshot_id",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_changes"),
-        sa.UniqueConstraint("change_set_id", "position", name="uq_changes_set_position"),
+        sa.UniqueConstraint("change_set_id", "position", name="uq_changes_change_set_position"),
     )
-    op.create_index("idx_changes_change_set", "changes", ["change_set_id"])
-    op.create_index("idx_changes_detected_at", "changes", ["detected_at"])
-    op.create_index("idx_changes_subject", "changes", ["company_key", "product_key"])
+    op.create_index("idx_changes_pagination", "changes", ["detected_at", "id"])
+    op.create_index("idx_changes_subject_field", "changes", ["company_key", "product_key", "field"])
+    op.create_index("idx_changes_change_set_id", "changes", ["change_set_id"])
+    op.create_index("idx_changes_previous_snapshot_id", "changes", ["previous_snapshot_id"])
+    op.create_index("idx_changes_current_snapshot_id", "changes", ["current_snapshot_id"])
 
     # 9. digests
     op.create_table(
         "digests",
         sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("digest_date", sa.Date(), nullable=False),
-        sa.Column(
-            "status",
-            sa.String(length=32),
-            server_default="draft",
-            nullable=False,
-        ),
+        sa.Column("status", sa.String(length=32), server_default="draft", nullable=False),
         sa.Column("title", sa.Text(), nullable=False),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.CheckConstraint(
@@ -765,10 +754,7 @@ def upgrade() -> None:
         sa.Column("position", sa.Integer(), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
         sa.Column(
-            "validation_status",
-            sa.String(length=32),
-            server_default="pending",
-            nullable=False,
+            "validation_status", sa.String(length=32), server_default="pending", nullable=False
         ),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.CheckConstraint("position >= 0", name="chk_digest_claims_position"),
@@ -785,7 +771,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_digest_claims"),
         sa.UniqueConstraint("digest_id", "position", name="uq_digest_claims_digest_position"),
     )
-    op.create_index("idx_digest_claims_digest", "digest_claims", ["digest_id"])
+    op.create_index("idx_digest_claims_digest_id", "digest_claims", ["digest_id"])
 
     # 11. digest_claim_citations
     op.create_table(
@@ -811,14 +797,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("claim_id", "position", name="uq_digest_claim_citations_position"),
     )
     op.create_index(
-        "idx_digest_claim_citations_claim",
-        "digest_claim_citations",
-        ["claim_id"],
-    )
-    op.create_index(
-        "idx_digest_claim_citations_snapshot",
-        "digest_claim_citations",
-        ["snapshot_id"],
+        "idx_digest_claim_citations_snapshot_id", "digest_claim_citations", ["snapshot_id"]
     )
 
     # Apply database triggers and functions
