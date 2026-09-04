@@ -19,7 +19,14 @@ from alembic import context
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: this file runs in-process whenever a caller invokes
+    # alembic.command.upgrade()/downgrade() directly (e.g. tests/integration/intelligence/
+    # test_alembic_lifecycle.py) rather than only via the standalone `alembic` CLI. fileConfig's
+    # default (disable_existing_loggers=True) silently disables every already-configured logger
+    # the moment this module is imported -- including pytest's own caplog handler -- which was
+    # breaking caplog-based assertions in every test that ran after the lifecycle test in the
+    # same session, in files with no apparent connection to Alembic at all.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
