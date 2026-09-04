@@ -739,7 +739,8 @@ RETURNING id, observed_at, value, quoted_span;
 ```
 - **Replay Verification:** If no row is returned, the repository executes a re-read:
   ```sql
-  SELECT id, observed_at, value, quoted_span, disclosure_status
+  SELECT id, observed_at, value, quoted_span, confidence, disclosure_status,
+         extraction_method, extraction_model, prompt_version, extraction_version
   FROM extracted_facts
   WHERE snapshot_id = :snapshot_id
     AND company_key = :company_key
@@ -747,7 +748,7 @@ RETURNING id, observed_at, value, quoted_span;
     AND field = :field
     AND extraction_version = :extraction_version;
   ```
-  and verifies that the stored content matches the attempted extraction. If the content differs on the same attempt key, the repository fails closed (raises an exception).
+  and verifies that every immutable fact attribute (`disclosure_status`, `extraction_method`, `extraction_model`, `prompt_version`, `extraction_version`, `quoted_span`, `confidence`, `value`, and `observed_at`) strictly matches the attempted extraction. If all attributes match, the replay succeeds idempotently. If any attribute differs on the exact same attempt key, the repository fails closed (raises an exception) to prevent silent acceptance of corrupted or inconsistent replays.
 - **Versioned Corrections:** An updated deterministic extractor (e.g. bug-fixed parser) or updated LLM prompt/model specifies an incremented `extraction_version` (e.g. `'v2'`), cleanly appending a new fact record to history per `AGENTS.md` ("Corrections create a new version and retain provenance").
 
 ### 5.3 Canonical Reconstruction Order for Child Lists
