@@ -31,10 +31,11 @@ The following is the exact proposal Persons A, B, and C are being asked to accep
 | Database and vector search | PostgreSQL 17 is the system of record; pgvector remains planned but is not part of the first persistence PR. |
 | Runtime database access | SQLAlchemy 2 async sessions over Psycopg 3; Alembic uses the same driver through the standard async migration bridge. |
 | Initial tables | `source_items` and immutable `document_snapshots` only. |
-| IDs and identity | Application-generated UUID v7; `dedupe_key`, `source_id`, and `canonical_url` are immutable after insertion. |
+| IDs and identity | Application-generated UUID v7. Five `source_items` fields are immutable after insertion and enforced by a storage trigger: `id`, `first_fetched_at`, `dedupe_key`, `source_id`, `canonical_url`. |
+| Transactions | The ingestion service owns one `AsyncSession` transaction per ingested item; the repository is bound to it, may flush, and never commits or rolls back on its own. The service commits once, after all three writes succeed; any exception rolls the whole item back. |
 | Snapshot ownership/latest pointer | Composite FK proves ownership; a conditional update advances the pointer only to the newest `(fetched_at, id)`. |
-| Lists | `authors` and normalized `tags` use PostgreSQL `text[]` in Phase 1. |
-| Immutability | Restricted repository methods plus PostgreSQL update/delete triggers. |
+| Lists | `authors` and normalized `tags` use PostgreSQL `text[]` in Phase 1; the normalization rules are new behaviour implemented in the persistence PR. |
+| Immutability | Restricted repository methods plus PostgreSQL triggers: a row-level `BEFORE UPDATE` guard on the five `source_items` identity fields, and row-level `BEFORE UPDATE`/`BEFORE DELETE` plus a statement-level `BEFORE TRUNCATE` guard on `document_snapshots`. Triggers cover ordinary DML while enabled; a restricted runtime database role is a production gate. |
 | Cross-module reads | A narrow async read Protocol lives in `shared/`; its PostgreSQL adapter remains ingestion-owned. |
 | Configuration | Typed `DatabaseConfig` lives in `shared/`; secrets remain environment-only. |
 | CI | The existing test job gets a pinned `postgres:17` service and runs migrations plus real integration tests. |
@@ -184,7 +185,8 @@ The first persistence PR creates **only**:
 - the `document_snapshots` table;
 - their integrity constraints, foreign keys, indexes required by their documented sort key,
   and the Phase-1 immutability triggers (section 11);
-- Alembic configuration and the single initial migration, plus its `alembic_version` table.
+- Alembic configuration and the single initial migration. Alembic creates and owns its own
+  `alembic_version` table; this revision neither creates nor drops it.
 
 It creates **no** `facts`, `changes`, `change_sets`, `digests`, `digest_claims`,
 `subscriptions`, `email_deliveries`, `collection_runs`, `events`, `chat_sessions`,
@@ -199,7 +201,7 @@ Covers the current `SourceItem` Pydantic contract (`schemas.py:86-127`) field-fo
 |---|---|---|
 | `id` | `uuid` | `PRIMARY KEY`. No default. **Immutable** (section 11). |
 | `dedupe_key` | `text` | `NOT NULL`, `UNIQUE`. sha256 of the normalized canonical URL. Immutable after insertion in Phase 1. A future canonicalization-policy change requires an explicit migration/backfill plan rather than an ordinary upsert rewriting identity. |
-| `source_id` | `text` | `NOT NULL`. `sources.yaml` slug (e.g. `openai_news`) — a config key, never a UUID (ADR 0007). |
+| `source_id` | `text` | `NOT NULL`. `sources.yaml` slug (e.g. `openai_news`) — a config key, never a UUID (ADR 0007). Immutable after insertion in Phase 1 (section 11). |
 | `publisher` | `text` | `NOT NULL`. |
 | `title` | `text` | `NOT NULL`. |
 | `canonical_url` | `text` | `NOT NULL`. Validated as a URL by the Pydantic boundary (`HttpUrl`); stored as `text`. Immutable after insertion in Phase 1 because it is the input to `dedupe_key`. |
@@ -249,7 +251,8 @@ Constraints and indexes:
 - `UNIQUE (id, source_item_id)`, which is the target of the composite latest-snapshot ownership
   foreign key below (the primary key already makes `id` unique, but PostgreSQL requires a matching
   unique key for this two-column reference);
-- **whole-row immutability** via a `BEFORE UPDATE` trigger, plus a `BEFORE DELETE` trigger
+- **whole-row immutability** via a row-level `BEFORE UPDATE` trigger, plus a row-level
+  `BEFORE DELETE` trigger that always raises and a statement-level `BEFORE TRUNCATE` trigger
   that always raises (section 11);
 - a `(source_item_id, fetched_at DESC)` history index is **deferred** — no Phase-1 endpoint
   reads snapshot history.
@@ -294,89 +297,116 @@ Trade-off, stated rather than assumed:
 | `jsonb` | Flexible; GIN-indexable. | Untyped elements; loose duplicate/order semantics; overkill for a homogeneous string list. | Rejected — these are string lists, not documents. |
 | `authors` / `tags` child tables (or a `tags` dimension + `source_item_tags` join) | Proper normalization; FK integrity; easy dedup and faceting. | Extra tables, joins, and repository code for a capability **no Phase-1 endpoint needs** — ADR 0008 §8 defers the `tags` filter and never filters `authors`. | Rejected for Phase 1; revisit if tags become a managed, filterable dimension. |
 
-Element normalization stays the ingestion normalizer's responsibility, not a database constraint,
-in Phase 1. Authors are Unicode-NFC-normalized, trimmed, empty values are removed, and exact
-duplicates are removed while preserving first-seen order and case. Tags receive the same treatment
-and are additionally case-folded before exact deduplication. Migrating `tags` to a dimension + join
-table later is a
-localized, additive migration (new tables, backfill, swap the repository read path) — it does
-not disturb `source_items.id` or `first_fetched_at`.
+Element normalization will be implemented at the ingestion normalization boundary in the
+implementation PR — not as a database constraint. It is **new Phase-1 behaviour, not existing
+executable functionality**: `src/ai_daily_digest/ingestion/` currently holds only stubs, so the
+rules below are a fresh specification for Person A's normalizer, not a description of code that
+already runs. Authors are Unicode-NFC-normalized, trimmed, emptied values removed, and exact
+duplicates removed while first-seen order and case are preserved. Tags get the same treatment and
+are additionally case-folded before exact deduplication. Migrating `tags` to a dimension + join
+table later is a localized, additive migration (new tables, backfill, swap the repository read
+path) — it does not disturb any `source_items` identity field.
 
 ### 11. Ordering-column and snapshot immutability — Phase-1 storage mechanism
 
-ADR 0008 §5.D requires three independent layers. Layers 1 and 2 are settled; this section
-fixes layer 3.
+ADR 0008 §5.D requires three independent layers. Layer 1 already ships and layer 2's design
+is fixed in section 12; this section fixes layer 3.
 
 1. **Model-level freezing — already shipped.** `Field(frozen=True)` on `SourceItem.id`,
    `SourceItem.first_fetched_at`, `Change.id`, `Change.detected_at`, `Digest.id`,
    `Digest.digest_date` (`schemas.py`); `tests/unit/test_protected_ordering_fields.py`
-   statically forbids `model_copy(update=...)` on any of them.
+   statically forbids `model_copy(update=...)` on any of them. `SourceItem.dedupe_key`,
+   `source_id`, and `canonical_url` are **not** Pydantic-frozen — they are identity fields
+   rather than ADR 0008 ordering-tuple components, so layers 2 and 3 hold them immutable.
 2. **Repository restriction — this PR.** The ingestion write protocol (section 12) exposes
    **no method that updates a protected column.** `upsert_source_item` writes the
-   allowed-mutable set only; there is no `set_first_fetched_at`, no generic `update(**fields)`
-   passthrough, no `id` reassignment. This is application-level defence in depth — a direct
-   SQL statement bypasses it, which is why layer 3 exists.
-3. **Storage-level enforcement — `BEFORE UPDATE` / `BEFORE DELETE` row-level triggers.**
+   allowed-mutable set only; there is no setter for any of the five `source_items` identity
+   fields, no generic `update(**fields)` passthrough, no `id` reassignment. This is
+   application-level defence in depth — a direct SQL statement bypasses it, which is why
+   layer 3 exists.
+3. **Storage-level enforcement — PL/pgSQL triggers created in the initial Alembic migration,
+   with a matching `downgrade()` that drops them.**
 
-**Decision: use PL/pgSQL `BEFORE UPDATE` triggers**, created in the initial Alembic
-migration with a matching `downgrade()` that drops them.
+**`source_items` — row-level `BEFORE UPDATE`.** One trigger function, `FOR EACH ROW`, raising
+`RAISE EXCEPTION 'source_items.% is immutable', <column>` when **any** of the five identity
+fields changes:
 
-- On `source_items`: `BEFORE UPDATE FOR EACH ROW`, raising
-  `RAISE EXCEPTION 'source_items.% is immutable', 'first_fetched_at'` (and likewise `id`)
-  when `OLD.id IS DISTINCT FROM NEW.id` **or**
-  `OLD.first_fetched_at IS DISTINCT FROM NEW.first_fetched_at`. An `UPDATE` that leaves both
-  columns byte-identical is permitted (an idempotent rewrite), which column privileges cannot
-  express.
-- On `document_snapshots`: `BEFORE UPDATE FOR EACH ROW` that raises on **any** column change
-  (whole-row immutability — `AGENTS.md`: "Raw source snapshots are immutable"), plus a
-  `BEFORE DELETE FOR EACH ROW` that always raises ("Corrections create a new version and
-  retain provenance").
-- One trigger function per table; the trigger definition names the protected columns, so
-  adding a protected column later is a one-line change in a new migration.
+- `id`
+- `first_fetched_at`
+- `dedupe_key`
+- `source_id`
+- `canonical_url`
 
-**Why triggers over column-level `UPDATE` privileges:**
+The check is `OLD.<col> IS DISTINCT FROM NEW.<col>` per column, so an `UPDATE` that leaves all
+five byte-identical is permitted (an idempotent rewrite of the mutable metadata), which a
+column privilege cannot express. The trigger definition lists the five columns, so adding one
+later is a one-line change in a new migration.
 
-| | `BEFORE UPDATE` trigger | Restricted column `UPDATE` privilege |
+**`document_snapshots` — row-level `BEFORE UPDATE`, row-level `BEFORE DELETE`, and
+statement-level `BEFORE TRUNCATE`.** The `BEFORE UPDATE` trigger raises on **any** column
+change (whole-row immutability — `AGENTS.md`: "Raw source snapshots are immutable"); the
+`BEFORE DELETE` and `BEFORE TRUNCATE` triggers always raise ("Corrections create a new
+version and retain provenance"). `TRUNCATE` is a separate statement the row-level `DELETE`
+trigger never sees, so it needs its own statement-level trigger.
+
+**Scope and limits of trigger-backed immutability — stated accurately:**
+
+- The triggers protect **ordinary database operations while they are enabled** — every
+  `UPDATE` / `DELETE` / `TRUNCATE` the application, a migration, or a test issues.
+- A **table owner or superuser can disable a trigger** (`ALTER TABLE … DISABLE TRIGGER`) or
+  otherwise bypass it. In CI the connecting role **is** the owner/superuser, so the
+  integration suite drives the triggers against ordinary DML but could also turn them off —
+  the guarantee is "ordinary DML is rejected", not "cannot be bypassed".
+- The triggers **do not** protect against administrative DDL such as `DROP TABLE` or
+  `ALTER TABLE`.
+- **Phase 1 does not claim protection against a malicious database administrator.**
+- **Before production**, the API and the worker must connect with a **restricted runtime
+  role** that has **no** schema ownership, DDL, `TRUNCATE`, trigger-management, or migration
+  privileges — only `SELECT`/`INSERT` and column-scoped `UPDATE` on the mutable columns.
+  Migrations run under a **separate owner/migration role**. This role split is a **production
+  gate**, not optional hardening (see Consequences; "Deferred operational decisions" narrows
+  only its exact host provisioning).
+
+**Why triggers rather than column-level `UPDATE` privileges as the Phase-1 mechanism:**
+
+| | `BEFORE UPDATE` / `DELETE` / `TRUNCATE` triggers | Restricted column `UPDATE` privilege |
 |---|---|---|
-| Fires for the CI database user | **Yes** — triggers are not bypassed by the table owner or a superuser, so the integration suite proves the guarantee even connecting as `postgres`. | **No** — `GRANT`/`REVOKE` do not restrict the table owner or a superuser, so a single-role CI database cannot exercise it without bespoke limited-role provisioning. |
-| Distinguishes "unchanged" from "changed" | **Yes** — compares `OLD`/`NEW`; permits a no-op rewrite. | No — forbids naming the column in `UPDATE` at all. |
-| Ships and rolls back in a migration | **Yes** — `op.execute(CREATE FUNCTION … CREATE TRIGGER …)` / `downgrade` drops them. | Partly — needs a dedicated runtime role and `GRANT` management in migrations. |
-| Reviewer cost | A small PL/pgSQL function + trigger per table. | Role and grant plumbing; easy to get subtly wrong. |
+| Exercised by the CI database role | **Yes** — the triggers fire for ordinary DML issued by the CI owner/superuser, so the integration suite drives them directly. (That same role could also disable them — see the limits above.) | **No** — `GRANT`/`REVOKE` do not restrict a table owner or superuser, so a single-role CI database cannot exercise the restriction without provisioning a separate limited role first. |
+| Distinguishes "unchanged" from "changed" | **Yes** — compares `OLD`/`NEW`, so an identical rewrite is a no-op. | No — forbids naming the column in `UPDATE` at all. |
+| Covers `DELETE` and `TRUNCATE` | **Yes** — dedicated `BEFORE DELETE` and `BEFORE TRUNCATE` triggers. | No — per-statement-type only, and cannot compare values. |
+| Ships and rolls back in one migration | **Yes** — `op.execute(CREATE FUNCTION … CREATE TRIGGER …)`, dropped in `downgrade()`. | Partly — needs the runtime role and its `GRANT`s managed in migrations. |
 
-**Rejected — normal `CHECK` constraint:** cannot compare `OLD` and `NEW`; ADR 0008 §5.D
+Both are used: the triggers are the Phase-1 test-enforced mechanism, and the restricted
+runtime role (which also removes `UPDATE` on the immutable columns and `DELETE`/`TRUNCATE`
+on `document_snapshots`) is the production gate above.
+
+**Rejected — a normal `CHECK` constraint:** cannot compare `OLD` and `NEW`; ADR 0008 §5.D
 already rules it out.
 
-**Rejected as the Phase-1 test-enforced mechanism — column-level privileges:** kept as a
-documented **production hardening** option — the deployment can additionally
-`REVOKE UPDATE (id, first_fetched_at) ON source_items` and `REVOKE UPDATE, DELETE ON
-document_snapshots` from the runtime application role as defence in depth — but it is not
-what the Phase-1 integration suite proves, because a one-role CI Postgres cannot.
-
-**How a rejected update is rolled back, and how tests confirm the value survives:**
+**How a rejected write is rolled back, and how tests confirm the value survives:**
 
 1. The trigger's `RAISE EXCEPTION` aborts the statement; PostgreSQL marks the surrounding
    transaction aborted; `psycopg` raises `psycopg.errors.RaiseException`, which SQLAlchemy
    surfaces as `DBAPIError`.
-2. The application (or the test) calls `session.rollback()` (or exits the
-   `async with session.begin():` block, which rolls back on exception). Nothing was
-   committed, so the on-disk row is untouched.
-3. Integration test, one per Phase-1 protected column (`SourceItem.id`,
-   `SourceItem.first_fetched_at`) and one for whole-snapshot immutability and one for
-   snapshot deletion:
-   - read the row, keep the original value;
-   - issue a raw `text("UPDATE source_items SET first_fetched_at = :t WHERE id = :id")`
-     (bypassing the repository on purpose — this tests layer 3, not layer 2);
-   - assert it raises `DBAPIError`;
-   - `await session.rollback()`; assert the session is usable again;
-   - re-`SELECT` the row and assert `first_fetched_at` equals the original **to the
-     microsecond**, and the full row is unchanged;
-   - assert the repository exposes no ordinary method that could have issued that `UPDATE`
-     (behavioural — the protocol has no such member).
+2. The service (or the test) rolls back its transaction. Nothing was committed, so the
+   on-disk row is untouched.
+3. Integration tests (section 15): one **independent** test per protected `source_items`
+   field (`id`, `first_fetched_at`, `dedupe_key`, `source_id`, `canonical_url`) and one each
+   for snapshot `UPDATE`, `DELETE`, and `TRUNCATE`. Each test:
+   - reads the row and keeps the original value;
+   - issues the raw statement directly (e.g.
+     `text("UPDATE source_items SET dedupe_key = :v WHERE id = :id")`), bypassing the
+     repository on purpose — this exercises layer 3, not layer 2;
+   - asserts `DBAPIError`;
+   - rolls back and confirms the session is usable again;
+   - re-`SELECT`s and asserts the field — and the whole row — is unchanged, timestamps to the
+     microsecond;
+   - asserts the repository exposes no ordinary method that could have issued that write.
 
 The four `Change` / `Digest` protected-column storage-level tests from ADR 0008 §14 ("Later —
 persistence-adapter integration PR") land with the migration that creates the `changes` and
-`digests` tables (intelligence persistence — out of scope here). This ADR records that
-boundary so the gap is understood as deferred, not skipped.
+`digests` tables (intelligence persistence — out of scope here), so the gap is deferred, not
+skipped.
 
 ### 12. Repository protocols and module boundaries
 
@@ -391,10 +421,10 @@ Lives next to its only implementer and only caller, in `src/ai_daily_digest/inge
 Responsibilities:
 
 - `upsert_source_item(...) -> SourceItem` — create-or-find by canonical `dedupe_key`. On
-  find, **preserve the existing `id` and `first_fetched_at`** and update only an explicit
-  allowed-mutable set (`publisher`, `title`, `published_at`, `updated_at`, `authors`, `tags`,
-  `language`, `event_id`). `id`, `first_fetched_at`, `source_id`, `canonical_url`, and
-  `dedupe_key` are never written on the update path.
+  find, **preserve all five identity fields** (`id`, `first_fetched_at`, `dedupe_key`,
+  `source_id`, `canonical_url`) and update only an explicit allowed-mutable set (`publisher`,
+  `title`, `published_at`, `updated_at`, `authors`, `tags`, `language`, `event_id`). The five
+  identity fields are never named on the update path; the section 11 trigger backstops that.
 - `add_snapshot_if_new(source_item_id, content_hash, ...) -> DocumentSnapshot` — insert only
   when `(source_item_id, content_hash)` is new; return the existing row otherwise. Never a
   second row for identical content.
@@ -402,6 +432,9 @@ Responsibilities:
   exists, conditionally advance `latest_snapshot_id` only when the candidate belongs to the
   item and its `(fetched_at, id)` tuple is newer than the current tuple (same transaction,
   section 13). Return whether the pointer advanced.
+- Every method runs inside the **caller-supplied `AsyncSession` transaction** (section 13). A
+  method may `flush()`, but **never `commit()` or `rollback()`** — transaction control belongs
+  to the ingestion service alone.
 - All three are **idempotent under retries and concurrent duplicate ingestion**
   (`INSERT … ON CONFLICT DO NOTHING` + re-`SELECT`; unique-violation-safe).
 
@@ -460,11 +493,24 @@ Phase-1 decision, not an implementation-time choice.
 
 ### 13. Transactions and concurrency
 
-**Transaction boundary — one transaction per ingested item** (inside a collection run):
+**Transaction ownership.**
+
+- The ingestion application/service owns exactly **one `AsyncSession` transaction per ingested
+  item** (inside a collection run).
+- The PostgreSQL repository is **bound to that session** — the service passes the session in;
+  the repository never opens its own.
+- Repository methods may **run queries and `flush()`**; they **must never independently
+  `commit()` or `rollback()`**.
+- The service **commits once**, only after the source-item upsert, the snapshot insertion, and
+  the latest-pointer update have **all** succeeded.
+- Any exception rolls back the **service-owned** transaction (see "Rollback behaviour" below).
+
+**Per-item write sequence** (all inside that one transaction):
 
 1. Upsert the source item: `INSERT INTO source_items (…) ON CONFLICT (dedupe_key) DO UPDATE
    SET <allowed-mutable columns only> RETURNING *`. The `DO UPDATE` set-list never names
-   `id` or `first_fetched_at` (and the trigger backstops that).
+   `id`, `first_fetched_at`, `dedupe_key`, `source_id`, or `canonical_url` (and the trigger
+   backstops that).
 2. If the content hash is new: `INSERT INTO document_snapshots (…) ON CONFLICT
    (source_item_id, content_hash) DO NOTHING RETURNING id`; if no row is returned, `SELECT
    id` for the existing `(source_item_id, content_hash)`.
@@ -474,7 +520,8 @@ Phase-1 decision, not an implementation-time choice.
    prevents two concurrent, different-content fetches from committing out of order and leaving an
    older snapshot marked as latest. The composite FK from section 9 proves the selected snapshot
    belongs to this item. `updated_at` records the accepted metadata refresh independently.
-4. Commit. Snapshot row and `latest_snapshot_id` become visible **atomically**.
+4. The service issues its **single commit**. The source-item row, the snapshot row, and
+   `latest_snapshot_id` become visible **atomically**.
 
 **Uniqueness-conflict handling:** the two `UNIQUE` constraints (`source_items.dedupe_key`,
 `document_snapshots (source_item_id, content_hash)`) are the single source of truth.
@@ -488,14 +535,22 @@ surfaced to the run.
 older snapshot cannot move the pointer backwards, and only a newer same-item snapshot can
 advance it.
 
-**No partial `snapshot exists but latest_snapshot_id inconsistent` state:** steps 2 and 3
-commit together. A crash between them rolls both back. At every commit boundary,
-`latest_snapshot_id` is either `NULL` or points at a real, existing snapshot of that item.
+**No partial `snapshot exists but latest_snapshot_id inconsistent` state:** steps 2 and 3 are
+in one transaction and land on the service's single commit. A crash before that commit rolls
+both back. At every commit boundary, `latest_snapshot_id` is either `NULL` or points at a
+real, existing snapshot of that item.
 
-**Rollback behaviour:** any exception in the per-item transaction (unexpected unique
-violation, a trigger `RAISE`, a lost connection) → `rollback()` → no rows for that item; the
-collection run records the item as failed and continues (`docs/ARCHITECTURE.md`: "One source
-failure does not abort others").
+**Rollback behaviour:** any exception in the per-item transaction (an unexpected unique
+violation, a trigger `RAISE`, a lost connection) makes the **service** roll back its one
+transaction:
+
+- **for a new item**, the failed attempt persists **no rows** — no `source_items` row and no
+  `document_snapshots` row;
+- **for an existing item**, rollback **preserves the rows committed by earlier runs** and
+  discards **only** the changes this attempt made in this transaction (the metadata update, a
+  new snapshot insert, a pointer advance);
+- the collection run records the item as failed and continues (`docs/ARCHITECTURE.md`: "One
+  source failure does not abort others").
 
 **Isolation level:** default `READ COMMITTED` is sufficient for Phase 1 — `ON CONFLICT`
 idempotency and keyset pagination do not need `REPEATABLE READ` or `SERIALIZABLE`. Stated
@@ -545,10 +600,12 @@ Arrays (`text[]`), the native `uuid` type, `timestamptz` microsecond precision, 
 CONFLICT`, row-level triggers, and FK `RESTRICT` are not faithfully reproduced by SQLite.
 
 - **CI:** the `tests` job in `.github/workflows/ci.yml` gains a `postgres:17` **service
-  container** (with a health check), sets `DATABASE_URL` to it, runs `alembic upgrade head`
-  before `pytest`, and runs the integration suite (`-m integration`, currently already
-  inside `-m "not live"`) as part of that job. **CI always runs the real integration suite;
-  it is never skipped there.** The `quality` and `security` jobs are unchanged.
+  container** (with a health check) and sets `DATABASE_URL` to it. The integration harness
+  (below) creates the run's temporary database and runs `alembic upgrade head` against it; the
+  integration suite (`-m integration`, currently already inside `-m "not live"`) then runs as
+  part of the same job. **CI always runs the real integration suite; it is never skipped
+  there,** and the job **fails** if the database cannot be provisioned or torn down. The
+  `quality` and `security` jobs are unchanged.
 - **Postgres version:** pin the image tag (`postgres:17`) as the tested version; 18 is not
   required and its `uuidv7()` is irrelevant (generation is application-side).
 - **Local:** the implementation PR adds a `compose.yaml` with one `postgres` service and
@@ -565,13 +622,41 @@ CONFLICT`, row-level triggers, and FK `RESTRICT` are not faithfully reproduced b
 - **Unit tests** for delivery and ingestion logic use the in-memory fake repositories — no
   database at all.
 
+**Database-test isolation.** A single per-test rollback fixture does **not** isolate every
+integration test — the mandatory duplicate-ingestion and latest-pointer tests need genuinely
+concurrent transactions on separate connections, and those connections must commit. The
+strategy:
+
+- the integration run **creates a temporary PostgreSQL database** (name unique to the run);
+- Alembic runs `upgrade head` against it **once**, before any test;
+- **ordinary, non-committing tests** run inside a per-test transaction that is rolled back at
+  teardown — fast, with no cross-test residue;
+- **concurrency tests** (duplicate ingestion, latest-snapshot ordering) open their **own
+  connections** and perform **real commits**; a single outer rollback cannot unwind another
+  connection's committed work, so these tests do not rely on one;
+- every concurrency test uses **freshly generated UUID v7** records and asserts only on the
+  rows it created — no test assumes the tables are globally empty;
+- teardown **disposes all connections**, runs `alembic downgrade base` where practical to
+  exercise the down-path, then **drops the temporary database**;
+- **CI fails the job** if the PostgreSQL service, the `upgrade`, or the teardown/drop cannot
+  complete — a half-provisioned database is never reported as "tests skipped".
+
+This strategy supports the required genuine concurrent tests for duplicate ingestion and
+latest-snapshot ordering.
+
 **Integration tests the implementation PR must include:**
 
 - **unique constraints** — `dedupe_key`; `(source_item_id, content_hash)`;
 - **idempotency** — re-running an item insert produces the same rows and raises nothing;
-  concurrent duplicate insert converges;
-- **transaction rollback** — a failed snapshot write leaves no partial state; a trigger
-  `RAISE` aborts and rolls back the whole transaction;
+  concurrent duplicate insert (separate connections, real commits) converges to one row;
+- **transaction ownership** — the repository methods never commit; nothing persists until the
+  service commits; a **new** item whose attempt fails leaves **no rows**; an **existing** item
+  whose attempt fails keeps its previously committed rows and loses **only** this attempt's
+  changes;
+- **migration lifecycle** — `upgrade`→`downgrade`→`upgrade`: after `downgrade` the two tables,
+  the constraints, the row-level and statement-level triggers, the trigger functions and the
+  keyset index are gone; after the second `upgrade` they are back identically; the revision
+  never drops `alembic_version` and Alembic keeps managing it;
 - **foreign keys** — a snapshot for a missing `source_item_id` is rejected; a `source_item`
   with snapshots cannot be deleted (`RESTRICT`); a source item cannot point at another
   item's snapshot;
@@ -580,16 +665,20 @@ CONFLICT`, row-level triggers, and FK `RESTRICT` are not faithfully reproduced b
 - **UUID v7 storage** — a `new_id()` value stored in a native `uuid` column reads back equal
   and canonical;
 - **snapshot contract and immutability** — naive `fetched_at` and null `content_text` are
-  rejected at the model/storage boundaries; `UPDATE` and `DELETE` on
-  `document_snapshots` are both rejected;
-- **latest-pointer concurrency** — two different snapshots committed out of arrival order
-  still leave the greatest `(fetched_at, id)` selected, and an older retry cannot regress
-  the pointer;
-- **list normalization** — author/tag trimming, Unicode NFC normalization, empty removal,
-  stable deduplication, and tag case-folding are deterministic;
-- **protected ordering-column immutability** — one test each for `SourceItem.id` and
-  `SourceItem.first_fetched_at` per section 11 (`Change`/`Digest` protected-column tests land
-  with those tables).
+  rejected at the model/storage boundaries; ordinary `UPDATE`, `DELETE`, **and `TRUNCATE`** on
+  `document_snapshots` are each rejected by their trigger, the transaction rolls back, and the
+  pre-existing rows are unchanged on re-read;
+- **latest-pointer concurrency** — two different snapshots committed out of arrival order (on
+  separate connections) still leave the greatest `(fetched_at, id)` selected, and an older
+  retry cannot regress the pointer;
+- **list normalization** (new Phase-1 behaviour, section 10) — author/tag trimming, Unicode
+  NFC normalization, empty removal, stable deduplication, and tag case-folding are
+  deterministic;
+- **source-identity immutability** — one **independent** test for each of the five protected
+  `source_items` fields (`id`, `first_fetched_at`, `dedupe_key`, `source_id`, `canonical_url`):
+  a direct SQL `UPDATE` of that one field raises `DBAPIError`, the transaction rolls back, and
+  a re-`SELECT` shows the original value byte-for-byte (timestamps to the microsecond). The
+  `Change`/`Digest` protected-column tests land with those tables (ADR 0008 §14).
 
 ### 16. The persistence-foundation implementation PR
 
@@ -624,12 +713,20 @@ contains exactly:
   `ReadinessProbe`, runs bounded `SELECT 1`).
 - **`src/ai_daily_digest/delivery/api/app.py`** — `create_app()` gains the optional injected
   read-repository parameter and wires `"database"` into readiness when configured.
-- **`tests/integration/`** — `conftest.py` (engine + per-test rollback fixture),
-  `test_source_item_repository.py`, `test_migrations.py` (`upgrade`→`downgrade`→`upgrade` on
-  a real database), `test_immutability_triggers.py`.
+- **`tests/integration/`** — `conftest.py` (temporary-database lifecycle per section 15:
+  create → `alembic upgrade head` → run tests → dispose connections → `alembic downgrade base`
+  where practical → drop the database; a per-test transaction-rollback fixture for
+  non-committing tests; a separate-connection helper for concurrency tests),
+  `test_source_item_repository.py`, `test_migrations.py`
+  (`upgrade`→`downgrade`→`upgrade`; the application objects vanish then reappear identically
+  while Alembic keeps its own `alembic_version` table), `test_immutability_triggers.py` (all
+  five `source_items` identity fields; snapshot `UPDATE` / `DELETE` / `TRUNCATE`),
+  `test_ingestion_transaction.py` (service-owned commit/rollback for new and existing items).
 - **`tests/unit/ingestion/`** — the in-memory fake repository and its tests.
-- **`.github/workflows/ci.yml`** — `postgres:17` service + `alembic upgrade head` step for
-  the `tests` job.
+- **`.github/workflows/ci.yml`** — `postgres:17` service on the `tests` job, `DATABASE_URL`
+  pointed at it, and the job configured to fail if the integration harness cannot provision or
+  drop its temporary database (the `upgrade`/`downgrade` themselves run inside the harness —
+  section 15).
 - **`compose.yaml`** — local PostgreSQL.
 - **`Makefile`** — `db-up`, `db-migrate`, `db-revision`, `test-integration`.
 - **A short local-database doc** — running migrations and integration tests.
@@ -671,8 +768,11 @@ the implementation PR.
 - Psycopg 3 is one driver for both the async runtime and synchronous Alembic.
 - `text[]` for `authors`/`tags` keeps Phase 1 simple; a future tag dimension is an additive
   migration that never touches an ordering column.
-- Immutability triggers make ADR 0008 §5.D layer 3 real and CI-testable without limited-role
-  database provisioning; column-privilege hardening remains available for production.
+- Immutability triggers make ADR 0008 §5.D layer 3 real and CI-testable against the ordinary
+  DML the application issues. They do **not** constrain a table owner, a superuser, or
+  `DROP`/`ALTER`/`TRUNCATE` by a privileged role; a **restricted runtime database role** (no
+  schema ownership, DDL, `TRUNCATE`, trigger management, or migration rights), with migrations
+  run under a separate owner role, is a **production gate**, not optional hardening.
 - The cross-module read Protocol in `shared/` follows the `snapshot_resolver` precedent and
   keeps `delivery/api/` free of any `ingestion` import.
 - Integration tests need a real PostgreSQL in CI and (optionally) locally; the inner
@@ -683,12 +783,17 @@ the implementation PR.
 ## Risks, rollback, and migration considerations
 
 - **No data migration** — the schema is greenfield; ADR 0007 already established "No
-  persistent production data exists yet." The initial migration's `downgrade` drops both
-  tables, both trigger functions, both triggers, and `alembic_version`. Once real rows exist,
-  a table drop is destructive and requires the (still-deferred) backup procedure.
+  persistent production data exists yet." The initial revision's `downgrade()` drops **only
+  the application objects it created** — the constraints, the row-level and statement-level
+  triggers, the trigger functions, the keyset index, then `document_snapshots`, then
+  `source_items`. It does **not** touch `alembic_version`, which Alembic creates and manages
+  itself. Once real rows exist, a table drop is destructive and requires the (still-deferred)
+  backup procedure.
 - **Autogenerate blind spots** — Alembic autogenerate does not reliably emit `text[]` columns
-  or trigger DDL. The initial migration is hand-written; `test_migrations.py` proves
-  `upgrade`→`downgrade`→`upgrade` on a real database.
+  or trigger DDL. The initial migration is hand-written; `test_migrations.py` runs
+  `upgrade`→`downgrade`→`upgrade` on a real database and asserts the application objects
+  disappear on `downgrade` and are recreated identically on the second `upgrade`, while
+  Alembic keeps managing its own version table.
 - **Trigger maintenance** — every future protected column must be added to its table's
   trigger in the same migration that adds the column. Recorded as a checklist item for
   reviewers.
@@ -715,7 +820,9 @@ or request a specific change to this ADR before implementation begins:
 3. **Person C / delivery:** confirm async repository access, shared read Protocol, readiness
    wiring, and the exact ordering index required by `GET /v1/updates`.
 4. **All reviewers:** confirm SQLAlchemy 2 + Alembic + Psycopg 3, PostgreSQL 17 in the
-   existing CI test job, PL/pgSQL immutability triggers, and the Phase-1 pool/timeouts.
+   existing CI test job, the PL/pgSQL immutability triggers and their stated limits, the
+   restricted-runtime-role production gate, the temporary-database integration-test isolation
+   strategy, and the Phase-1 pool/timeouts.
 5. **ADR placement:** these details remain an amendment to ADR 0002 rather than creating
    ADR 0011. If a reviewer requires a split, request it before accepting this ADR.
 
@@ -738,9 +845,12 @@ These do not block the first persistence PR, but must be resolved before deploym
   behaviour;
 - migration and rebuild procedures that prove the derived vector index can be deleted and
   restored without losing source history;
-- the production PostgreSQL role model (owner/migration role vs restricted runtime role) and
-  whether column-level `UPDATE`/`DELETE` privileges are revoked from the runtime role as
-  defence in depth on top of the triggers;
+- the **exact host provisioning** of the production PostgreSQL roles — the restricted runtime
+  role and the separate owner/migration role are a required **production gate** (section 11,
+  Consequences), not deferred; what stays deployment-specific is only how each role is created
+  and granted on the chosen host, and whether column-level `UPDATE`/`DELETE`/`TRUNCATE`
+  privileges are additionally revoked from the runtime role as defence in depth on top of the
+  triggers;
 - connection-pool sizing, `statement_timeout`, and connect-timeout values, tuned to the
   deployment;
 - the production `psycopg` packaging choice (`[binary]` vs `[c]` vs system `libpq`).
