@@ -244,10 +244,10 @@ class ExtractedFact(BaseModel):
         built. Deterministic facts are unaffected -- they don't always
         have a natural quote to attach (see this class's own docstring)."""
         if self.extraction_method == ExtractionMethod.LLM_STRUCTURED_OUTPUT:
-            if self.quoted_span is None:
+            if self.quoted_span is None or not self.quoted_span.strip():
                 raise ValueError(
                     "ExtractedFact with extraction_method='llm_structured_output' "
-                    "must have quoted_span set (ADR 0004)"
+                    "must have a non-empty quoted_span (ADR 0004)"
                 )
             if self.confidence is None:
                 raise ValueError(
@@ -283,7 +283,7 @@ class ExtractedFact(BaseModel):
                     "value=None (ADR 0006) -- a fact can't state a value and also "
                     "claim none was given"
                 )
-            if not self.quoted_span:
+            if self.quoted_span is None or not self.quoted_span.strip():
                 raise ValueError(
                     "ExtractedFact with disclosure_status='not_disclosed' must have a "
                     "non-empty quoted_span citing the actual non-disclosure statement "

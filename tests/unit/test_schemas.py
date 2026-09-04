@@ -114,6 +114,20 @@ def test_llm_extracted_fact_without_quoted_span_is_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize("quoted_span", ["", "   ", "\t\n"])
+def test_llm_extracted_fact_with_empty_quoted_span_is_rejected(quoted_span: str) -> None:
+    with pytest.raises(ValidationError, match="non-empty quoted_span"):
+        ExtractedFact(
+            id=FACT_1,
+            snapshot_id=SNAPSHOT_1,
+            field="context_window_tokens",
+            value="256000",
+            extraction_method=ExtractionMethod.LLM_STRUCTURED_OUTPUT,
+            quoted_span=quoted_span,
+            confidence=0.9,
+        )
+
+
 def test_llm_extracted_fact_without_confidence_is_rejected() -> None:
     with pytest.raises(ValidationError, match="confidence"):
         ExtractedFact(
@@ -196,7 +210,8 @@ def test_not_disclosed_fact_without_quoted_span_is_rejected() -> None:
         )
 
 
-def test_not_disclosed_fact_with_empty_quoted_span_is_rejected() -> None:
+@pytest.mark.parametrize("quoted_span", ["", "   ", "\t\n"])
+def test_not_disclosed_fact_with_empty_quoted_span_is_rejected(quoted_span: str) -> None:
     with pytest.raises(ValidationError, match="quoted_span"):
         ExtractedFact(
             id=FACT_1,
@@ -205,7 +220,7 @@ def test_not_disclosed_fact_with_empty_quoted_span_is_rejected() -> None:
             value=None,
             disclosure_status=DisclosureStatus.NOT_DISCLOSED,
             extraction_method=ExtractionMethod.DETERMINISTIC,
-            quoted_span="",
+            quoted_span=quoted_span,
         )
 
 

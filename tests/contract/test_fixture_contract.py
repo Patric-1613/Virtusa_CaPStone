@@ -47,7 +47,9 @@ def test_extracted_facts_reference_real_snapshots() -> None:
             assert fact.prompt_version, "LLM-extracted facts must record a prompt version"
             # ADR 0004: LLM-extracted facts must keep their evidence, not
             # just a bare value, so grounding can be audited later.
-            assert fact.quoted_span, "LLM-extracted facts must record their quoted_span"
+            assert fact.quoted_span is not None and fact.quoted_span.strip(), (
+                "LLM-extracted facts must record a non-empty quoted_span"
+            )
             assert fact.confidence is not None, "LLM-extracted facts must record their confidence"
 
 
