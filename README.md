@@ -29,3 +29,4 @@ Folder ownership reduces collisions but does not remove collective responsibilit
 - [Part A source research](PART_A_SOURCE_RESEARCH.md)
 - [Source registry](sources.yaml)
 - [Person C delivery UI design reference](docs/design/README.md)
+- [Deployment providers and free-tier operating plan](docs/DEPLOYMENT.md)
