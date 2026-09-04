@@ -49,7 +49,8 @@ v1.<key_id>.<purpose>.<random>.<signature>
   [`secrets`](https://docs.python.org/3/library/secrets.html) module and encoded as unpadded,
   URL-safe base64.
 - `signature` is HMAC-SHA-256 over the exact ASCII bytes of
-  `v1.<key_id>.<purpose>.<random>`, using the key selected by `key_id`.
+  `v1.<key_id>.<purpose>.<random>`, using the key selected by `key_id`. Its 32-byte digest is
+  encoded as canonical, unpadded, URL-safe base64: exactly 43 ASCII characters.
 - Signature comparison uses
   [`hmac.compare_digest`](https://docs.python.org/3/library/hmac.html), never ordinary string
   equality.
@@ -74,11 +75,11 @@ The later Delivery-owned subscription migration stores token records with at lea
 | Field | Rule |
 |---|---|
 | `id` | Internal UUID v7 resource ID; never used as the bearer token. |
-| `subscription_id` | Foreign key to the subscriber record. |
+| `subscription_id` | `UUID NOT NULL` foreign key to the subscriber record with `ON DELETE RESTRICT`, preserving suppression and consent audit history. |
 | `purpose` | Closed value: `confirm_subscription` or `unsubscribe`. |
 | `token_digest` | Unique SHA-256 digest of the complete ASCII token. |
 | `key_id` | Signing-key version used to verify the envelope. |
-| `consent_generation` | Identifies the subscription lifecycle that issued the token. |
+| `consent_generation` | `INTEGER NOT NULL`; identifies the subscription lifecycle that issued the token. Subscription rows start at `DEFAULT 1` and increment atomically for every re-subscription lifecycle. Token rows copy the current value explicitly and have no default, preventing accidental fallback to generation 1. |
 | `created_at` | Server-generated UTC timestamp. |
 | `expires_at` | Required for confirmation; nullable for revocable unsubscribe tokens. |
 | `used_at` | First successful use, if any. |
@@ -108,14 +109,19 @@ raw tokens, query strings, full URLs, or email addresses.
 4. Confirmation is a state-changing POST. The transaction locks the token and subscription rows,
    rechecks purpose, digest, signature, generation, expiry, `used_at`, and `revoked_at`, then records
    confirmation and token consumption in one commit.
-5. A consumed, expired, revoked, malformed, wrong-purpose, or wrong-generation token makes no state
-   change and receives a stable, safe result that exposes no email or subscription state. The UI may
-   offer a new confirmation email without echoing the submitted address.
+5. A consumed, expired, revoked, malformed, tampered, wrong-purpose, or wrong-generation token makes
+   no state change and returns HTTP 400 through the standard error envelope with code
+   `invalid_subscription_token`, message `"The subscription token is invalid or no longer usable."`,
+   and empty `details`. Every unusable-token case has the same status and public body and exposes no
+   email or subscription state. The UI may offer a new confirmation email without echoing the
+   submitted address.
 6. Re-subscribing after unsubscribe creates a new pending consent generation and requires a new
    double-opt-in confirmation. Old tokens cannot reactivate or alter the new consent generation.
 
 Confirmation tokens are single use. Concurrent attempts serialize on the stored token/subscription;
 exactly one transaction performs the transition and subsequent attempts are harmless.
+A request body that fails JSON/schema validation remains the existing HTTP 422 `validation_error`;
+the HTTP 400 rule above applies after a token string has passed request-schema validation.
 
 ### 4. Unsubscribe lifecycle
 
@@ -130,6 +136,10 @@ exactly one transaction performs the transition and subsequent attempts are harm
 - Unsubscribe is idempotent: retrying a valid token after the first success returns the same generic
   success response and never re-subscribes, sends mail, or leaks prior state. `used_at` records the
   first successful use.
+- A malformed, expired, revoked, tampered, wrong-purpose, wrong-generation, or otherwise unusable
+  unsubscribe token returns the same HTTP 400 `invalid_subscription_token` envelope defined for
+  confirmation. A correctly signed token already used to complete that same unsubscribe remains an
+  idempotent generic success rather than becoming an error.
 - Unsubscribe never requires login, cookies, HTTP authorization, or knowledge of the email address.
 
 If a suppression rule is stricter than ordinary unsubscribe (for example, a hard bounce or abuse
@@ -230,18 +240,25 @@ network calls.
 
 The later implementation PR must include tests proving:
 
-1. generated random components contain 256 bits and tokens are URL-safe and bounded;
-2. malformed, oversized, non-canonical, wrong-version, wrong-key, wrong-purpose, and tampered tokens
-   fail closed without a database mutation;
+1. generated random components contain 256 bits, signatures are canonical 43-character unpadded
+   URL-safe base64, and complete tokens are URL-safe and bounded;
+2. malformed, oversized, non-canonical, wrong-version, wrong-key, wrong-purpose, wrong-generation,
+   expired, revoked, consumed confirmation, and tampered tokens fail closed without a database
+   mutation and return the same HTTP 400 `invalid_subscription_token` envelope; request-schema
+   failures remain HTTP 422;
 3. signature comparison uses the central verifier and no alternate parser bypasses it;
-4. persisted rows contain the token digest but never the raw token;
+4. persisted rows contain the token digest but never the raw token, token rows explicitly copy an
+   integer consent generation, and deleting a referenced subscription is rejected by `ON DELETE
+   RESTRICT`;
 5. persisted rows and captured logs, traces, errors, and metrics contain no raw token or subscriber
    email; provider fakes may inspect the outbound message transiently but never persist, snapshot,
    or log its recipient or token-bearing link;
 6. subscription initiation returns the same public response for unknown, pending, confirmed,
    suppressed, and unsubscribed addresses;
 7. confirmation expiry, single-use behavior, generation binding, concurrent consumption, and
-   revocation of sibling confirmation tokens are correct;
+   revocation of sibling confirmation tokens are correct; subscription generation starts at 1,
+   increments atomically on re-subscription, and token issuance cannot silently default to an old
+   generation;
 8. unsubscribe is idempotent, requires no session, suppresses unsent delivery, and cannot affect a
    newer consent generation;
 9. GET requests and link previews never mutate confirmation or subscription state;
