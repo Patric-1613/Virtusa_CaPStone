@@ -158,8 +158,7 @@ class PostgresFactStore:
                     )
                 if existing.extraction_model != fact.extraction_model:
                     mismatches.append(
-                        f"extraction_model: {existing.extraction_model} != "
-                        f"{fact.extraction_model}"
+                        f"extraction_model: {existing.extraction_model} != {fact.extraction_model}"
                     )
                 if existing.prompt_version != fact.prompt_version:
                     mismatches.append(
