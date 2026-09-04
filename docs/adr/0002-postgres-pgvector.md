@@ -562,10 +562,20 @@ ingestion-owned:
 - Unit tests pass an in-memory fake of the read Protocol (ADR 0010: "tests use an in-memory
   fake"; "no Postgres adapter exists merely to raise `NotImplementedError`").
 
-`shared/db/`, `shared/config.py`, `shared/repositories.py`, and `delivery/api/app.py` are all
-coordination-controlled files (ADR 0010 §"Parallel-work boundaries"); the implementation PR
-rebases on current `main`, reruns `make ci`, and the `shared/` additions get peer review
-(`AGENTS.md`).
+These edits all require coordination, from two different sources:
+
+- `delivery/api/app.py` is explicitly on ADR 0010's "Parallel-work boundaries" enumerated
+  list (which names `docs/API_CONTRACT.md`, `shared/schemas.py`, `delivery/api/app.py`,
+  `pyproject.toml`, and `uv.lock`).
+- `shared/db/`, `shared/config.py`, and `shared/repositories.py` are **new** files ADR 0010
+  did not — and could not — name. They are peer-reviewed shared infrastructure under
+  `AGENTS.md`'s rule ("Before editing shared contracts, database migrations, or public API
+  schemas … request review from another review steward") and `docs/ARCHITECTURE.md`'s rule
+  that `shared/` structures "require one teammate review because they may block all three
+  people".
+
+The implementation PR therefore rebases on current `main`, reruns `make ci`, and takes peer
+review on every `shared/` addition and on `delivery/api/app.py`.
 
 ### 13. Transactions and concurrency
 
@@ -895,9 +905,13 @@ the implementation PR.
 - **Async learning curve** — `AsyncSession`, `async_sessionmaker`, and `run_sync` in
   `env.py` are well-documented SQLAlchemy 2.0 patterns; the risk is familiarity, not
   stability.
-- **`shared/` and `delivery/api/app.py` are coordination files** — the implementation PR
-  must rebase on current `main` and rerun `make ci` (ADR 0010). `shared/db/` is new
-  peer-reviewed shared code.
+- **Coordination-controlled files** — `delivery/api/app.py` is on ADR 0010's "Parallel-work
+  boundaries" enumerated list; the new `shared/db/`, `shared/config.py`, and
+  `shared/repositories.py` are peer-reviewed shared infrastructure under `AGENTS.md`
+  (shared-contract / database-migration review) and `docs/ARCHITECTURE.md` (`shared/`
+  structures need a teammate review) — not files ADR 0010 itself enumerates. The
+  implementation PR rebases on current `main`, reruns `make ci`, and takes peer review on
+  each.
 - **Shared-kernel registration discipline** — Alembic's `env.py` must import every module's
   ORM model modules; a module that adds tables without registering them against
   `shared.db.metadata` breaks autogenerate and risks a divergent schema. Recorded as a
@@ -968,10 +982,15 @@ These do not block the first persistence PR, but must be resolved before deploym
   tuple, the `publisher` / `source_id` filters, `limit + 1` reads, and §5.D's three
   immutability layers.
 - [ADR 0010](0010-fastapi-openapi-contract-authority.md) — how infrastructure enters routes,
-  the readiness-probe requirement, the "no `NotImplementedError` adapter" rule, and the
-  coordination-controlled file list.
+  the readiness-probe requirement, the "no `NotImplementedError` adapter" rule, and its
+  "Parallel-work boundaries" enumeration (`docs/API_CONTRACT.md`, `shared/schemas.py`,
+  `delivery/api/app.py`, `pyproject.toml`, `uv.lock`) — which predates and does not name the
+  new `shared/db/` files.
+- `AGENTS.md` — the shared-contract / database-migration / public-API review rule (line 19)
+  that governs the new `shared/db/`, `shared/config.py`, and `shared/repositories.py` files.
 - `docs/ARCHITECTURE.md` — technology baseline (SQLAlchemy 2 + Alembic, PostgreSQL,
-  pgvector), storage rules, collection flow.
+  pgvector), storage rules, collection flow, and the rule that `shared/` structures require a
+  teammate review.
 - `docs/API_CONTRACT.md` — the `SourceItem` and `DocumentSnapshot` wire contracts this schema
   mirrors.
 - `src/ai_daily_digest/shared/snapshot_resolver.py` — the `shared/` cross-module Protocol
