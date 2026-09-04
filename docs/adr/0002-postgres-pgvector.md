@@ -11,11 +11,13 @@ Accepted. Persons A, B, and C must review before implementation begins.
 
 Person A (ingestion review steward) authors this amendment because the first persistence
 tables (`source_items`, `document_snapshots`) are ingestion-owned. Persons B (intelligence)
-and C (delivery) are review stewards: the decision fixes a shared contract
-(`shared/schemas.py` gains no new resource type here, but the ORM must mirror its existing
-models exactly), touches a shared integration file boundary (`delivery/api/app.py` wiring),
-and unblocks [ADR 0008](0008-cursor-pagination-contract.md) PR 4 (`GET /v1/updates`), tracked
-in issue #47 with Person B as the active author and Persons A and C as review stewards.
+and C (delivery) are review stewards: the decision introduces a shared database kernel
+(`shared/db/` — engine, session factory, `MetaData`; section 12.3) that all three modules
+build on, fixes a shared contract (`shared/schemas.py` gains no new resource type here, but
+the ORM must mirror its existing models exactly), touches a shared integration file boundary
+(`delivery/api/app.py` wiring), and unblocks [ADR 0008](0008-cursor-pagination-contract.md)
+PR 4 (`GET /v1/updates`), tracked in issue #47 with Person B as the active author and
+Persons A and C as review stewards.
 
 This amendment adds **no code, no dependency, no migration, no route, and no collector.** It
 records decisions and their rejected alternatives so the implementation PR builds a
@@ -29,7 +31,7 @@ The following is the exact proposal Persons A, B, and C are being asked to accep
 | Concern | Phase-1 decision |
 |---|---|
 | Database and vector search | PostgreSQL 17 is the system of record; pgvector remains planned but is not part of the first persistence PR. |
-| Runtime database access | SQLAlchemy 2 async sessions over Psycopg 3; Alembic uses the same driver through the standard async migration bridge. |
+| Runtime database access | SQLAlchemy 2 async sessions over Psycopg 3. One shared async engine, `async_sessionmaker`, and `MetaData` live in `shared/db/`; every module registers its ORM models against that one metadata. Alembic uses the same driver through the standard async migration bridge. |
 | Initial tables | `source_items` and immutable `document_snapshots` only. |
 | IDs and identity | Application-generated UUID v7. Five `source_items` fields are immutable after insertion and enforced by a storage trigger: `id`, `first_fetched_at`, `dedupe_key`, `source_id`, `canonical_url`. |
 | Transactions | The ingestion service owns one `AsyncSession` transaction per ingested item; the repository is bound to it, may flush, and never commits or rolls back on its own. The service commits once, after all three writes succeed; any exception rolls the whole item back. |
@@ -37,7 +39,8 @@ The following is the exact proposal Persons A, B, and C are being asked to accep
 | Lists | `authors` and normalized `tags` use PostgreSQL `text[]` in Phase 1; the normalization rules are new behaviour implemented in the persistence PR. |
 | Immutability | Restricted repository methods plus PostgreSQL triggers: a row-level `BEFORE UPDATE` guard on the five `source_items` identity fields, and row-level `BEFORE UPDATE`/`BEFORE DELETE` plus a statement-level `BEFORE TRUNCATE` guard on `document_snapshots`. Triggers cover ordinary DML while enabled; a restricted runtime database role is a production gate. |
 | Cross-module reads | A narrow async read Protocol lives in `shared/`; its PostgreSQL adapter remains ingestion-owned. |
-| Configuration | Typed `DatabaseConfig` lives in `shared/`; secrets remain environment-only. |
+| Database-infrastructure ownership | `shared/db/` owns the engine, session factory, and `MetaData`/naming convention (no auto-connect on import). Each module owns its own `<module>/db/models.py` + `repository.py`; repositories take an injected `AsyncSession` and never build a competing engine or pool. `alembic/` and the single `alembic_version` history are shared infrastructure; Person A authors the first migration (ingestion tables), later module owners author theirs. |
+| Configuration | Typed `DatabaseConfig` lives in `shared/config.py`; secrets remain environment-only. |
 | CI | The existing test job gets a pinned `postgres:17` service and runs migrations plus real integration tests. |
 | API pagination support | The foundation migration includes `(first_fetched_at DESC, id DESC)`. The endpoint remains a separate PR. |
 
@@ -94,10 +97,11 @@ original decision. It is **out of scope for the first persistence PR**:
 ### 3. Use SQLAlchemy 2 and Alembic
 
 Confirmed from `docs/ARCHITECTURE.md`'s technology baseline. SQLAlchemy 2.0 typed ORM
-(`DeclarativeBase`, `Mapped[...]`, `mapped_column(...)`) for table definitions and queries;
-Alembic for every schema change. No raw-SQL schema management; no ORM-less query builder.
-`AGENTS.md`: "Database changes use Alembic migrations; never edit production tables
-manually."
+(`DeclarativeBase`, `Mapped[...]`, `mapped_column(...)`) for table definitions and queries,
+with one application-wide `MetaData`/naming convention in `shared/db/` (section 12.3); Alembic
+for every schema change, as shared infrastructure with a single migration timeline
+(section 12.5). No raw-SQL schema management; no ORM-less query builder. `AGENTS.md`:
+"Database changes use Alembic migrations; never edit production tables manually."
 
 ### 4. Asynchronous SQLAlchemy engine — selected
 
@@ -139,9 +143,11 @@ two mental models over one engine; the collector path does not benefit from stay
 `httpx` is already async.
 
 The worker/collector uses an `async def main()` entry point invoked with `asyncio.run()`. It
-uses the same async session factory as the API. The existing synchronous intelligence pipeline
-may run as an in-process step in that dedicated worker after database inputs have been loaded;
-it must not perform synchronous database I/O from an async FastAPI request handler.
+builds one engine and `async_sessionmaker` from `shared/db/engine.py` (section 12.3) — the
+same construction the API uses, one pool per process. The existing synchronous intelligence
+pipeline may run as an in-process step in that dedicated worker after database inputs have
+been loaded; it must not perform synchronous database I/O from an async FastAPI request
+handler.
 
 ### 5. Psycopg 3 as the PostgreSQL driver — selected
 
@@ -465,31 +471,101 @@ Responsibilities (`SourceItemFeedRepository` or similar):
   repository returns domain records; the public omission happens at the projection boundary,
   under `delivery/api/`.
 
-**12.3 Composition / wiring boundary.**
-
-- SQLAlchemy models, `MetaData`, the engine/session factory, both concrete adapters, and the
-  Alembic migrations are **ingestion-owned**, under `src/ai_daily_digest/ingestion/db/`
-  (models, metadata, engine) and `alembic/` (top-level, `script_location` configured).
-- `delivery/api/` imports only `shared` — the read Protocol and `SourceItem`. It **never**
-  imports `ingestion.db`.
-- `delivery/api/app.py::create_app()` gains an **optional injected parameter** for the read
-  repository, typed as the `shared` Protocol — the same DI pattern as the existing
-  `readiness_probes` parameter. A small **composition root** (the process entrypoint that
-  runs the ASGI server, or a `delivery/` wiring helper) constructs the ingestion PostgreSQL
-  adapter from configuration and passes it in.
-- Unit tests pass an in-memory fake implementing the same Protocol (ADR 0010: "tests use an
-  in-memory fake"; "no Postgres adapter exists merely to raise `NotImplementedError`").
-
-This touches `delivery/api/app.py` and adds to `shared/` — both are coordination-controlled
-files (ADR 0010 §"Parallel-work boundaries"). The implementation PR must rebase on current
-`main` and rerun `make ci`, and the `shared/` addition needs peer review (`AGENTS.md`).
-
 **Rejected — read Protocol under `delivery/api/`, adapter structurally typed in ingestion:**
 technically works with `typing.Protocol` structural subtyping and mypy conformance-checked at
 the `create_app` call site, and avoids a `shared/` change. Rejected as the recommendation
 because it contradicts the `shared/snapshot_resolver.py` precedent (a real cross-module
 contract is stated explicitly in `shared/`, not left implicit). The shared placement is the
 Phase-1 decision, not an implementation-time choice.
+
+**12.3 Shared database kernel — `src/ai_daily_digest/shared/db/`.**
+
+One PostgreSQL database backs ingestion, intelligence, and — through the read Protocol —
+delivery. The engine, connection pool, session factory, and the SQLAlchemy `MetaData` are
+therefore **not** ingestion-private; they are a shared kernel. Placing them in `ingestion/db/`
+would force the later intelligence-persistence ADR to either import `ingestion.db` internals
+(a module-boundary violation) or stand up a **second competing engine and pool** against the
+same database (no single source of truth). Both are rejected.
+
+Proposed files, created in the implementation PR:
+
+- `shared/db/__init__.py`;
+- `shared/db/metadata.py` — the one shared SQLAlchemy `DeclarativeBase` (or bare `MetaData`)
+  and the deterministic constraint/index **naming convention**. **Every** module-owned ORM
+  model in the application registers against this single `MetaData` object;
+- `shared/db/engine.py` — construction of the async engine (`create_async_engine`) and the
+  `async_sessionmaker`. A process has **one** configured engine, **one** connection pool, and
+  **one** session-factory boundary.
+
+`DatabaseConfig` stays in `shared/config.py` (section 14); `shared/db/engine.py` takes it as
+an argument. **Importing or constructing anything in `shared/db/` performs no I/O and opens
+no connection** — the engine is created by the composition root (section 12.6); a bare import
+in a test or a tool never touches PostgreSQL.
+
+**12.4 Module-owned database code.**
+
+Domain-specific persistence stays inside the owning module:
+
+- `ingestion/db/models.py` — `SourceItemRow`, `DocumentSnapshotRow` (this PR);
+- `ingestion/db/repository.py` — `PostgresSourceItemRepository` (this PR);
+- `intelligence/db/models.py` — future `fact`/`change`/`digest` rows (a later
+  intelligence-persistence ADR + PR, **not this one**);
+- `intelligence/db/repository.py` — future (same later PR).
+
+Rules:
+
+- Ingestion owns the source-item and snapshot models and repositories. Intelligence will own
+  the fact/change/digest models and repositories under its own ADR.
+- Every module's ORM models register against `shared.db.metadata` — never a module-local
+  `MetaData`.
+- `delivery/` route modules **must not** import either module's private database
+  implementation (`ingestion.db`, `intelligence.db`). Delivery depends only on `shared/` — the
+  read Protocol (section 12.2) and `SourceItem`.
+- A repository receives an **injected `AsyncSession`** (or the shared session-factory
+  boundary); it never creates its own engine or pool.
+- No module creates a competing engine, pool, or session factory — exactly one of each per
+  process.
+
+**12.5 Alembic ownership — shared infrastructure.**
+
+`alembic/`, `alembic.ini`, and the migration history are **shared infrastructure**, not
+ingestion-owned:
+
+- `alembic/env.py` sets `target_metadata = shared.db.metadata` and imports **every** approved
+  module's ORM model modules so they are all registered against that single `MetaData` before
+  autogenerate or `upgrade` runs.
+- The **first** migration (`0001_source_items_and_document_snapshots.py`) is **authored by
+  Person A** because it creates ingestion-owned tables and their triggers.
+- **Future migrations** may be authored by the relevant module owner (intelligence's
+  fact/change/digest tables under its own ADR).
+- A migration that touches more than one module, or any shared contract, requires peer review
+  from another steward (`AGENTS.md`: "Before editing … database migrations … request review
+  from another review steward").
+- There is **exactly one `alembic_version` history** for the application database — one
+  migration timeline, not one per module. The initial revision still neither creates nor drops
+  that table (section 7).
+
+**12.6 Composition root.**
+
+- The **process composition root** — the API's ASGI entrypoint, or the worker's
+  `async def main()` — constructs the shared engine and `async_sessionmaker` **once**, from
+  `DatabaseConfig`.
+- It injects sessions (or the session-factory boundary) and the concrete repositories into
+  ingestion, intelligence, and delivery wiring. For delivery this is the existing
+  `create_app()` DI-parameter pattern (the same shape as `readiness_probes`); the read
+  repository is passed in typed as the `shared/` Protocol.
+- **HTTP route modules never construct an engine** and never import a private ORM adapter.
+  Infrastructure reaches a handler only through a typed FastAPI dependency (ADR 0010).
+- The **worker** and **API** are separate processes and may each hold their **own
+  process-local pool**. Within a single process, modules **must not** create separate
+  competing pools — they share the one the composition root built.
+- Unit tests pass an in-memory fake of the read Protocol (ADR 0010: "tests use an in-memory
+  fake"; "no Postgres adapter exists merely to raise `NotImplementedError`").
+
+`shared/db/`, `shared/config.py`, `shared/repositories.py`, and `delivery/api/app.py` are all
+coordination-controlled files (ADR 0010 §"Parallel-work boundaries"); the implementation PR
+rebases on current `main`, reruns `make ci`, and the `shared/` additions get peer review
+(`AGENTS.md`).
 
 ### 13. Transactions and concurrency
 
@@ -692,15 +768,24 @@ contains exactly:
 - **`uv.lock`** — regenerated; prove `uv lock --check` and a locked non-editable install
   (`uv sync --locked --no-editable`), and run `pip-audit` after resolution (same bar
   ADR 0007 / ADR 0010 set).
-- **`alembic.ini` + `alembic/`** — `env.py` (async, via `connection.run_sync`), one initial
-  migration `alembic/versions/0001_source_items_and_document_snapshots.py`. Hand-written, not
-  autogenerated — autogenerate does not reliably emit `text[]` columns or trigger DDL.
-- **`src/ai_daily_digest/ingestion/db/`** — `metadata.py` (a `MetaData` with a naming
-  convention so constraint names are deterministic), `models.py` (`SourceItemRow`,
-  `DocumentSnapshotRow` as SQLAlchemy 2.0 mapped classes mirroring the Pydantic contract),
-  `engine.py` (`create_async_engine` + `async_sessionmaker` from a `DatabaseConfig`),
-  `repository.py` (`PostgresSourceItemRepository` implementing the write protocol and the
-  shared read protocol).
+- **`alembic.ini` + `alembic/`** — **shared infrastructure** (top-level, `script_location`
+  configured). `env.py` (async, via `connection.run_sync`) sets
+  `target_metadata = shared.db.metadata` and imports every approved module's ORM model modules
+  so all tables are registered against that one `MetaData`. One initial migration
+  `alembic/versions/0001_source_items_and_document_snapshots.py` — **authored by Person A**
+  because it creates ingestion-owned tables — hand-written, not autogenerated (autogenerate
+  does not reliably emit `text[]` columns or trigger DDL). Exactly one `alembic_version`
+  history for the database (section 12.5).
+- **`src/ai_daily_digest/shared/db/`** — `__init__.py`; `metadata.py` (the one shared
+  `DeclarativeBase`/`MetaData` plus deterministic naming convention that every module's ORM
+  models register against); `engine.py` (`create_async_engine` + `async_sessionmaker` from a
+  `DatabaseConfig` — one engine, one pool, one session-factory boundary per process). No
+  import connects to the database (section 12.3).
+- **`src/ai_daily_digest/ingestion/db/`** — `models.py` (`SourceItemRow`,
+  `DocumentSnapshotRow`, SQLAlchemy 2.0 mapped classes registered against
+  `shared.db.metadata`, mirroring the Pydantic contract), `repository.py`
+  (`PostgresSourceItemRepository` implementing the ingestion write protocol and the shared
+  read protocol, taking an injected `AsyncSession` — never its own engine).
 - **`src/ai_daily_digest/ingestion/persistence.py`** — the ingestion write `Protocol`.
 - **`src/ai_daily_digest/shared/repositories.py`** — the cross-module read `Protocol`
   returning `SourceItem` (peer-reviewed `shared/` change).
@@ -738,7 +823,8 @@ contains exactly:
 - FastAPI domain routes; `GET /v1/updates`; cursor route integration;
 - collectors and any external network call;
 - pgvector, embeddings, or any vector table;
-- intelligence persistence (`facts`, `changes`, `digests`, …);
+- intelligence persistence — `intelligence/db/` models/repositories and any
+  `facts`/`changes`/`digests` tables (a later intelligence-persistence ADR + PR);
 - subscriptions and email tables;
 - production deployment or cloud provisioning.
 
@@ -775,6 +861,11 @@ the implementation PR.
   run under a separate owner role, is a **production gate**, not optional hardening.
 - The cross-module read Protocol in `shared/` follows the `snapshot_resolver` precedent and
   keeps `delivery/api/` free of any `ingestion` import.
+- The engine, session factory, and `MetaData` live in `shared/db/`, so the later
+  intelligence-persistence ADR reuses the same connection pool and metadata instead of
+  importing `ingestion.db` internals or standing up a second competing engine. Concrete models
+  and repositories stay module-owned, and Alembic keeps one migration timeline for the whole
+  database.
 - Integration tests need a real PostgreSQL in CI and (optionally) locally; the inner
   `make check` loop stays database-free and fast.
 - A separate vector service remains an option if measured scale or features require it
@@ -805,7 +896,12 @@ the implementation PR.
   `env.py` are well-documented SQLAlchemy 2.0 patterns; the risk is familiarity, not
   stability.
 - **`shared/` and `delivery/api/app.py` are coordination files** — the implementation PR
-  must rebase on current `main` and rerun `make ci` (ADR 0010).
+  must rebase on current `main` and rerun `make ci` (ADR 0010). `shared/db/` is new
+  peer-reviewed shared code.
+- **Shared-kernel registration discipline** — Alembic's `env.py` must import every module's
+  ORM model modules; a module that adds tables without registering them against
+  `shared.db.metadata` breaks autogenerate and risks a divergent schema. Recorded as a
+  reviewer checklist item alongside "trigger maintenance" above.
 
 ## Team acceptance checklist
 
@@ -813,14 +909,21 @@ The implementation choices are no longer left for the coding PR to invent. Revie
 or request a specific change to this ADR before implementation begins:
 
 1. **Person A / ingestion:** confirm source-item identity and mutable columns, list
-   normalization, per-item transaction behaviour, and immutable snapshot semantics.
+   normalization, per-item transaction behaviour, immutable snapshot semantics, and authoring
+   the first (ingestion-table) Alembic migration.
 2. **Person B / intelligence:** confirm stored snapshot content is mandatory, provenance
-   cannot be deleted or overwritten, and the future database-backed snapshot resolver is a
-   separate implementation concern.
-3. **Person C / delivery:** confirm async repository access, shared read Protocol, readiness
-   wiring, and the exact ordering index required by `GET /v1/updates`.
+   cannot be deleted or overwritten, the future database-backed snapshot resolver is a
+   separate implementation concern, and — resolving the §12.3 review comment — that the
+   `shared/db/` engine/session-factory/`MetaData` kernel lets the later intelligence-
+   persistence ADR reuse one connection pool and one metadata without importing `ingestion.db`
+   or building a second engine.
+3. **Person C / delivery:** confirm async repository access, the shared read Protocol, the
+   composition root injecting sessions into `create_app()` (routes construct no engine),
+   readiness wiring, and the exact ordering index required by `GET /v1/updates`.
 4. **All reviewers:** confirm SQLAlchemy 2 + Alembic + Psycopg 3, PostgreSQL 17 in the
-   existing CI test job, the PL/pgSQL immutability triggers and their stated limits, the
+   existing CI test job, the `shared/db/` kernel (one engine / pool / session factory /
+   `MetaData` per process) with shared Alembic ownership and a single `alembic_version`
+   history, the PL/pgSQL immutability triggers and their stated limits, the
    restricted-runtime-role production gate, the temporary-database integration-test isolation
    strategy, and the Phase-1 pool/timeouts.
 5. **ADR placement:** these details remain an amendment to ADR 0002 rather than creating
