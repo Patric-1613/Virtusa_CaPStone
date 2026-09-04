@@ -20,7 +20,7 @@ Use the following combination for the seven-day MVP:
 | React/Vite frontend | Render Static Site, Free | Build and serve the static frontend. |
 | FastAPI service | Render Web Service, Free | Serve health/readiness and later `/v1` routes. |
 | PostgreSQL | Render Postgres, Free | Temporary MVP/demo data only. |
-| Scheduled pipeline | Manual command | Do not create a Render Cron Job while the project must remain at zero cost. |
+| Scheduled pipeline | Authorised operator's local CLI | Run the documented pipeline command from an authorised team member's local checkout; do not create a Render Cron Job or public HTTP trigger while the project must remain at zero cost. |
 | Transactional email | Resend, Free | Send confirmation, unsubscribe, and digest test emails over the HTTPS API. |
 
 This selection keeps deployment understandable for a three-person capstone and matches the
@@ -55,12 +55,23 @@ cron service can be added after the worker command is stable and its idempotency
 1. Select `free` explicitly for the web service and PostgreSQL; do not rely on dashboard defaults.
 2. Do not create a paid service, cron service, disk, or larger database without a recorded team
    decision.
-3. Run the daily collection/digest command manually for the demonstration.
+3. Run the daily collection/digest command manually from an authorised team member's local
+   checkout for the demonstration. Supply required values through that operator's untracked local
+   environment; never expose the command through an unauthenticated public endpoint.
 4. Warm the API with a health request shortly before a live demonstration, while still treating
    cold-start behavior as expected rather than masking readiness failures.
 5. Export through an approved migration process or move to durable PostgreSQL before the 30-day
    expiry. The free database is not the long-term system of record promised by ADR 0002.
 6. Keep the application stateless outside PostgreSQL; never rely on Render's local filesystem.
+
+### Manual pipeline execution boundary
+
+For the zero-cost MVP, an authorised team member runs the documented collection/digest CLI command
+from a local repository checkout. The operator supplies deployment configuration through an
+untracked local environment and monitors the command directly. This is an operational action, not
+an API route: the command must not be wrapped in or exposed through an unauthenticated public HTTP
+endpoint. Any later remote or scheduled trigger requires a separate security decision covering
+authentication, authorisation, replay protection, rate limits, audit logging, and secret access.
 
 ## Resend free-tier constraints
 
@@ -111,12 +122,14 @@ and sit behind the delivery email adapter.
 |---|---|---|---|
 | Render | Free Static Site, Web Service, and temporary PostgreSQL | One dashboard and simple Git deployment, but cold starts and a database that expires after 30 days. Cron costs at least USD 1/month. | **Recommended for the seven-day demo.** |
 | Railway | Free plan with USD 1 of monthly usage credit and one small replica | The credit can be exhausted by an API/database combination; stronger workspace collaboration is associated with paid plans. See [Railway plans](https://docs.railway.com/pricing/plans). | Convenient fallback, but less predictable as a zero-cost shared stack. |
-| Koyeb | One free 512 MB Web Service and one free database instance | Free service scales to zero after one hour; one free application instance cannot also provide a separate worker; Starter organizations are limited to one member and require a valid payment method. See [instances](https://www.koyeb.com/docs/reference/instances), [databases](https://www.koyeb.com/docs/databases), and [organizations](https://www.koyeb.com/docs/reference/organizations). | Viable technical fallback if Render access fails, with weaker team ergonomics. |
+| Koyeb | One free 512 MB Web Service and one free database limited to 5 compute hours per month | The free database sleeps after 5 minutes of inactivity and currently supports PostgreSQL 14–16, not the PostgreSQL 17 baseline required by ADR 0002. The free service scales to zero after one hour; one free application instance cannot also provide a separate worker; Starter organizations are limited to one member and require a valid payment method. See [instances](https://www.koyeb.com/docs/reference/instances), [databases](https://www.koyeb.com/docs/databases), and [organizations](https://www.koyeb.com/docs/reference/organizations). | **Not a direct fallback.** Requires PostgreSQL compatibility validation and explicit architecture approval before use, in addition to accepting weaker team ergonomics. |
 | Render plus Supabase PostgreSQL | Render hosts the UI/API; Supabase Free supplies a 500 MB PostgreSQL database | Avoids Render's 30-day database expiry, but introduces a second provider. Free Supabase projects pause after one week of inactivity and have no automatic backups. See [Supabase pricing](https://supabase.com/pricing). | Best zero-cost fallback if the database must survive beyond 30 days. |
 
-Do not switch database providers after migrations begin without checking PostgreSQL extension,
-connection, migration, backup, and data-export compatibility. ADR 0002 remains authoritative for
-the storage model regardless of host.
+Do not switch database providers after migrations begin without checking PostgreSQL version,
+extension, connection, migration, backup, and data-export compatibility. In particular, Koyeb's
+current PostgreSQL 14–16 range does not satisfy ADR 0002's PostgreSQL 17 baseline without an
+approved compatibility decision. ADR 0002 remains authoritative for the storage model regardless
+of host.
 
 ### Transactional email
 
