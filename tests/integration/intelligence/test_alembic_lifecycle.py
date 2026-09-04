@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import alembic.command
 import pytest
@@ -12,6 +15,16 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ai_daily_digest.shared.db.engine import create_engine
+
+
+def run_async(coro_fn: Callable[..., Coroutine[Any, Any, None]]) -> Callable[..., None]:
+    """Run async test in event loop."""
+
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        asyncio.run(coro_fn(*args, **kwargs))
+
+    return wrapper
+
 
 pytestmark = pytest.mark.integration
 
@@ -64,7 +77,7 @@ EXPECTED_TRIGGERS = {
 }
 
 
-@pytest.mark.asyncio
+@run_async
 async def test_alembic_upgrade_downgrade_lifecycle() -> None:
     """Verify upgrade -> downgrade base -> upgrade head lifecycle against PostgreSQL."""
     config = Config("alembic.ini")
