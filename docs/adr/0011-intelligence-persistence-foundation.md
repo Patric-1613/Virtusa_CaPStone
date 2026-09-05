@@ -1,6 +1,6 @@
 # 0011 — Intelligence persistence foundation (facts, changes, digests)
 
-Status: Proposed (authored by Person B; review required from Persons A and C)
+Status: Accepted by Person A (Patric, 2026-09-05) and Person B (author). Person C (Chamath) review deferred -- tracked in issue #68, to be completed when available.
 Date: 2026-09-04
 
 > **Architecture alignment with ADR 0002 (amendment merged in PR #48; Status: Accepted by Persons A, B, and C via PR #65):**
