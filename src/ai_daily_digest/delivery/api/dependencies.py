@@ -12,6 +12,9 @@ from typing import Protocol, cast
 
 from fastapi import Request
 
+from ai_daily_digest.delivery.api.pagination import CursorCodec
+from ai_daily_digest.shared.repositories import SourceItemFeedRepository
+
 LOGGER = logging.getLogger(__name__)
 
 _SAFE_DEPENDENCY_NAME = re.compile(r"\A[a-z][a-z0-9_-]{0,63}\Z")
@@ -108,3 +111,19 @@ def get_readiness_registry(request: Request) -> ReadinessRegistry:
 def get_request_id(request: Request) -> uuid.UUID:
     """Return the UUID v7 allocated once by request middleware."""
     return cast(uuid.UUID, request.state.request_id)
+
+
+def get_cursor_codec(request: Request) -> CursorCodec:
+    """Resolve the application-scoped pagination cursor codec."""
+    codec = getattr(request.app.state, "cursor_codec", None)
+    if codec is None:
+        raise RuntimeError("CursorCodec is not configured on the application state")
+    return cast(CursorCodec, codec)
+
+
+def get_source_item_feed_repository(request: Request) -> SourceItemFeedRepository:
+    """Resolve the application-scoped source item feed repository."""
+    repo = getattr(request.app.state, "source_item_feed_repository", None)
+    if repo is None:
+        raise RuntimeError("SourceItemFeedRepository is not configured on the application state")
+    return cast(SourceItemFeedRepository, repo)
