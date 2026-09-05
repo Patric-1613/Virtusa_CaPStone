@@ -15,6 +15,7 @@ discipline" -- a reviewer checklist item for every future migration).
 from __future__ import annotations
 
 import asyncio
+import logging
 from logging.config import fileConfig
 
 from sqlalchemy import Connection
@@ -33,7 +34,28 @@ from alembic import context
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # fileConfig() reconfigures the ROOT logger's handlers/level from
+    # alembic.ini's [logger_root] section unconditionally -- passing
+    # disable_existing_loggers=False only protects OTHER, unlisted
+    # loggers; the root logger is explicitly listed, so its handlers are
+    # replaced regardless. Every integration test that runs a migration
+    # (test_migrations.py, conftest.py's session fixture) calls into
+    # this module through run_alembic() -- observed on CI: the first
+    # migration silently stripped pytest's own caplog handler off the
+    # root logger, breaking every LATER test's caplog assertions for
+    # the rest of that pytest process (6 unrelated failures, none in
+    # this PR's own tests, all "caplog.text" empty). Saving and
+    # restoring the root logger's handlers/level around the call keeps
+    # alembic.ini's [logger_alembic]/[logger_sqlalchemy] formatting for
+    # a human running `alembic upgrade` from the CLI, while guaranteeing
+    # a host process's own root-logger configuration -- pytest's or
+    # anything else's -- always round-trips unchanged.
+    _root_logger = logging.getLogger()
+    _preserved_handlers = list(_root_logger.handlers)
+    _preserved_level = _root_logger.level
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
+    _root_logger.handlers = _preserved_handlers
+    _root_logger.setLevel(_preserved_level)
 
 # DATABASE_URL is read from the environment, never from alembic.ini --
 # ADR 0002 section 14: "DATABASE_URL stays an environment setting with
