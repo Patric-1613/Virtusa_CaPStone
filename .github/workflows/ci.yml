@@ -40,6 +40,30 @@ jobs:
     name: tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # docs/adr/0002-postgres-pgvector.md section 15: "the tests job gains
+    # a postgres:17 service container (with a health check) ... CI
+    # always runs the real integration suite; it is never skipped
+    # there." -m "not live" below already includes -m integration, so no
+    # separate step is needed to run it -- but the job (and therefore
+    # this whole workflow run) must fail if the database cannot be
+    # provisioned, which the health check below enforces before any
+    # test step starts.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ai_daily_digest
+          POSTGRES_PASSWORD: ai_daily_digest
+          POSTGRES_DB: ai_daily_digest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_daily_digest -d ai_daily_digest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ai_daily_digest:ai_daily_digest@localhost:5432/ai_daily_digest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
