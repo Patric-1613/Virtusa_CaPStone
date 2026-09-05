@@ -14,19 +14,11 @@ package needs the schema to stay present for the whole session.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.integration.conftest import _base_database_url as _database_url_from_env
-from tests.integration.conftest import (
-    create_temporary_database,
-    drop_temporary_database,
-    run_alembic_async,
-)
+from tests.integration.conftest import run_alembic_async
 
 pytestmark = pytest.mark.integration
 
@@ -44,18 +36,6 @@ _APPLICATION_FUNCTIONS = (
     "document_snapshots_block_truncate",
 )
 _KEYSET_INDEX = "ix_source_items_first_fetched_at_id"
-
-
-@pytest_asyncio.fixture
-async def own_temporary_database() -> AsyncIterator[str]:
-    base_url = _database_url_from_env()
-    if base_url is None:
-        pytest.skip("set DATABASE_URL to run PostgreSQL integration tests")
-    database_url = await create_temporary_database(base_url)
-    try:
-        yield database_url
-    finally:
-        await drop_temporary_database(base_url, database_url)
 
 
 async def _table_names(database_url: str) -> set[str]:

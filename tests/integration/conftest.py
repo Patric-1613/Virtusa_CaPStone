@@ -230,6 +230,19 @@ async def drop_temporary_database(base_url: str, database_url: str) -> None:
         await admin_engine.dispose()
 
 
+@pytest_asyncio.fixture
+async def own_temporary_database() -> AsyncIterator[str]:
+    """Create a run-unique dedicated unmigrated PostgreSQL database for tests that drive their own migration lifecycle."""
+    base_url = _base_database_url()
+    if base_url is None:
+        pytest.skip("set DATABASE_URL to run PostgreSQL integration tests")
+    database_url = await create_temporary_database(base_url)
+    try:
+        yield database_url
+    finally:
+        await drop_temporary_database(base_url, database_url)
+
+
 @pytest_asyncio.fixture(scope="session")
 async def temporary_database_url() -> AsyncIterator[str]:
     """Create a run-unique PostgreSQL database, migrate it to `head`,
