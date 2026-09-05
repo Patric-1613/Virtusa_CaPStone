@@ -1,15 +1,14 @@
 # 0002 — PostgreSQL system of record, deferred pgvector, and the Phase-1 persistence foundation
 
-Status: Proposed
+Status: Accepted by Persons A, B, and C
 Date: 2026-08-24
 Amended: 2026-09-04 — narrowed from a direction ("use PostgreSQL and pgvector") into a
-concrete Phase-1 persistence decision the team can review before any SQLAlchemy model,
-Alembic migration, or database dependency is added. Status stays **Proposed**; it is not
-Accepted. Persons A, B, and C must review before implementation begins.
+concrete Phase-1 persistence decision the team reviewed before any SQLAlchemy model,
+Alembic migration, or database dependency is added.
 
 ## Status detail
 
-Person A (ingestion review steward) authors this amendment because the first persistence
+Person A (ingestion review steward) authored this amendment because the first persistence
 tables (`source_items`, `document_snapshots`) are ingestion-owned. Persons B (intelligence)
 and C (delivery) are review stewards: the decision introduces a shared database kernel
 (`shared/db/` — engine, session factory, `MetaData`; section 12.3) that all three modules
@@ -19,14 +18,47 @@ the ORM must mirror its existing models exactly), touches a shared integration f
 PR 4 (`GET /v1/updates`), tracked in issue #47 with Person B as the active author and
 Persons A and C as review stewards.
 
-This amendment adds **no code, no dependency, no migration, no route, and no collector.** It
+This amendment added **no code, no dependency, no migration, no route, and no collector.** It
 records decisions and their rejected alternatives so the implementation PR builds a
 pre-agreed shape instead of inventing one under review pressure — the same discipline
 [ADR 0007](0007-uuid-v7-identifier-strategy.md) and ADR 0008 already used.
 
+**Acceptance record.** All three module owners have explicitly accepted this ADR as it
+stands on `main` today, including the Finding 1/Finding 2 concurrency-ordering corrections
+merged through PR #59. The decisive, currently-standing evidence for Persons B and C is their
+formal approval of PR #59 — the PR that produced the exact text now on `main` — not their
+earlier reviews of PR #48, one of which (Person C's second PR #48 review) was superseded by a
+later push and no longer stands as a formal approval on its own:
+
+- **Person A / ingestion:** author and active implementer of this amendment and its PR #59
+  correction; acceptance is recorded by authorship and by opening the persistence-foundation
+  implementation work against this exact text.
+- **Person B / intelligence (`@SujinJK`):** formally approved PR #59's ADR 0002/0011
+  concurrency-ordering correction — "All CI checks are green and the test suites are
+  comprehensive. **Approved to merge!**" —
+  <https://github.com/Patric-1613/Virtusa_CaPStone/pull/59#pullrequestreview-5116759813>.
+  (Earlier, also formally approved the original amendment on PR #48:
+  <https://github.com/Patric-1613/Virtusa_CaPStone/pull/48#pullrequestreview-5112901833>, and
+  recorded "Decision: Accept." in review comments at
+  <https://github.com/Patric-1613/Virtusa_CaPStone/pull/48#issuecomment-5539469734>.)
+- **Person C / delivery (`@chamath-wijayasundara`):** formally approved PR #59's
+  concurrency-ordering correction — "The documentation is consistent with the transaction,
+  immutability, pagination and delivery boundaries... Approved from the Delivery review
+  perspective." —
+  <https://github.com/Patric-1613/Virtusa_CaPStone/pull/59#pullrequestreview-5116058377>.
+  (Earlier, reviewed the original PR #48 amendment across two rounds — first requesting five
+  changes, then confirming all five were resolved — at
+  <https://github.com/Patric-1613/Virtusa_CaPStone/pull/48#pullrequestreview-5112076827> and
+  <https://github.com/Patric-1613/Virtusa_CaPStone/pull/48#pullrequestreview-5112827871>.)
+
+No content in this ADR has changed since the PR #59 commit both reviewers approved
+(`git log -- docs/adr/0002-postgres-pgvector.md` shows `006965f` as the latest commit
+touching this file); this status update records that already-given acceptance, not a new
+round of review.
+
 ## Phase-1 decision summary
 
-The following is the exact proposal Persons A, B, and C are being asked to accept:
+The following is the exact Phase-1 decision Persons A, B, and C have accepted:
 
 | Concern | Phase-1 decision |
 |---|---|
@@ -979,8 +1011,9 @@ the implementation PR.
 
 ## Team acceptance checklist
 
-The implementation choices are no longer left for the coding PR to invent. Reviewers accept
-or request a specific change to this ADR before implementation begins:
+The implementation choices are no longer left for the coding PR to invent. Reviewers
+confirmed the items below, requesting specific changes along the way (see "Acceptance
+record" above and PR #48/PR #59), before this ADR reached Accepted status:
 
 1. **Person A / ingestion:** confirm source-item identity and mutable columns, list
    normalization, per-item transaction behaviour, immutable snapshot semantics, and authoring
@@ -1001,7 +1034,7 @@ or request a specific change to this ADR before implementation begins:
    restricted-runtime-role production gate, the temporary-database integration-test isolation
    strategy, and the Phase-1 pool/timeouts.
 5. **ADR placement:** these details remain an amendment to ADR 0002 rather than creating
-   ADR 0011. If a reviewer requires a split, request it before accepting this ADR.
+   ADR 0011. No reviewer requested a split before acceptance.
 
 Acceptance approves the decisions, boundaries, implementation scope, and mandatory tests
 above. It does not approve pgvector, collectors, API routes, cloud deployment, or any item

@@ -178,6 +178,44 @@ constraint ([ADR 0008](adr/0008-cursor-pagination-contract.md) section 5.D).
 
 Collection and digest job controls are not public MVP endpoints. The scheduler invokes authenticated commands in the worker environment.
 
+## Updates endpoint contract (`GET /v1/updates`)
+
+Returns a cursor-paginated page of source update summaries ordered by `(first_fetched_at DESC, id DESC)`.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | `20` | Maximum items to return (`1 <= limit <= 100`). Invalid limit returns HTTP 422. |
+| `cursor` | string | `null` | Opaque HMAC-signed pagination cursor from a previous page's `next_cursor`. Invalid or tampered cursor returns HTTP 400 (`invalid_cursor`). |
+| `publisher` | string | `null` | Filter by publisher name (case-sensitive, trimmed, Unicode NFC-normalized). |
+| `source_id` | string | `null` | Filter by source identifier (case-sensitive, trimmed, Unicode NFC-normalized). |
+
+### Response schema (`Page[UpdateSummary]`)
+
+List endpoints return public `UpdateSummary` models, strictly omitting internal fields (`dedupe_key`, raw storage paths, body content).
+
+```json
+{
+  "items": [
+    {
+      "id": "01a032cd-23e0-7cf2-83e9-6d6f9f9326f2",
+      "source_id": "openai_news",
+      "publisher": "OpenAI",
+      "title": "Example announcement",
+      "canonical_url": "https://example.com/news/example",
+      "published_at": "2026-08-24T08:00:00Z",
+      "first_fetched_at": "2026-08-24T08:05:00Z",
+      "event_id": null,
+      "tags": ["model_release"],
+      "language": "en",
+      "latest_snapshot_id": "01a032cd-23e0-76d3-a27c-f608ccc02226"
+    }
+  ],
+  "next_cursor": "eyJ2IjoxLCJyIjoidXBkYXRlcyIsInMiOiJmaXJzdF9mZXRjaGVkX2F0OmRlc2MsaWQ6ZGVzYyJ9.signature"
+}
+```
+
 ## Normalized source-item contract
 
 ```json
