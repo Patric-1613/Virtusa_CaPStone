@@ -613,3 +613,98 @@ async def test_multi_field_batch_shares_single_changeset_id(
     cs = await database_session.get(ChangeSetModel, batch_id)
     assert cs is not None
     assert cs.id == batch_id
+
+
+@pytest.mark.asyncio
+async def test_detect_and_persist_changes_skip_paths_never_call_new_id(
+    database_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0007: change_set_id (and each Change's own id) must be allocated
+    lazily -- only once at least one real Change is confirmed. This proves
+    the stronger claim Patric's review asked for: first observations,
+    unchanged values, and losing candidates must not even *call* the id
+    generator, not merely avoid writing a database row. Proven by counting
+    calls to new_id() in repository.py's own module namespace (the name
+    detect_and_persist_changes() actually resolves at call time) across
+    all three skip scenarios, then confirming a genuine change does call it.
+    """
+    call_count = 0
+
+    def _counting_new_id() -> uuid.UUID:
+        nonlocal call_count
+        call_count += 1
+        return new_id()
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.db.repository.new_id", _counting_new_id)
+
+    store = PostgresFactStore(database_session)
+    subject = Subject(company="IdGenCo", product="LazyAllocEngine")
+
+    # --- Scenario A: first observation (prior is None) ---
+    _, snap1 = await _create_source_and_snapshot(database_session, fetched_at=BASE_TIME)
+    f1 = ExtractedFact(
+        id=new_id(),
+        snapshot_id=snap1.id,
+        field="pricing",
+        value="$10",
+        disclosure_status=DisclosureStatus.DISCLOSED,
+        extraction_method=ExtractionMethod.DETERMINISTIC,
+    )
+    changes_a = await store.detect_and_persist_changes(
+        subject, [f1], snapshot_observed_at=BASE_TIME, detected_at=BASE_TIME
+    )
+    assert changes_a == []
+    assert call_count == 0, f"first observation must not call new_id(); got {call_count} call(s)"
+
+    # --- Scenario B: unchanged value (same value/disclosure_status, later snapshot) ---
+    t2 = BASE_TIME + timedelta(hours=1)
+    _, snap2 = await _create_source_and_snapshot(database_session, fetched_at=t2)
+    f2 = ExtractedFact(
+        id=new_id(),
+        snapshot_id=snap2.id,
+        field="pricing",
+        value="$10",  # same value as f1 -- advances the pointer, emits no Change
+        disclosure_status=DisclosureStatus.DISCLOSED,
+        extraction_method=ExtractionMethod.DETERMINISTIC,
+    )
+    changes_b = await store.detect_and_persist_changes(
+        subject, [f2], snapshot_observed_at=t2, detected_at=t2
+    )
+    assert changes_b == []
+    assert call_count == 0, f"unchanged value must not call new_id(); got {call_count} call(s)"
+
+    # --- Scenario C: losing candidate (older than the current pointer, set by B above) ---
+    t_old = BASE_TIME - timedelta(hours=5)
+    _, snap_old = await _create_source_and_snapshot(database_session, fetched_at=t_old)
+    f_old = ExtractedFact(
+        id=new_id(),
+        snapshot_id=snap_old.id,
+        field="pricing",
+        value="$999",
+        disclosure_status=DisclosureStatus.DISCLOSED,
+        extraction_method=ExtractionMethod.DETERMINISTIC,
+    )
+    changes_c = await store.detect_and_persist_changes(
+        subject, [f_old], snapshot_observed_at=t_old, detected_at=t_old
+    )
+    assert changes_c == []
+    assert call_count == 0, f"losing candidate must not call new_id(); got {call_count} call(s)"
+
+    # --- Sanity check: a genuine change DOES call new_id() (change_set_id + Change.id) ---
+    t3 = BASE_TIME + timedelta(hours=2)
+    _, snap3 = await _create_source_and_snapshot(database_session, fetched_at=t3)
+    f3 = ExtractedFact(
+        id=new_id(),
+        snapshot_id=snap3.id,
+        field="pricing",
+        value="$20",  # genuine change from $10
+        disclosure_status=DisclosureStatus.DISCLOSED,
+        extraction_method=ExtractionMethod.DETERMINISTIC,
+    )
+    changes_d = await store.detect_and_persist_changes(
+        subject, [f3], snapshot_observed_at=t3, detected_at=t3
+    )
+    assert len(changes_d) == 1
+    assert call_count >= 2, (
+        f"a genuine Change must allocate a change_set_id and a Change id; got {call_count} call(s)"
+    )
