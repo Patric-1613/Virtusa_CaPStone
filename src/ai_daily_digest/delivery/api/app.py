@@ -6,6 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from ai_daily_digest.delivery.api.dependencies import (
     ReadinessProbe,
@@ -38,6 +39,7 @@ def create_app(  # pylint: disable=too-many-arguments
     source_item_feed_repository: SourceItemFeedRepository | None = None,
     cursor_codec: CursorCodec | None = None,
     cursor_signing_key: bytes | None = None,
+    frontend_origin: str | None = None,
 ) -> FastAPI:
     """Create an independent, side-effect-free FastAPI application instance."""
     readiness_registry = build_readiness_registry(
@@ -56,6 +58,15 @@ def create_app(  # pylint: disable=too-many-arguments
     )
     app.state.readiness_registry = readiness_registry
     app.state.source_item_feed_repository = source_item_feed_repository
+
+    if frontend_origin is not None:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[frontend_origin],
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Accept", "Content-Type"],
+        )
 
     if cursor_codec is not None:
         app.state.cursor_codec = cursor_codec

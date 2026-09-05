@@ -1,0 +1,66 @@
+"""Production application-factory and CORS tests."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+import ai_daily_digest.delivery.api.production as production_module
+from ai_daily_digest.delivery.api.production import create_production_app
+
+FRONTEND_ORIGIN = "https://ai-daily-digest.onrender.com"
+
+
+def test_production_module_has_no_process_global_app() -> None:
+    assert not hasattr(production_module, "app")
+
+
+def test_production_factory_loads_environment_without_connecting_to_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FRONTEND_ORIGIN", FRONTEND_ORIGIN)
+    monkeypatch.setenv("DOCS_ENABLED", "false")
+    monkeypatch.setenv("PAGINATION_CURSOR_SECRET", "s" * 32)
+
+    client = TestClient(create_production_app())
+
+    assert client.get("/v1/health/live").json() == {"status": "ok"}
+    assert client.get("/v1/health/ready").json() == {"status": "ready", "checks": []}
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_cors_allows_only_configured_origin_and_never_allows_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FRONTEND_ORIGIN", FRONTEND_ORIGIN)
+    client = TestClient(create_production_app())
+
+    allowed = client.options(
+        "/v1/health/live",
+        headers={
+            "Origin": FRONTEND_ORIGIN,
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    lookalike = client.options(
+        "/v1/health/live",
+        headers={
+            "Origin": f"{FRONTEND_ORIGIN}.attacker.example",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == FRONTEND_ORIGIN
+    assert "access-control-allow-credentials" not in allowed.headers
+    assert lookalike.status_code == 400
+    assert "access-control-allow-origin" not in lookalike.headers
+    assert "access-control-allow-credentials" not in lookalike.headers
+
+
+def test_production_factory_rejects_missing_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+
+    with pytest.raises(ValueError, match="FRONTEND_ORIGIN is required"):
+        create_production_app()
