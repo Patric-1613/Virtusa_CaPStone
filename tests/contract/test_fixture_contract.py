@@ -8,6 +8,7 @@ docs/API_CONTRACT.md promises.
 
 import pytest
 
+from ai_daily_digest.intelligence.grounding import value_supported_by_quote
 from ai_daily_digest.intelligence.loaders import FixtureLoader
 
 pytestmark = pytest.mark.contract
@@ -96,3 +97,19 @@ def test_published_digest_has_no_unsupported_claims() -> None:
         if digest.status == "published":
             for claim in digest.claims:
                 assert claim.validation_status != "unsupported"
+
+
+def test_disclosed_extracted_facts_values_are_supported_by_quotes() -> None:
+    """ADR 0004 & PR #63 contract regression: every disclosed ExtractedFact
+    must have its asserted value grounded in its quoted_span per
+    value_supported_by_quote()."""
+    facts = FixtureLoader().load_facts()
+    assert len(facts) >= 1
+    for fact in facts:
+        if fact.disclosure_status == "disclosed" and fact.quoted_span is not None:
+            assert fact.value is not None, (
+                f"Fact {fact.id} has disclosure_status='disclosed' but value=None"
+            )
+            assert value_supported_by_quote(fact.value, fact.quoted_span), (
+                f"Fact {fact.id} ({fact.field}={fact.value!r}) is not grounded in quoted_span {fact.quoted_span!r}"
+            )

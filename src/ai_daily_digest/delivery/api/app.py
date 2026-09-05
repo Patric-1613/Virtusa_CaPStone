@@ -31,20 +31,56 @@ LOGGER = logging.getLogger(__name__)
 type RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
-def create_app(  # pylint: disable=too-many-arguments
+def create_app(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     *,
     docs_enabled: bool = True,
     required_dependencies: Iterable[str] = (),
     readiness_probes: Mapping[str, ReadinessProbe] | None = None,
+    database_readiness_probe: ReadinessProbe | None = None,
     source_item_feed_repository: SourceItemFeedRepository | None = None,
     cursor_codec: CursorCodec | None = None,
     cursor_signing_key: bytes | None = None,
     frontend_origin: str | None = None,
 ) -> FastAPI:
-    """Create an independent, side-effect-free FastAPI application instance."""
+    """Create an independent, side-effect-free FastAPI application instance.
+
+    `database_readiness_probe` and `source_item_feed_repository` are both
+    optional and both `None` by default: a foundation-only app with no
+    database configured passes neither, and `required_dependencies` stays
+    exactly what the caller passed. When `database_readiness_probe` **is**
+    given, it is wired into readiness under the name `"database"` and that
+    name is added to the required set automatically (ADR 0002 section 14:
+    "When `DATABASE_URL` is configured and any route needs the database,
+    `'database'` goes into `required_dependencies`") -- a caller that
+    configures the probe does not also need to remember to list
+    `"database"` itself.
+
+    `source_item_feed_repository`, when given, is stored on `app.state`
+    and mounts `GET /v1/updates` (ADR 0008 PR 4). Mounting is
+    fail-closed on cursor configuration: a configured repository with
+    neither `cursor_codec` nor `cursor_signing_key` raises `ValueError`
+    at `create_app()` time rather than serving pagination with no way to
+    produce a valid cursor.
+
+    `frontend_origin`, when given, registers `CORSMiddleware` restricted
+    to that exact origin without credentials, permitting GET and POST
+    methods and standard headers.
+    """
+    merged_probes = dict(readiness_probes or {})
+    # A tuple, not `set(required_dependencies)`: build_readiness_registry()
+    # itself rejects a duplicate name ("required dependency names must
+    # be unique") -- silently deduplicating here would swallow that
+    # caller mistake instead of surfacing it. "database" is appended
+    # only when it is not already present, so create_app() never
+    # introduces a duplicate of its own.
+    merged_required = tuple(required_dependencies)
+    if database_readiness_probe is not None:
+        merged_probes["database"] = database_readiness_probe
+        if "database" not in merged_required:
+            merged_required = (*merged_required, "database")
     readiness_registry = build_readiness_registry(
-        required_dependencies=required_dependencies,
-        probes=readiness_probes,
+        required_dependencies=merged_required,
+        probes=merged_probes,
     )
     app = FastAPI(
         title=API_TITLE,

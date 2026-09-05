@@ -64,3 +64,43 @@ def test_production_factory_rejects_missing_origin(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(ValueError, match="FRONTEND_ORIGIN is required"):
         create_production_app()
+
+
+def test_create_app_wires_both_database_readiness_probe_and_cors_middleware() -> None:
+    """Prove create_app retains dual contract: database probe in readiness and CORS middleware."""
+    from ai_daily_digest.delivery.api.app import create_app
+    from ai_daily_digest.delivery.api.dependencies import DependencyCheckResult
+
+    async def _db_probe() -> DependencyCheckResult:
+        return DependencyCheckResult(status="ok", latency_ms=1.5)
+
+    app = create_app(
+        database_readiness_probe=_db_probe,
+        frontend_origin=FRONTEND_ORIGIN,
+    )
+
+    # (a) "database" is in the required dependencies set and registered
+    registry = app.state.readiness_registry
+    assert "database" in registry.required_dependencies
+    assert "database" in registry.probes
+
+    # (b) Both readiness probe response and CORS options headers are active
+    client = TestClient(app)
+    ready_resp = client.get("/v1/health/ready")
+    assert ready_resp.status_code == 200
+    assert ready_resp.json() == {
+        "status": "ready",
+        "checks": [{"name": "database", "status": "ok", "latency_ms": 1.5}],
+    }
+
+    cors_resp = client.options(
+        "/v1/health/live",
+        headers={
+            "Origin": FRONTEND_ORIGIN,
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert cors_resp.status_code == 200
+    assert cors_resp.headers["access-control-allow-origin"] == FRONTEND_ORIGIN
+    assert "access-control-allow-credentials" not in cors_resp.headers
+

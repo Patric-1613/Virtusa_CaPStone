@@ -1,0 +1,29 @@
+# Local PostgreSQL for the persistence foundation
+# (docs/adr/0002-postgres-pgvector.md section 15, section 16). A stock
+# postgres:17 image -- no pgvector/pgvector image is needed yet
+# (section 2: pgvector is deferred from the first persistence PR).
+#
+# Usage: `make db-up` (see Makefile), or `docker compose up -d`.
+# Point DATABASE_URL (in your .env, copied from .env.example) at:
+#   postgresql+psycopg://ai_daily_digest:ai_daily_digest@localhost:5432/ai_daily_digest
+name: ai-daily-digest
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ai_daily_digest
+      POSTGRES_PASSWORD: ai_daily_digest
+      POSTGRES_DB: ai_daily_digest
+    ports:
+      - "5432:5432"
+    volumes:
+      - ai-daily-digest-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_daily_digest -d ai_daily_digest"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ai-daily-digest-postgres-data:

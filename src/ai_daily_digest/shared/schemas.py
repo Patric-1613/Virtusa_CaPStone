@@ -128,15 +128,32 @@ class SourceItem(BaseModel):
 
 
 class DocumentSnapshot(BaseModel):
-    """One immutable version of fetched content. content_text may be
-    omitted from list responses (see API_CONTRACT.md) — treat it as
-    Optional even though a stored snapshot always has one."""
+    """One immutable version of fetched content -- a raw source snapshot
+    is never mutated, only superseded by a new one (AGENTS.md: "Raw
+    source snapshots are immutable"). `model_config = ConfigDict(frozen=True)`
+    enforces that at the Python object level (`docs/adr/0002-postgres-pgvector.md`
+    section 9/16); PostgreSQL's own `BEFORE UPDATE`/`DELETE`/`TRUNCATE`
+    triggers enforce it at the storage layer once persistence exists.
+    `content_text` is required -- every *stored* snapshot has content; a
+    delivery list projection that omits the body is a separate, narrower
+    response schema under `delivery/api/`, not this domain model."""
+
+    model_config = ConfigDict(frozen=True)
 
     id: Uuid7Id
     source_item_id: Uuid7Id
-    fetched_at: datetime
+    # fetched_at: the value ADR 0002 section 13 compares (alongside `id`)
+    # to decide which of two concurrently-arriving snapshots is newest
+    # when advancing a source item's latest-snapshot pointer -- a
+    # business-ordering timestamp exactly like `SourceItem.first_fetched_at`,
+    # just not one `/v1/updates` itself paginates on. Reuses
+    # `OrderingTimestamp` rather than a second, near-identical Annotated
+    # alias with the same rule set (reject naive datetimes, normalize
+    # aware ones to UTC, preserve microseconds) -- one definition, so
+    # this and the pagination sort key cannot drift apart.
+    fetched_at: OrderingTimestamp
     content_hash: str  # sha256 content hash -- a hash, never a UUID (ADR 0007).
-    content_text: str | None = None
+    content_text: str
     raw_location: str | None = None
     etag: str | None = None
     last_modified: str | None = None

@@ -46,11 +46,40 @@ dependencies = [
   # fastapi: ADR 0010 selects FastAPI as the public HTTP/OpenAPI boundary.
   # The plain package is sufficient; the standard extra would add a server
   # runner and unrelated optional dependencies before they are needed.
-  "fastapi>=0.141.1",
   # uvicorn: Render needs an ASGI process runner for the tested production
   # application factory. The standard library and FastAPI do not ship one;
   # the plain package avoids unrelated optional server dependencies.
   "uvicorn>=0.35",
+  # --- persistence foundation (docs/adr/0002-postgres-pgvector.md) ---
+  # sqlalchemy: no standard-library ORM or typed query layer exists;
+  #   docs/ARCHITECTURE.md's technology baseline already names SQLAlchemy 2
+  #   for the shared `MetaData`/engine kernel (ADR 0002 section 3, 12.3).
+  #   The `[asyncio]` extra, not plain `sqlalchemy`, because SQLAlchemy's
+  #   OWN unconditional `greenlet` dependency (needed by every
+  #   `create_async_engine`/`AsyncSession` call, ADR 0002 section 17:
+  #   "greenlet arrives transitively... expected, not a separate direct
+  #   dependency") ships behind a `platform_machine` marker that lists
+  #   `aarch64` (Linux) but not `arm64` (macOS Apple Silicon) -- plain
+  #   `sqlalchemy>=2.0` silently installs with no greenlet at all on an
+  #   Apple Silicon dev machine, and every async engine call then fails
+  #   at runtime with "the greenlet library is required". The
+  #   `[asyncio]` extra's own greenlet requirement carries no such
+  #   marker, so it installs correctly on every supported platform.
+  "sqlalchemy[asyncio]>=2.0",
+  # alembic: no standard-library schema-migration tool exists; AGENTS.md
+  #   requires "Database changes use Alembic migrations; never edit
+  #   production tables manually" (ADR 0002 section 3, 12.5).
+  "alembic>=1.13",
+  # psycopg[binary]: no standard-library PostgreSQL driver exists.
+  #   ADR 0002 section 5 selects psycopg 3 specifically because it has
+  #   native sync AND async support in one package -- the async runtime
+  #   session and the synchronous Alembic env.py step share one driver,
+  #   rather than needing asyncpg (async-only) plus psycopg2 (sync-only,
+  #   maintenance mode) for the two paths. `[binary]` ships self-contained
+  #   wheels, so CI and a developer laptop need no system libpq (ADR 0002
+  #   section 5's "Deployment follow-up" defers the production packaging
+  #   choice, not this one).
+  "psycopg[binary]>=3.2",
 ]
 
 [dependency-groups]
@@ -68,6 +97,14 @@ dev = [
   # httpx: FastAPI/Starlette TestClient requires it. Declare the test boundary
   # directly rather than relying on the Anthropic SDK's transitive dependency.
   "httpx>=0.28.1",
+  # pytest-asyncio: the persistence foundation's repository, engine, and
+  #   integration tests call `AsyncSession`/`async_sessionmaker` coroutines
+  #   directly (not through a TestClient, which already hides its own event
+  #   loop) -- this project has no prior async test path. Explicit
+  #   `@pytest.mark.asyncio` (strict mode, not "auto") keeps every async
+  #   test declaring itself, matching this codebase's preference for
+  #   explicit over implicit.
+  "pytest-asyncio>=0.24",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -115,6 +152,10 @@ addopts = [
   "--cov-report=term-missing",
 ]
 testpaths = ["tests"]
+# Strict, not "auto": every async test names itself with
+# @pytest.mark.asyncio so an accidentally-undecorated `async def test_...`
+# fails collection instead of silently never running its body.
+asyncio_mode = "strict"
 markers = [
   "contract: shared-contract tests",
   "integration: tests that use a real infrastructure boundary",
