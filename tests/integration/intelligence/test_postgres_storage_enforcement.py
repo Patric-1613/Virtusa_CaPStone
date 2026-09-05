@@ -1362,3 +1362,97 @@ async def test_current_facts_first_write_race_concurrency(
     # Assertion 3: neither writer emitted a Change.
     assert not tx1_changes
     assert not tx2_changes
+
+
+# -----------------------------------------------------------------------------
+# 15. ensure_subject() Race: Two Workers Creating the Same New Subject
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ensure_subject_real_two_connection_concurrency(
+    open_database_session: _OpenSession,
+) -> None:
+    """Two connections race to create the *same brand-new* subject while
+    processing different fields (Patric's PR #67 review). ensure_subject()
+    used to be a plain check-then-act SELECT/INSERT: both connections would
+    see no existing row and both attempt the INSERT, and the second would
+    raise IntegrityError on the (company_key, product_key) primary key
+    instead of resolving to the row the first connection already created.
+
+    Tx1 holds its transaction open after inserting; Tx2's ensure_subject()
+    call genuinely blocks inside its own INSERT ... ON CONFLICT DO NOTHING
+    on PostgreSQL's own unique-index conflict handling (no advisory lock
+    needed here -- this is the database serializing two inserts racing on
+    the same key), then resumes once Tx1 commits. Proves:
+
+    1. Neither connection raises -- the loser's INSERT is a no-op, not an
+       IntegrityError.
+    2. Both resolve to the very same subjects row (same identity).
+    3. "First-seen display name wins": Tx2 deliberately passes a different
+       display-name casing for the same canonical key, and still gets back
+       Tx1's original display values, because Tx1 committed first.
+    4. Exactly one row exists afterward -- no duplicate.
+    """
+    tx1_done = asyncio.Event()
+    tx2_started = asyncio.Event()
+    tx1_result: list[SubjectModel] = []
+    tx2_result: list[SubjectModel] = []
+    errors: list[BaseException] = []
+
+    async def _run_tx1() -> None:
+        try:
+            async with open_database_session() as s1, s1.begin():
+                store1 = PostgresFactStore(s1)
+                sub1 = await store1.ensure_subject(
+                    Subject(company="RaceSubjectCo", product="NewProduct")
+                )
+                tx1_result.append(sub1)
+                # subjects row now exists but is uncommitted -- Tx2's own
+                # INSERT ... ON CONFLICT genuinely blocks on it below.
+                tx1_done.set()
+                await tx2_started.wait()
+                await asyncio.sleep(0.05)
+            # Commit happens here, at context exit.
+        except BaseException as exc:  # pylint: disable=broad-except
+            errors.append(exc)
+            raise
+
+    async def _run_tx2() -> None:
+        await tx1_done.wait()
+        try:
+            async with open_database_session() as s2, s2.begin():
+                store2 = PostgresFactStore(s2)
+                tx2_started.set()
+                # Different display-name casing for the same canonical key --
+                # blocks inside the INSERT until Tx1 commits, then resolves
+                # to Tx1's already-committed row via DO NOTHING + re-SELECT.
+                sub2 = await store2.ensure_subject(
+                    Subject(company="racesubjectco", product="NEWPRODUCT")
+                )
+                tx2_result.append(sub2)
+        except BaseException as exc:  # pylint: disable=broad-except
+            errors.append(exc)
+            raise
+
+    # Assertion 1: neither connection raises.
+    await asyncio.gather(_run_tx1(), _run_tx2())
+    assert not errors
+
+    # Assertion 2 & 3: both resolve to the same row, carrying Tx1's
+    # first-committed display values regardless of what Tx2 itself passed.
+    assert tx1_result and tx2_result
+    sub1, sub2 = tx1_result[0], tx2_result[0]
+    assert sub1.company_key == sub2.company_key == "racesubjectco"
+    assert sub1.product_key == sub2.product_key == "newproduct"
+    assert sub2.company == "RaceSubjectCo"
+    assert sub2.product == "NewProduct"
+
+    # Assertion 4: exactly one row exists -- no duplicate.
+    async with open_database_session() as verify_session:
+        result = await verify_session.execute(
+            select(SubjectModel).where(
+                SubjectModel.company_key == "racesubjectco",
+                SubjectModel.product_key == "newproduct",
+            )
+        )
+        rows = result.scalars().all()
+        assert len(rows) == 1

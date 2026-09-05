@@ -66,6 +66,18 @@ class PriorFactState:
     disclosure_status: str
 
 
+@dataclass(frozen=True)
+class _ChangeMaterial:
+    """Everything needed to build a real Change, short of the ids that must
+    stay lazily allocated (ADR 0007) -- see detect_and_persist_changes()."""
+
+    field: str
+    change_type: str
+    previous: FactObservation
+    current: FactObservation
+    confidence: Confidence
+
+
 class PostgresFactStore:
     """Concrete PostgreSQL persistence repository for intelligence facts and changes.
 
@@ -81,23 +93,53 @@ class PostgresFactStore:
         self._session = session
 
     async def ensure_subject(self, subject: Subject) -> SubjectModel:
-        """Find or create canonical subject record (first-seen display name wins)."""
-        ck, pk = _subject_keys(subject)
-        existing = await self._session.get(SubjectModel, (ck, pk))
-        if existing is not None:
-            return existing
+        """Find or create canonical subject record (first-seen display name wins).
 
+        Uses an atomic INSERT ... ON CONFLICT DO NOTHING rather than a plain
+        check-then-act SELECT/INSERT: two workers racing to create the SAME new
+        subject while processing different fields (e.g. the very first
+        observation for a company/product split across concurrent extraction
+        calls) would otherwise both see no existing row via the SELECT and
+        both attempt the INSERT -- the second raises IntegrityError on the
+        (company_key, product_key) primary key instead of just resolving to
+        the row the first worker already created. DO NOTHING makes the loser
+        a no-op instead, and the re-SELECT below returns whichever row won,
+        preserving "first-seen display name wins" regardless of which
+        worker's INSERT actually landed.
+        """
+        ck, pk = _subject_keys(subject)
         now = datetime.now(UTC)
-        model = SubjectModel(
-            company_key=ck,
-            product_key=pk,
-            company=subject.company,
-            product=subject.product,
-            created_at=now,
+        bind = self._session.get_bind()
+        is_sqlite = bind is not None and bind.dialect.name == "sqlite"
+        created_at = now.isoformat() if is_sqlite else now
+
+        await self._session.execute(
+            text("""
+                INSERT INTO subjects (company_key, product_key, company, product, created_at)
+                VALUES (:company_key, :product_key, :company, :product, :created_at)
+                ON CONFLICT (company_key, product_key) DO NOTHING
+            """),
+            {
+                "company_key": ck,
+                "product_key": pk,
+                "company": subject.company,
+                "product": subject.product,
+                "created_at": created_at,
+            },
         )
-        self._session.add(model)
         await self._session.flush()
-        return model
+        existing = await self._session.get(SubjectModel, (ck, pk))
+        if existing is None:
+            # Unreachable in practice: the INSERT above either created the row
+            # or a concurrent committed writer already had -- re-fetching
+            # after the statement completes must find one or the other. A
+            # clear failure here beats returning an Optional callers would
+            # need to null-check everywhere else in this class.
+            raise RuntimeError(
+                f"ensure_subject(): no subjects row found for ({ck!r}, {pk!r}) "
+                "immediately after INSERT ... ON CONFLICT DO NOTHING"
+            )
+        return existing
 
     async def lock_subject_fields(self, subject: Subject, fields: Sequence[str]) -> None:
         """Acquire transaction-scoped advisory locks on (subject, field) in sorted order."""
@@ -340,7 +382,6 @@ class PostgresFactStore:
         - Entire batch commits atomically.
         """
         detection_time = normalize_ordering_timestamp(detected_at)
-        resolved_change_set_id = change_set_id or new_id()
 
         ck, pk = _subject_keys(subject)
         fields = [f.field for f in facts]
@@ -375,7 +416,13 @@ class PostgresFactStore:
         # Advance current facts conditionally
         advanced_map = await self.advance_current_facts(subject, recorded_facts)
 
-        candidate_changes: list[Change] = []
+        # Pass 1: determine WHICH fields produced a genuine business Change,
+        # without allocating any id yet. ADR 0007 requires a ChangeSet id
+        # (and each Change's own id) to be allocated lazily, only once at
+        # least one real Change is confirmed -- first observations,
+        # same-snapshot corrections, and unchanged values must not consume
+        # an id just because they were candidates.
+        materials: list[_ChangeMaterial] = []
         fact_by_field = {f.field: f for f in recorded_facts}
 
         for field_name, advanced in advanced_map.items():
@@ -419,24 +466,39 @@ class PostgresFactStore:
 
             validate_change_shape(change_type, prev_obs, curr_obs)
 
-            change_obj = Change(
+            materials.append(
+                _ChangeMaterial(
+                    field=field_name,
+                    change_type=change_type,
+                    previous=prev_obs,
+                    current=curr_obs,
+                    confidence=conf,
+                )
+            )
+
+        if not materials:
+            return []
+
+        # Pass 2: at least one real Change is now confirmed -- only now
+        # allocate the ChangeSet id (and each Change's own id) and build the
+        # actual Change/ChangeSetModel/ChangeModel objects.
+        resolved_change_set_id = change_set_id or new_id()
+        candidate_changes: list[Change] = [
+            Change(
                 id=new_id(),
                 change_set_id=resolved_change_set_id,
                 detected_at=detection_time,
                 subject=subject,
-                field=field_name,
-                change_type=change_type,
-                previous=prev_obs,
-                current=curr_obs,
-                confidence=conf,
+                field=m.field,
+                change_type=m.change_type,
+                previous=m.previous,
+                current=m.current,
+                confidence=m.confidence,
                 review_status="pending",
             )
-            candidate_changes.append(change_obj)
+            for m in materials
+        ]
 
-        if not candidate_changes:
-            return []
-
-        # Allocate or use provided ChangeSet ID (consistent for all changes in this detection batch)
         cs_model = ChangeSetModel(
             id=resolved_change_set_id,
             company_key=ck,
