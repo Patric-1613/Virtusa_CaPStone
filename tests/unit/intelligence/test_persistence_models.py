@@ -1,5 +1,5 @@
 """Unit tests for intelligence persistence models and repository logic — ADR 0011."""
-# pylint: disable=too-many-locals
+# pylint: disable=too-many-locals,protected-access
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
-from ai_daily_digest.intelligence.db.models import ChangeSetModel
+from ai_daily_digest.intelligence.db.models import (
+    ChangeSetModel,
+    CurrentFactModel,
+    ExtractedFactModel,
+)
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.shared.db.engine import create_engine, create_session_factory
 from ai_daily_digest.shared.db.metadata import Base
@@ -219,6 +223,270 @@ async def test_current_facts_advance_4_tuple_ordering() -> None:
         # And lower version for the same snapshot cannot supersede higher version:
         res5 = await store.advance_current_facts(subject, rec2)
         assert res5["pricing"] is False
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+@run_async
+async def test_current_facts_four_part_ordering_regression() -> None:  # pylint: disable=too-many-statements,protected-access
+    """Regression test for ADR 0011 4-part ordering tuple (Issue #56).
+
+    Tuple: (observed_at DESC, snapshot_id DESC, extraction_version DESC, id DESC).
+    Tests:
+    1. Equal observed_at, distinct snapshot_id: lower snapshot_id with higher
+       extraction_version loses to higher snapshot_id (tested in both arrival orders).
+    2. Equal observed_at, snapshot_id, extraction_version: final tie-breaker by
+       fact_id (tested in both arrival orders).
+    3. Existing outcomes: first-write, newer-wins, older-ignored.
+    """
+    engine, session = await _init_session()
+    try:
+        store = PostgresFactStore(session)
+        t_eq = BASE_TIME + timedelta(days=2)
+
+        # Setup 2 snapshots at the exact same observed_at with deterministically ordered IDs
+        id_a, id_b = new_id(), new_id()
+        snap_id_low, snap_id_high = (id_a, id_b) if id_a < id_b else (id_b, id_a)
+
+        _, snap_low = await _create_source_and_snapshot(
+            session, snapshot_id=snap_id_low, fetched_at=t_eq
+        )
+        _, snap_high = await _create_source_and_snapshot(
+            session, snapshot_id=snap_id_high, fetched_at=t_eq
+        )
+
+        # --- 1. Equal observed_at, distinct snapshot_id ---
+        # snap_low has higher extraction_version (10), snap_high has lower extraction_version (1).
+        # snap_high MUST win because snapshot_id is compared before extraction_version.
+
+        # Arrival order 1: Higher snapshot_id arrives first, then lower snapshot_id with
+        # higher extraction_version arrives -> lower snapshot_id does NOT win.
+        subj1 = Subject(company="CoOne", product="ModelAlpha")
+        f_high_1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_high.id,
+            field="benchmark_scores",
+            value="85.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_low_1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_low.id,
+            field="benchmark_scores",
+            value="90.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        rec_high_1 = await store.record_extracted_facts(
+            subj1, [f_high_1], snapshot_observed_at=t_eq, extraction_version=1
+        )
+        res_high_1 = await store.advance_current_facts(subj1, rec_high_1)
+        assert res_high_1["benchmark_scores"] is True
+
+        rec_low_1 = await store.record_extracted_facts(
+            subj1, [f_low_1], snapshot_observed_at=t_eq, extraction_version=10
+        )
+        res_low_1 = await store.advance_current_facts(subj1, rec_low_1)
+        assert (
+            res_low_1["benchmark_scores"] is False
+        )  # Higher extraction_version loses by snapshot_id
+
+        cf1 = await session.get(CurrentFactModel, ("coone", "modelalpha", "benchmark_scores"))
+        assert cf1 is not None
+        assert cf1.fact_id == f_high_1.id
+        assert cf1.snapshot_id == snap_high.id
+        assert cf1.extraction_version == 1
+
+        # Arrival order 2: Lower snapshot_id with higher extraction_version arrives first,
+        # then higher snapshot_id arrives -> higher snapshot_id DOES win and overwrites.
+        subj2 = Subject(company="CoTwo", product="ModelBeta")
+        f_low_2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_low.id,
+            field="benchmark_scores",
+            value="90.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_high_2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_high.id,
+            field="benchmark_scores",
+            value="85.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        rec_low_2 = await store.record_extracted_facts(
+            subj2, [f_low_2], snapshot_observed_at=t_eq, extraction_version=10
+        )
+        res_low_2 = await store.advance_current_facts(subj2, rec_low_2)
+        assert res_low_2["benchmark_scores"] is True  # First write succeeds
+
+        rec_high_2 = await store.record_extracted_facts(
+            subj2, [f_high_2], snapshot_observed_at=t_eq, extraction_version=1
+        )
+        res_high_2 = await store.advance_current_facts(subj2, rec_high_2)
+        assert res_high_2["benchmark_scores"] is True  # Higher snapshot_id wins over lower
+
+        cf2 = await session.get(CurrentFactModel, ("cotwo", "modelbeta", "benchmark_scores"))
+        assert cf2 is not None
+        assert cf2.fact_id == f_high_2.id
+        assert cf2.snapshot_id == snap_high.id
+        assert cf2.extraction_version == 1
+
+        # --- 2. Equal observed_at, snapshot_id, extraction_version: Tie-breaker by fact_id ---
+        fid_a, fid_b = new_id(), new_id()
+        fid_low, fid_high = (fid_a, fid_b) if fid_a < fid_b else (fid_b, fid_a)
+
+        f_model_low = ExtractedFactModel(
+            id=fid_low,
+            snapshot_id=snap_high.id,
+            company_key="cothree",
+            product_key="modelgamma",
+            field="context_window_tokens",
+            value="8000",
+            disclosure_status="disclosed",
+            extraction_method="deterministic",
+            extraction_version=1,
+            observed_at=t_eq,
+            created_at=datetime.now(UTC),
+        )
+        f_model_high = ExtractedFactModel(
+            id=fid_high,
+            snapshot_id=snap_high.id,
+            company_key="cothree",
+            product_key="modelgamma",
+            field="context_window_tokens",
+            value="8000",
+            disclosure_status="disclosed",
+            extraction_method="deterministic",
+            extraction_version=1,
+            observed_at=t_eq,
+            created_at=datetime.now(UTC),
+        )
+
+        # Tie-breaker Arrival order 1: Lower fact_id arrives first, higher arrives
+        # second -> higher wins
+        res_tie_1 = await store._upsert_current_fact(
+            company_key="cothree",
+            product_key="modelgamma",
+            fact=f_model_low,
+            now_dt=datetime.now(UTC),
+            is_sqlite=True,
+        )
+        assert res_tie_1 is True
+
+        res_tie_2 = await store._upsert_current_fact(
+            company_key="cothree",
+            product_key="modelgamma",
+            fact=f_model_high,
+            now_dt=datetime.now(UTC),
+            is_sqlite=True,
+        )
+        assert res_tie_2 is True  # Higher fact_id wins tie-breaker
+
+        cf3 = await session.get(
+            CurrentFactModel, ("cothree", "modelgamma", "context_window_tokens")
+        )
+        assert cf3 is not None
+        assert cf3.fact_id == fid_high
+
+        # Tie-breaker Arrival order 2: Higher fact_id arrives first, lower arrives
+        # second -> lower loses
+        res_tie_3 = await store._upsert_current_fact(
+            company_key="cofour",
+            product_key="modeldelta",
+            fact=ExtractedFactModel(
+                id=fid_high,
+                snapshot_id=snap_high.id,
+                company_key="cofour",
+                product_key="modeldelta",
+                field="context_window_tokens",
+                value="8000",
+                disclosure_status="disclosed",
+                extraction_method="deterministic",
+                extraction_version=1,
+                observed_at=t_eq,
+                created_at=datetime.now(UTC),
+            ),
+            now_dt=datetime.now(UTC),
+            is_sqlite=True,
+        )
+        assert res_tie_3 is True
+
+        res_tie_4 = await store._upsert_current_fact(
+            company_key="cofour",
+            product_key="modeldelta",
+            fact=ExtractedFactModel(
+                id=fid_low,
+                snapshot_id=snap_high.id,
+                company_key="cofour",
+                product_key="modeldelta",
+                field="context_window_tokens",
+                value="8000",
+                disclosure_status="disclosed",
+                extraction_method="deterministic",
+                extraction_version=1,
+                observed_at=t_eq,
+                created_at=datetime.now(UTC),
+            ),
+            now_dt=datetime.now(UTC),
+            is_sqlite=True,
+        )
+        assert res_tie_4 is False  # Lower fact_id loses tie-breaker
+
+        cf4 = await session.get(CurrentFactModel, ("cofour", "modeldelta", "context_window_tokens"))
+        assert cf4 is not None
+        assert cf4.fact_id == fid_high
+
+        # --- 3. Existing outcomes: first-write, newer-wins, older-ignored ---
+        subj5 = Subject(company="CoFive", product="ModelEpsilon")
+        t_early = BASE_TIME
+        t_late = BASE_TIME + timedelta(days=5)
+        _, snap_early = await _create_source_and_snapshot(session, fetched_at=t_early)
+        _, snap_late = await _create_source_and_snapshot(session, fetched_at=t_late)
+
+        f_early = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_early.id,
+            field="input_price_usd",
+            value="1.00",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_late = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_late.id,
+            field="input_price_usd",
+            value="2.00",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        # First write succeeds
+        rec_first = await store.record_extracted_facts(
+            subj5, [f_early], snapshot_observed_at=t_early, extraction_version=1
+        )
+        res_first = await store.advance_current_facts(subj5, rec_first)
+        assert res_first["input_price_usd"] is True
+
+        # Newer writer wins
+        rec_newer = await store.record_extracted_facts(
+            subj5, [f_late], snapshot_observed_at=t_late, extraction_version=1
+        )
+        res_newer = await store.advance_current_facts(subj5, rec_newer)
+        assert res_newer["input_price_usd"] is True
+
+        # Older writer ignored
+        res_older = await store.advance_current_facts(subj5, rec_first)
+        assert res_older["input_price_usd"] is False
+
+        cf5 = await session.get(CurrentFactModel, ("cofive", "modelepsilon", "input_price_usd"))
+        assert cf5 is not None
+        assert cf5.fact_id == f_late.id
+        assert cf5.observed_at == t_late
     finally:
         await session.close()
         await engine.dispose()

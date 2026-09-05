@@ -5,16 +5,98 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import Callable, Coroutine
 from typing import Any
 
 import alembic.command
 import pytest
 from alembic.config import Config
+from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ai_daily_digest.shared.db.engine import create_engine
+
+
+def _is_safe_database_name(name: str) -> bool:
+    """Safety guard: verify database name matches test/ci patterns."""
+    lower = name.lower()
+    return (
+        lower.endswith("_test")
+        or lower.endswith("_ci")
+        or lower.startswith("test_")
+        or lower.startswith("ci_")
+        or lower in ("postgres", "template1")
+    )
+
+
+def _setup_scratch_database(base_url_str: str) -> tuple[str, str, str]:
+    """Create a run-unique scratch PostgreSQL database per ADR 0002 §15.
+
+    Returns (scratch_db_name, scratch_url, admin_url_sync).
+    """
+    url = make_url(base_url_str)
+    original_db = url.database or ""
+
+    # Safety guard on the base connection
+    if not _is_safe_database_name(original_db):
+        raise RuntimeError(
+            f"Refusing to run destructive Alembic lifecycle test on database {original_db!r}: "
+            "name must match *_test, *_ci, or test_*"
+        )
+
+    # Use standard postgres maintenance database for administrative DDL
+    admin_url_obj = url.set(database="postgres")
+    admin_url_sync = admin_url_obj.render_as_string(hide_password=False)
+
+    scratch_db_name = f"test_alembic_{uuid.uuid4().hex[:12]}"
+    scratch_url_obj = url.set(database=scratch_db_name)
+    scratch_url = scratch_url_obj.render_as_string(hide_password=False)
+
+    admin_engine = create_sync_engine(admin_url_sync, isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as conn:
+            conn.execute(text(f'CREATE DATABASE "{scratch_db_name}";'))
+    finally:
+        admin_engine.dispose()
+
+    return scratch_db_name, scratch_url, admin_url_sync
+
+
+def _teardown_scratch_database(admin_url_sync: str, scratch_db_name: str) -> None:
+    """Terminate active backends and drop the scratch database per ADR 0002 §15."""
+    admin_engine = create_sync_engine(admin_url_sync, isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) "
+                    "FROM pg_stat_activity "
+                    "WHERE datname = :dbname AND pid <> pg_backend_pid();"
+                ),
+                {"dbname": scratch_db_name},
+            )
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{scratch_db_name}";'))
+    finally:
+        admin_engine.dispose()
+
+
+def test_alembic_lifecycle_safety_guard_rejects_unsafe_db() -> None:
+    """Safety guard must reject databases that do not match test/ci patterns."""
+    assert not _is_safe_database_name("ai_daily_digest_prod")
+    assert not _is_safe_database_name("production")
+    assert not _is_safe_database_name("ai_daily_digest_dev")
+    assert _is_safe_database_name("ai_daily_digest_test")
+    assert _is_safe_database_name("ai_daily_digest_ci")
+    assert _is_safe_database_name("test_alembic_12345")
+    assert _is_safe_database_name("postgres")
+
+    with pytest.raises(RuntimeError, match="Refusing to run destructive Alembic lifecycle test"):
+        _setup_scratch_database(
+            "postgresql+psycopg://user:pass@localhost:5432/ai_daily_digest_prod"
+        )
 
 
 def run_in_new_loop(coro_fn: Callable[..., Coroutine[Any, Any, None]]) -> None:
@@ -85,16 +167,22 @@ EXPECTED_TRIGGERS = {
 def test_alembic_upgrade_downgrade_lifecycle() -> None:
     """Verify upgrade -> downgrade base -> upgrade head lifecycle against PostgreSQL.
 
-    A plain synchronous test function on purpose (see `run_in_new_loop`'s docstring): the
-    synchronous `alembic.command.*` calls below must never run inside an already-active event
-    loop, so this function itself must not be one.
+    Per ADR 0002 §15, this runs against an isolated run-unique scratch database created
+    at the start and dropped in teardown, protecting developers' local and deployed databases.
     """
-    config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", str(DATABASE_URL))
+    original_database_url = os.environ.get("DATABASE_URL")
+    scratch_db_name, scratch_url, admin_url_sync = _setup_scratch_database(str(DATABASE_URL))
+    os.environ["DATABASE_URL"] = scratch_url
 
-    engine: AsyncEngine = create_engine(str(DATABASE_URL), echo=False)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", scratch_url)
+
+    engine: AsyncEngine = create_engine(scratch_url, echo=False)
     try:
-        # Step 1: Ensure we can downgrade cleanly to base
+        # Step 1: Initial upgrade to head
+        alembic.command.upgrade(config, "head")
+
+        # Step 2: Ensure we can downgrade cleanly to base
         alembic.command.downgrade(config, "base")
 
         async def _check_downgraded() -> None:
@@ -107,7 +195,7 @@ def test_alembic_upgrade_downgrade_lifecycle() -> None:
 
         run_in_new_loop(_check_downgraded)
 
-        # Step 2: Upgrade back to head
+        # Step 3: Upgrade back to head
         alembic.command.upgrade(config, "head")
 
         async def _check_upgraded() -> None:
@@ -145,3 +233,8 @@ def test_alembic_upgrade_downgrade_lifecycle() -> None:
         run_in_new_loop(_check_upgraded)
     finally:
         run_in_new_loop(engine.dispose)
+        if original_database_url is not None:
+            os.environ["DATABASE_URL"] = original_database_url
+        else:
+            os.environ.pop("DATABASE_URL", None)
+        _teardown_scratch_database(admin_url_sync, scratch_db_name)

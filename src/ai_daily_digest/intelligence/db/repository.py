@@ -258,9 +258,9 @@ class PostgresFactStore:
                 observed_at = EXCLUDED.observed_at,
                 extraction_version = EXCLUDED.extraction_version,
                 updated_at = EXCLUDED.updated_at
-            WHERE EXCLUDED.observed_at > current_facts.observed_at
-               OR (EXCLUDED.observed_at = current_facts.observed_at
-                   AND EXCLUDED.extraction_version > current_facts.extraction_version)
+            WHERE (EXCLUDED.observed_at, EXCLUDED.snapshot_id, EXCLUDED.extraction_version, EXCLUDED.fact_id)
+                > (current_facts.observed_at, current_facts.snapshot_id, current_facts.extraction_version,
+                   current_facts.fact_id)
             RETURNING fact_id
         """)
         result = await self._session.execute(

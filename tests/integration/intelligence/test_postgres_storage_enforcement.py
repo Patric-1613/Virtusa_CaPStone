@@ -1,4 +1,5 @@
 """Real PostgreSQL integration tests for storage-level enforcement — ADR 0011 §7."""
+# pylint: disable=too-many-lines,protected-access
 
 from __future__ import annotations
 
@@ -855,5 +856,461 @@ async def test_current_facts_atomic_upsert_concurrency_outcomes() -> None:  # py
             # Row overwritten with late values
             assert cf3.fact_id == f_late.id
             assert cf3.observed_at == t_late
+    finally:
+        await engine.dispose()
+
+
+# -----------------------------------------------------------------------------
+# 12. Four-Part Ordering Tuple Regression against Real PostgreSQL
+# -----------------------------------------------------------------------------
+@run_async
+async def test_current_facts_four_part_ordering_tuple_postgres() -> None:  # pylint: disable=too-many-locals,too-many-statements,protected-access
+    """Test ADR 0011 4-part ordering tuple against real PostgreSQL with native UUID columns.
+
+    Tuple: (observed_at DESC, snapshot_id DESC, extraction_version DESC, id DESC).
+    Tests:
+    1. Equal observed_at, distinct snapshot_id: lower snapshot_id with higher
+       extraction_version loses to higher snapshot_id (tested in both arrival orders).
+    2. Equal observed_at, snapshot_id, extraction_version: final tie-breaker by
+       fact_id (tested in both arrival orders).
+    3. Existing outcomes: first-write, newer-wins, older-ignored.
+    """
+    engine = _get_engine()
+    sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        t_eq = BASE_TIME + timedelta(days=2)
+        id_a, id_b = new_id(), new_id()
+        snap_id_low, snap_id_high = (id_a, id_b) if id_a < id_b else (id_b, id_a)
+
+        async with sessionmaker() as setup_session:
+            _, snap_low = await _make_source_and_snapshot(
+                setup_session, snapshot_id=snap_id_low, fetched_at=t_eq
+            )
+            _, snap_high = await _make_source_and_snapshot(
+                setup_session, snapshot_id=snap_id_high, fetched_at=t_eq
+            )
+            await setup_session.commit()
+
+        # --- 1. Equal observed_at, distinct snapshot_id ---
+        # snap_low has higher extraction_version (10), snap_high has lower extraction_version (1).
+        # snap_high MUST win because snapshot_id (UUID) is compared before extraction_version.
+
+        # Arrival order 1: Higher snapshot_id arrives first, then lower snapshot_id with
+        # higher extraction_version arrives -> lower snapshot_id does NOT win.
+        subj1 = Subject(company="PgTupleCo", product="ModelAlpha")
+        f_high_1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_high.id,
+            field="benchmark_scores",
+            value="85.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_low_1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_low.id,
+            field="benchmark_scores",
+            value="90.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        async with sessionmaker() as s1:
+            store1 = PostgresFactStore(s1)
+            rec_high_1 = await store1.record_extracted_facts(
+                subj1, [f_high_1], snapshot_observed_at=t_eq, extraction_version=1
+            )
+            res_high_1 = await store1.advance_current_facts(subj1, rec_high_1)
+            assert res_high_1["benchmark_scores"] is True
+
+            rec_low_1 = await store1.record_extracted_facts(
+                subj1, [f_low_1], snapshot_observed_at=t_eq, extraction_version=10
+            )
+            res_low_1 = await store1.advance_current_facts(subj1, rec_low_1)
+            # Must be False: higher extraction_version loses because snap_low < snap_high
+            assert res_low_1["benchmark_scores"] is False
+            await s1.commit()
+
+        async with sessionmaker() as s_check:
+            cf1 = await s_check.get(
+                CurrentFactModel, ("pgtupleco", "modelalpha", "benchmark_scores")
+            )
+            assert cf1 is not None
+            assert cf1.fact_id == f_high_1.id
+            assert cf1.snapshot_id == snap_high.id
+            assert cf1.extraction_version == 1
+
+        # Arrival order 2: Lower snapshot_id with higher extraction_version arrives first,
+        # then higher snapshot_id arrives -> higher snapshot_id DOES win and overwrites.
+        subj2 = Subject(company="PgTupleCo", product="ModelBeta")
+        f_low_2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_low.id,
+            field="benchmark_scores",
+            value="90.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_high_2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_high.id,
+            field="benchmark_scores",
+            value="85.0",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        async with sessionmaker() as s2:
+            store2 = PostgresFactStore(s2)
+            rec_low_2 = await store2.record_extracted_facts(
+                subj2, [f_low_2], snapshot_observed_at=t_eq, extraction_version=10
+            )
+            res_low_2 = await store2.advance_current_facts(subj2, rec_low_2)
+            assert res_low_2["benchmark_scores"] is True
+
+            rec_high_2 = await store2.record_extracted_facts(
+                subj2, [f_high_2], snapshot_observed_at=t_eq, extraction_version=1
+            )
+            res_high_2 = await store2.advance_current_facts(subj2, rec_high_2)
+            # Must be True: higher snapshot_id wins over lower snapshot_id
+            assert res_high_2["benchmark_scores"] is True
+            await s2.commit()
+
+        async with sessionmaker() as s_check:
+            cf2 = await s_check.get(
+                CurrentFactModel, ("pgtupleco", "modelbeta", "benchmark_scores")
+            )
+            assert cf2 is not None
+            assert cf2.fact_id == f_high_2.id
+            assert cf2.snapshot_id == snap_high.id
+            assert cf2.extraction_version == 1
+
+        # --- 2. Equal observed_at, snapshot_id, extraction_version: Tie-breaker by fact_id ---
+        fid_a, fid_b = new_id(), new_id()
+        fid_low, fid_high = (fid_a, fid_b) if fid_a < fid_b else (fid_b, fid_a)
+
+        async with sessionmaker() as s_tie:
+            await _ensure_subject(
+                s_tie,
+                company_key="pgtieco",
+                product_key="modeltie",
+                company="PgTieCo",
+                product="ModelTie",
+            )
+            # Drop composite FK in this transaction so we can test the pure
+            # row-comparison predicate on current_facts without conflicting with
+            # uq_extracted_facts_attempt
+            await s_tie.execute(
+                text(
+                    "ALTER TABLE current_facts "
+                    "DROP CONSTRAINT fk_current_facts_extracted_fact_composite;"
+                )
+            )
+
+            store_tie = PostgresFactStore(s_tie)
+
+            # Arrival order 1: Lower fact_id arrives first, higher arrives second -> higher wins
+            f_low_model = ExtractedFactModel(
+                id=fid_low,
+                snapshot_id=snap_high.id,
+                company_key="pgtieco",
+                product_key="modeltie",
+                field="context_window_tokens",
+                value="8000",
+                disclosure_status="disclosed",
+                extraction_method="deterministic",
+                extraction_version=1,
+                observed_at=t_eq,
+                created_at=datetime.now(UTC),
+            )
+            f_high_model = ExtractedFactModel(
+                id=fid_high,
+                snapshot_id=snap_high.id,
+                company_key="pgtieco",
+                product_key="modeltie",
+                field="context_window_tokens",
+                value="8000",
+                disclosure_status="disclosed",
+                extraction_method="deterministic",
+                extraction_version=1,
+                observed_at=t_eq,
+                created_at=datetime.now(UTC),
+            )
+
+            res_tie_1 = await store_tie._upsert_current_fact(
+                company_key="pgtieco",
+                product_key="modeltie",
+                fact=f_low_model,
+                now_dt=datetime.now(UTC),
+                is_sqlite=False,
+            )
+            assert res_tie_1 is True
+
+            res_tie_2 = await store_tie._upsert_current_fact(
+                company_key="pgtieco",
+                product_key="modeltie",
+                fact=f_high_model,
+                now_dt=datetime.now(UTC),
+                is_sqlite=False,
+            )
+            assert res_tie_2 is True  # Higher UUID wins tie-breaker
+
+            cf_tie_1 = await s_tie.get(
+                CurrentFactModel, ("pgtieco", "modeltie", "context_window_tokens")
+            )
+            assert cf_tie_1 is not None
+            assert cf_tie_1.fact_id == fid_high
+
+            # Arrival order 2: Higher fact_id arrives first, lower arrives second -> lower loses
+            f_high_model_2 = ExtractedFactModel(
+                id=fid_high,
+                snapshot_id=snap_high.id,
+                company_key="pgtieco",
+                product_key="modeltie",
+                field="modalities",
+                value="text",
+                disclosure_status="disclosed",
+                extraction_method="deterministic",
+                extraction_version=1,
+                observed_at=t_eq,
+                created_at=datetime.now(UTC),
+            )
+            f_low_model_2 = ExtractedFactModel(
+                id=fid_low,
+                snapshot_id=snap_high.id,
+                company_key="pgtieco",
+                product_key="modeltie",
+                field="modalities",
+                value="text",
+                disclosure_status="disclosed",
+                extraction_method="deterministic",
+                extraction_version=1,
+                observed_at=t_eq,
+                created_at=datetime.now(UTC),
+            )
+
+            res_tie_3 = await store_tie._upsert_current_fact(
+                company_key="pgtieco",
+                product_key="modeltie",
+                fact=f_high_model_2,
+                now_dt=datetime.now(UTC),
+                is_sqlite=False,
+            )
+            assert res_tie_3 is True
+
+            res_tie_4 = await store_tie._upsert_current_fact(
+                company_key="pgtieco",
+                product_key="modeltie",
+                fact=f_low_model_2,
+                now_dt=datetime.now(UTC),
+                is_sqlite=False,
+            )
+            assert res_tie_4 is False  # Lower UUID loses tie-breaker
+
+            cf_tie_2 = await s_tie.get(CurrentFactModel, ("pgtieco", "modeltie", "modalities"))
+            assert cf_tie_2 is not None
+            assert cf_tie_2.fact_id == fid_high
+
+            # Rollback transaction so FK constraint is restored identically
+            await s_tie.rollback()
+    finally:
+        await engine.dispose()
+
+
+# -----------------------------------------------------------------------------
+# 13. Real Two-Connection Concurrency with Overlapping Transactions
+# -----------------------------------------------------------------------------
+@run_async
+async def test_current_facts_real_two_connection_concurrency() -> None:  # pylint: disable=too-many-locals,too-many-statements
+    """Test two genuinely overlapping database connections against PostgreSQL.
+
+    One transaction begins a write and holds it before commit, while the second attempts
+    a conflicting write on the same (company_key, product_key, field).
+    Asserts:
+    1. The final state is correct according to the 4-part row-comparison predicate.
+    2. Any Change emitted afterward uses the actually-committed prior state (not a stale read).
+    """
+    engine = _get_engine()
+    sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        subject = Subject(company="ConcurCo", product="EngineAsync")
+        t_base = BASE_TIME
+        t1 = BASE_TIME + timedelta(hours=1)
+        t2 = BASE_TIME + timedelta(hours=2)
+
+        # Baseline: Establish initial committed state
+        async with sessionmaker() as setup_session:
+            _, snap_base = await _make_source_and_snapshot(setup_session, fetched_at=t_base)
+            _, snap1 = await _make_source_and_snapshot(setup_session, fetched_at=t1)
+            _, snap2 = await _make_source_and_snapshot(setup_session, fetched_at=t2)
+            await setup_session.commit()
+
+        f_base = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_base.id,
+            field="pricing",
+            value="$100",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f1 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap1.id,
+            field="pricing",
+            value="$150",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f2 = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap2.id,
+            field="pricing",
+            value="$200",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        async with sessionmaker() as init_session:
+            init_store = PostgresFactStore(init_session)
+            rec_base = await init_store.record_extracted_facts(
+                subject, [f_base], snapshot_observed_at=t_base, extraction_version=1
+            )
+            await init_store.advance_current_facts(subject, rec_base)
+            await init_session.commit()
+
+        # Coordination events
+        tx1_wrote = asyncio.Event()
+        tx2_started = asyncio.Event()
+
+        change_results: list[Any] = []
+
+        async def _run_tx1() -> None:
+            # Transaction 1: Writes f1 ($150 at t1) and holds the row lock before commit
+            async with sessionmaker() as s1:
+                store1 = PostgresFactStore(s1)
+                rec1 = await store1.record_extracted_facts(
+                    subject, [f1], snapshot_observed_at=t1, extraction_version=1
+                )
+                adv1 = await store1.advance_current_facts(subject, rec1)
+                assert adv1["pricing"] is True
+                # s1 holds uncommitted row write lock in PostgreSQL
+                tx1_wrote.set()
+
+                # Wait until tx2 has attempted its operation
+                await tx2_started.wait()
+                # Yield control briefly so tx2 is actively queued/blocked in DB
+                await asyncio.sleep(0.05)
+                await s1.commit()
+
+        async def _run_tx2() -> None:
+            # Wait until Tx1 has performed its write and holds the lock
+            await tx1_wrote.wait()
+            async with sessionmaker() as s2:
+                store2 = PostgresFactStore(s2)
+                tx2_started.set()
+
+                # detect_and_persist_changes takes advisory lock & updates current_facts.
+                # Because Tx1 is in-flight, this call serializes behind Tx1.
+                changes = await store2.detect_and_persist_changes(
+                    subject,
+                    [f2],
+                    snapshot_observed_at=t2,
+                    detected_at=t2,
+                    extraction_version=1,
+                )
+                await s2.commit()
+                change_results.extend(changes)
+
+        # Run Tx1 and Tx2 concurrently across separate database connections
+        await asyncio.gather(_run_tx1(), _run_tx2())
+
+        # Verify final state in PostgreSQL:
+        # Newer write (t2 > t1) must win
+        async with sessionmaker() as verify_session:
+            cf = await verify_session.get(CurrentFactModel, ("concurco", "engineasync", "pricing"))
+            assert cf is not None
+            assert cf.fact_id == f2.id
+            assert cf.snapshot_id == snap2.id
+            assert cf.observed_at == t2
+
+        # Verify change emitted by Tx2 used the actually-committed prior state from Tx1
+        # ($150 at snap1), NOT the stale read from before Tx1 committed ($100 at snap_base)!
+        assert len(change_results) == 1
+        ch = change_results[0]
+        assert ch.field == "pricing"
+        assert ch.previous.value == "$150"
+        assert ch.previous.snapshot_id == snap1.id
+        assert ch.current.value == "$200"
+        assert ch.current.snapshot_id == snap2.id
+
+        # Also test the reverse race: held transaction has HIGHER precedence (t2),
+        # concurrent conflicting transaction has LOWER precedence (t1).
+        # When t2 commits, the unblocked t1 write must be IGNORED by the conflict predicate,
+        # and emit zero changes.
+        f_late_holder = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap2.id,
+            field="speed",
+            value="300mph",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        f_early_challenger = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap1.id,
+            field="speed",
+            value="250mph",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        rev_tx1_wrote = asyncio.Event()
+        rev_tx2_started = asyncio.Event()
+        rev_changes: list[Any] = []
+
+        async def _run_rev_tx1() -> None:
+            # Tx1 writes higher precedence (t2) and holds
+            async with sessionmaker() as s1:
+                store1 = PostgresFactStore(s1)
+                rec = await store1.record_extracted_facts(
+                    subject, [f_late_holder], snapshot_observed_at=t2, extraction_version=1
+                )
+                adv = await store1.advance_current_facts(subject, rec)
+                assert adv["speed"] is True
+                rev_tx1_wrote.set()
+                await rev_tx2_started.wait()
+                await asyncio.sleep(0.05)
+                await s1.commit()
+
+        async def _run_rev_tx2() -> None:
+            await rev_tx1_wrote.wait()
+            async with sessionmaker() as s2:
+                store2 = PostgresFactStore(s2)
+                rev_tx2_started.set()
+                # Attempts conflicting write with lower precedence (t1)
+                changes = await store2.detect_and_persist_changes(
+                    subject,
+                    [f_early_challenger],
+                    snapshot_observed_at=t1,
+                    detected_at=t1,
+                    extraction_version=1,
+                )
+                await s2.commit()
+                rev_changes.extend(changes)
+
+        await asyncio.gather(_run_rev_tx1(), _run_rev_tx2())
+
+        # Assert final state is still the higher precedence write (t2)
+        async with sessionmaker() as verify_session:
+            cf_speed = await verify_session.get(
+                CurrentFactModel, ("concurco", "engineasync", "speed")
+            )
+            assert cf_speed is not None
+            assert cf_speed.fact_id == f_late_holder.id
+            assert cf_speed.observed_at == t2
+
+        # Lower precedence write emitted NO Change because its write was rejected
+        # by conflict predicate
+        assert len(rev_changes) == 0
     finally:
         await engine.dispose()
