@@ -208,18 +208,18 @@ class PostgresFactStore:
         return recorded
 
     async def read_current_facts(
-        self,
-        subject: Subject,
-        fields: Sequence[str],
-        *,
-        for_update: bool = False,
+        self, subject: Subject, fields: Sequence[str]
     ) -> dict[str, tuple[CurrentFactModel, ExtractedFactModel]]:
         """Read current confirmed facts and their referenced extracted facts.
 
-        When `for_update=True` (PostgreSQL only), locks the `current_facts` rows via
-        `SELECT ... FOR UPDATE OF current_facts` so this read blocks on any concurrent,
-        not-yet-committed writer to the same row rather than returning a stale
-        READ-COMMITTED snapshot -- see `detect_and_persist_changes()`.
+        Per ADR 0011 SS5.1, this is always called *inside* the caller's advisory lock
+        (see `lock_subject_fields()` / `detect_and_persist_changes()`), which is what
+        guarantees a fresh, non-stale read -- not row-level locking here. A `SELECT ...
+        FOR UPDATE OF current_facts` was tried instead and reverted: under READ
+        COMMITTED, EvalPlanQual re-fetches only the locked `current_facts` row after
+        unblocking, but re-evaluates the `JOIN extracted_facts` against the *original*
+        per-statement snapshot -- so a row inserted by the just-committed writer isn't
+        visible to the join yet, and the read spuriously returns nothing.
         """
         ck, pk = _subject_keys(subject)
         stmt = (
@@ -234,10 +234,6 @@ class PostgresFactStore:
                 CurrentFactModel.field.in_(fields),
             )
         )
-        if for_update:
-            bind = self._session.get_bind()
-            if bind is None or bind.dialect.name != "sqlite":
-                stmt = stmt.with_for_update(of=CurrentFactModel)
         res = await self._session.execute(stmt)
         return {cf.field: (cf, ef) for cf, ef in res.all()}
 
@@ -350,12 +346,12 @@ class PostgresFactStore:
         fields = [f.field for f in facts]
         await self.lock_subject_fields(subject, fields)
 
-        # Read current state prior to advance into an immutable snapshot. for_update=True
-        # blocks this read on any in-flight concurrent writer holding the current_facts
-        # row lock (e.g. a direct advance_current_facts() caller that bypasses the advisory
-        # lock below), so once unblocked we observe the actually-committed prior state
-        # instead of a stale pre-commit read.
-        current_map = await self.read_current_facts(subject, fields, for_update=True)
+        # Read current state prior to advance into an immutable snapshot. This happens
+        # after lock_subject_fields() above has acquired the advisory lock for every
+        # field, so any concurrent worker that was mid-write on the same (subject, field)
+        # has already been forced to finish and commit before we reach this read (ADR
+        # 0011 SS5.1) -- the read is guaranteed fresh, never a stale pre-lock snapshot.
+        current_map = await self.read_current_facts(subject, fields)
         prior_state: dict[str, PriorFactState] = {
             field: PriorFactState(
                 fact_id=cf.fact_id,

@@ -1185,9 +1185,12 @@ async def test_current_facts_real_two_connection_concurrency() -> None:  # pylin
         change_results: list[Any] = []
 
         async def _run_tx1() -> None:
-            # Transaction 1: Writes f1 ($150 at t1) and holds the row lock before commit
+            # Transaction 1: Writes f1 ($150 at t1) and holds the row lock before commit.
+            # Takes the advisory lock first, per ADR 0011 SS5.1 -- every writer touching
+            # (subject, field) must serialize on it, not just the change-detection path.
             async with sessionmaker() as s1:
                 store1 = PostgresFactStore(s1)
+                await store1.lock_subject_fields(subject, ["pricing"])
                 rec1 = await store1.record_extracted_facts(
                     subject, [f1], snapshot_observed_at=t1, extraction_version=1
                 )
@@ -1269,9 +1272,11 @@ async def test_current_facts_real_two_connection_concurrency() -> None:  # pylin
         rev_changes: list[Any] = []
 
         async def _run_rev_tx1() -> None:
-            # Tx1 writes higher precedence (t2) and holds
+            # Tx1 writes higher precedence (t2) and holds. Takes the advisory lock
+            # first -- see _run_tx1() above.
             async with sessionmaker() as s1:
                 store1 = PostgresFactStore(s1)
+                await store1.lock_subject_fields(subject, ["speed"])
                 rec = await store1.record_extracted_facts(
                     subject, [f_late_holder], snapshot_observed_at=t2, extraction_version=1
                 )
