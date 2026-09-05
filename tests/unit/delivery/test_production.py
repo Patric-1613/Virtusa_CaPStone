@@ -91,7 +91,7 @@ def test_create_app_wires_both_database_readiness_probe_and_cors_middleware() ->
     assert ready_resp.status_code == 200
     assert ready_resp.json() == {
         "status": "ready",
-        "checks": [{"name": "database", "ready": True}],
+        "checks": [{"name": "database", "status": "ready"}],
     }
 
     cors_resp = client.options(
