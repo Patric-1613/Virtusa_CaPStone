@@ -1,0 +1,78 @@
+"""Validated environment configuration for the deployed Delivery API."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
+
+from ai_daily_digest.delivery.api.pagination import MIN_SIGNING_KEY_BYTES
+
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _parse_boolean(*, name: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
+
+
+def _validate_frontend_origin(value: str) -> str:
+    origin = value.strip()
+    parsed = urlsplit(origin)
+    has_invalid_url_part = (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or bool(parsed.path)
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+    )
+    has_unsafe_origin_syntax = (
+        parsed.username is not None or parsed.password is not None or "*" in origin or "," in origin
+    )
+    if has_invalid_url_part or has_unsafe_origin_syntax:
+        raise ValueError("FRONTEND_ORIGIN must be one exact HTTP(S) origin without a path")
+    if parsed.scheme == "http" and parsed.hostname not in _LOCAL_HOSTS:
+        raise ValueError("FRONTEND_ORIGIN must use HTTPS unless it is a local-development origin")
+    return origin
+
+
+@dataclass(frozen=True)
+class DeliverySettings:
+    """Deployment settings loaded explicitly when the Uvicorn factory runs."""
+
+    frontend_origin: str
+    docs_enabled: bool = True
+    pagination_cursor_secret: bytes | None = field(default=None, repr=False)
+
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> DeliverySettings:
+        """Validate settings without performing infrastructure connections."""
+        values = os.environ if environ is None else environ
+        raw_origin = values.get("FRONTEND_ORIGIN", "")
+        if not raw_origin.strip():
+            raise ValueError("FRONTEND_ORIGIN is required")
+
+        docs_enabled = _parse_boolean(
+            name="DOCS_ENABLED",
+            value=values.get("DOCS_ENABLED", "true"),
+        )
+
+        raw_cursor_secret = values.get("PAGINATION_CURSOR_SECRET", "")
+        cursor_secret = raw_cursor_secret.encode("utf-8") if raw_cursor_secret else None
+        if cursor_secret is not None and len(cursor_secret) < MIN_SIGNING_KEY_BYTES:
+            raise ValueError(
+                f"PAGINATION_CURSOR_SECRET must be at least {MIN_SIGNING_KEY_BYTES} bytes"
+            )
+
+        return cls(
+            frontend_origin=_validate_frontend_origin(raw_origin),
+            docs_enabled=docs_enabled,
+            pagination_cursor_secret=cursor_secret,
+        )
