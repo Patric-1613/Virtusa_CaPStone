@@ -117,9 +117,10 @@ def test_alembic_upgrade_downgrade_lifecycle() -> None:
                 )
                 assert EXPECTED_TABLES.issubset(tables_after_upgrade)
 
-                # Verify triggers exist
+                # Verify triggers exist (pg_trigger captures TRUNCATE statement triggers
+                # which information_schema.triggers omits per SQL standard)
                 triggers_res = await conn.execute(
-                    text("SELECT trigger_name FROM information_schema.triggers;")
+                    text("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal;")
                 )
                 found_triggers = {row[0] for row in triggers_res.fetchall()}
                 assert EXPECTED_TRIGGERS.issubset(found_triggers)
