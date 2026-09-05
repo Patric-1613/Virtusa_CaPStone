@@ -1,5 +1,5 @@
 """Real PostgreSQL integration tests for storage-level enforcement — ADR 0011 §7."""
-# pylint: disable=too-many-lines,protected-access
+# pylint: disable=too-many-lines,protected-access,too-many-locals,too-many-statements
 
 from __future__ import annotations
 
@@ -242,7 +242,7 @@ async def test_extracted_facts_truncate_rejection(open_database_session: _OpenSe
 # 3. Canonical Subject Collision & Idempotency
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_canonical_subject_collision_and_idempotency(
+async def test_canonical_subject_collision_and_idempotency(  # pylint: disable=too-many-locals
     open_database_session: _OpenSession,
 ) -> None:
     async with open_database_session() as session:
