@@ -17,6 +17,7 @@ build/
 .env.*
 !.env.example
 CLAUDE.local.md
+.claude/
 .codex-log/
 
 # Generated/runtime data
