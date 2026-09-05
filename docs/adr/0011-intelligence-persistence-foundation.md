@@ -3,8 +3,10 @@
 Status: Proposed (authored by Person B; review required from Persons A and C)
 Date: 2026-09-04
 
-> **Architecture alignment with ADR 0002 (amendment merged in PR #48; Status: Proposed):**
-> This ADR aligns with the Phase-1 database kernel architecture specified in [ADR 0002](0002-postgres-pgvector.md) §12.3: one shared async engine (`create_async_engine`), one `async_sessionmaker`, and one shared `MetaData`/naming convention (`shared.db.metadata.metadata`) residing in `src/ai_daily_digest/shared/db/`. All intelligence ORM models register against that single shared `MetaData`, and intelligence repositories receive an injected `AsyncSession`. While the ADR 0002 documentation amendment merged into `main` via PR #48, ADR 0002 itself remains formally `Proposed` and must be accepted by Persons A, B, and C before persistence implementation code begins.
+> **Architecture alignment with ADR 0002 (amendment merged in PR #48; Status: Accepted by Persons A, B, and C via PR #65):**
+> This ADR aligns with the Phase-1 database kernel architecture specified in [ADR 0002](0002-postgres-pgvector.md) §12.3: one shared async engine (`create_async_engine`), one `async_sessionmaker`, and one shared `MetaData`/naming convention (`shared.db.metadata.metadata`) residing in `src/ai_daily_digest/shared/db/`. All intelligence ORM models register against that single shared `MetaData`, and intelligence repositories receive an injected `AsyncSession`. The ADR 0002 documentation amendment merged into `main` via PR #48, and the team recorded formal acceptance via PR #65 (`Status: Accepted by Persons A, B, and C`); the persistence-implementation blocker this section previously described is resolved.
+>
+> **Governance alignment across modules:** Person A (ingestion review steward) authored ADR 0002 because the first persistence tables (`source_items`, `document_snapshots`) are ingestion-owned; Person B (intelligence) authored this ADR and the intelligence models/store built on that shared kernel; Person C (delivery) owns the API-layer integration (`/v1/changes`, `/v1/digests`) that consumes both. All three are review stewards of ADR 0002's shared kernel per its own §12.3, matching the module-ownership boundary this ADR's §9 table already establishes for intelligence-owned code.
 
 ---
 
@@ -17,7 +19,7 @@ The intelligence module currently holds its operational state in-memory:
 
 To support end-to-end trace journeys, historical auditability, and the `/v1/changes` and `/v1/digests` endpoints defined in `docs/API_CONTRACT.md`, intelligence requires a concrete PostgreSQL persistence foundation.
 
-This design mirrors the architectural rigor and discipline of the persistence foundation established in [ADR 0002](0002-postgres-pgvector.md) (Status: Proposed):
+This design mirrors the architectural rigor and discipline of the persistence foundation established in [ADR 0002](0002-postgres-pgvector.md) (Status: Accepted by Persons A, B, and C):
 - **Business chronology ordering tuples:** [ADR 0007](0007-uuid-v7-identifier-strategy.md) establishes that business chronology derives exclusively from an explicit business timestamp, with UUIDv7 serving solely as an opaque tie-breaker. Keyset pagination ordering tuples mandated by [ADR 0008](0008-cursor-pagination-contract.md) (`(detected_at DESC, id DESC)` for `/v1/changes`, `(digest_date DESC, id DESC)` for `/v1/digests`) adhere strictly to this `(business_timestamp, id)` paradigm. Current-fact resolution uses the four-part tuple `(observed_at DESC, snapshot_id DESC, extraction_version DESC, id DESC)`: `observed_at` is the sole business chronology; `snapshot_id` is an opaque deterministic tie-breaker — never decoded, never independent business chronology, exactly like `id` elsewhere — used only when two distinct snapshots share one `observed_at`; `extraction_version` is compared strictly after `snapshot_id`, so it orders corrections *within* one already-identified snapshot and never lets a higher version number from a different, unrelated snapshot outrank a lower one from the correct snapshot; `id` remains the final unique tie-breaker.
 - **Canonical subject identity:** Following `FactStore._subject_key()` (`intelligence/facts.py:115-118`), subjects are keyed in the database by canonical normalized strings (`company_key`, `product_key`) computed via `normalise_name()`, preventing duplicate records from incidental casing, whitespace, or punctuation differences.
 - **Cross-table relational consistency:** Composite foreign keys guarantee that a `Change` cannot reference a `ChangeSet` belonging to a different subject, and that `current_facts` cannot reference an `extracted_facts` row with mismatched subject, field, timestamp, or extraction version (mirroring the referential integrity pattern in ADR 0002 §9).
@@ -31,7 +33,7 @@ This design mirrors the architectural rigor and discipline of the persistence fo
 
 ## 2. What already exists — verified against the tree
 
-The shared contracts and intelligence domain models already define the required fields, invariants, and validation boundaries. The citations below for `shared/schemas.py`, `intelligence/facts.py`, and `docs/adr/0008-cursor-pagination-contract.md` have been opened and confirmed in the repository tree. Citations referencing `ADR 0002` have been verified against `docs/adr/0002-postgres-pgvector.md` on `main` (commit `181c025`; Status: Proposed):
+The shared contracts and intelligence domain models already define the required fields, invariants, and validation boundaries. The citations below for `shared/schemas.py`, `intelligence/facts.py`, and `docs/adr/0008-cursor-pagination-contract.md` have been opened and confirmed in the repository tree. Citations referencing `ADR 0002` have been verified against `docs/adr/0002-postgres-pgvector.md` on `main` (commit `181c025` at the time of original citation; the document was subsequently accepted via PR #65, commit `336cf48`; Status: Accepted by Persons A, B, and C):
 
 | Component | Existing definition / location | Status & Invariants |
 |---|---|---|

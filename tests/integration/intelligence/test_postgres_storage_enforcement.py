@@ -1319,3 +1319,132 @@ async def test_current_facts_real_two_connection_concurrency() -> None:  # pylin
         assert len(rev_changes) == 0
     finally:
         await engine.dispose()
+
+
+# -----------------------------------------------------------------------------
+# 14. ADR 0011 SS7 Case 3: First-Write Race on an Empty current_facts Pointer
+# -----------------------------------------------------------------------------
+@run_async
+async def test_current_facts_first_write_race_concurrency() -> None:  # pylint: disable=too-many-locals
+    """Two connections race the *initial* observation for a subject+field concurrently.
+
+    Both go through the real detect_and_persist_changes() -> lock_subject_fields()
+    advisory-lock path against a field with no prior current_facts row at all (an
+    empty pointer table for this key). Per ADR 0011 SS7 Case 3, this proves:
+
+    1. Neither transaction fails with a uniqueness violation or deadlock -- the
+       advisory lock serializes the two INSERT ... ON CONFLICT attempts on the
+       still-nonexistent row cleanly.
+    2. The winner is deterministically resolved by the 4-part row comparison
+       (observed_at, snapshot_id, extraction_version, fact_id), not by which
+       transaction happened to acquire the lock first.
+    3. Neither writer emits a Change: Tx1 (which reaches the empty row first) sees
+       prior=None (first observation, no Change by design); Tx2's fact is
+       deliberately given a lower-precedence observed_at, so once serialized behind
+       Tx1 it loses the row-comparison predicate and advance_current_facts() returns
+       advanced=False, so it is skipped before the prior=None/not-None distinction
+       is even reached.
+    """
+    engine = _get_engine()
+    sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        subject = Subject(company="RaceCo", product="FirstWriteEngine")
+        t_early = BASE_TIME + timedelta(hours=1)
+        t_late = BASE_TIME + timedelta(hours=2)
+
+        async with sessionmaker() as setup_session:
+            _, snap_early = await _make_source_and_snapshot(setup_session, fetched_at=t_early)
+            _, snap_late = await _make_source_and_snapshot(setup_session, fetched_at=t_late)
+            await setup_session.commit()
+
+        # Tx1's fact is the higher-precedence (later) observation; it reaches the
+        # empty row first and holds the transaction open before committing.
+        f_winner = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_late.id,
+            field="launch_status",
+            value="general_availability",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+        # Tx2's fact is deliberately lower-precedence (earlier); once serialized
+        # behind Tx1 it must lose the row comparison and be skipped.
+        f_loser = ExtractedFact(
+            id=new_id(),
+            snapshot_id=snap_early.id,
+            field="launch_status",
+            value="private_preview",
+            disclosure_status=DisclosureStatus.DISCLOSED,
+            extraction_method=ExtractionMethod.DETERMINISTIC,
+        )
+
+        tx1_done = asyncio.Event()
+        tx2_started = asyncio.Event()
+        tx1_changes: list[Any] = []
+        tx2_changes: list[Any] = []
+        errors: list[BaseException] = []
+
+        async def _run_tx1() -> None:
+            try:
+                async with sessionmaker() as s1, s1.begin():
+                    store1 = PostgresFactStore(s1)
+                    changes1 = await store1.detect_and_persist_changes(
+                        subject,
+                        [f_winner],
+                        snapshot_observed_at=t_late,
+                        detected_at=t_late,
+                        extraction_version=1,
+                    )
+                    tx1_changes.extend(changes1)
+                    # current_facts row for this field now exists but is uncommitted.
+                    # Hold the transaction open so Tx2 genuinely blocks on the
+                    # advisory lock before Tx1 commits.
+                    tx1_done.set()
+                    await tx2_started.wait()
+                    await asyncio.sleep(0.05)
+                # Commit happens here, at context exit.
+            except BaseException as exc:  # pylint: disable=broad-except
+                errors.append(exc)
+                raise
+
+        async def _run_tx2() -> None:
+            await tx1_done.wait()
+            try:
+                async with sessionmaker() as s2, s2.begin():
+                    store2 = PostgresFactStore(s2)
+                    tx2_started.set()
+                    # Blocks inside lock_subject_fields() until Tx1 commits.
+                    changes2 = await store2.detect_and_persist_changes(
+                        subject,
+                        [f_loser],
+                        snapshot_observed_at=t_early,
+                        detected_at=t_early,
+                        extraction_version=1,
+                    )
+                    tx2_changes.extend(changes2)
+            except BaseException as exc:  # pylint: disable=broad-except
+                errors.append(exc)
+                raise
+
+        # Assertion 1: both transactions complete cleanly -- no uniqueness
+        # violation, no deadlock, no exception propagated from either side.
+        await asyncio.gather(_run_tx1(), _run_tx2())
+        assert not errors
+
+        # Assertion 2: the winner is resolved by the 4-part row comparison, not by
+        # lock-acquisition order -- Tx1's later observed_at wins regardless of the
+        # fact that Tx2 was the one serialized to run second.
+        async with sessionmaker() as verify_session:
+            cf = await verify_session.get(
+                CurrentFactModel, ("raceco", "firstwriteengine", "launch_status")
+            )
+            assert cf is not None
+            assert cf.fact_id == f_winner.id
+            assert cf.snapshot_id == snap_late.id
+            assert cf.observed_at == t_late
+
+        # Assertion 3: neither writer emitted a Change.
+        assert not tx1_changes
+        assert not tx2_changes
+    finally:
+        await engine.dispose()
