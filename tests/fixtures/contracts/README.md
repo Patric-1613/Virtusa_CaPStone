@@ -1,7 +1,7 @@
 # Contract fixture pack — draft, not the Milestone-0 deliverable
 
-This is a small **starter** set (4 source items / 4 snapshots / 5 facts /
-1 change set / 1 digest), built solo against the real
+This is an expanded starter inventory (20 source items / 23 snapshots / 28 facts /
+1 change set / 1 digest), built against the real
 `docs/API_CONTRACT.md` shape so intelligence code has something
 schema-valid to run against. It is **not** what `docs/TEAM_WORKFLOW.md`'s
 "Day-one agreement" item 5 and `docs/ARCHITECTURE.md`'s Milestone 0
@@ -40,17 +40,31 @@ session; don't just append to them solo.
 
 ## What this starter set demonstrates
 
-- `a...0001` / `a...0002` — same real-world event (GPT-4o's context window
+- `Items 1-2` — same real-world event (GPT-4o's context window
   increase) covered by two different publishers, sharing `event_id`
   (the "same story, different outlet" case).
-- `a...0003` — the prior state (GPT-4o's original 128k window at launch),
+- `Item 3` — the prior state (GPT-4o's original 128k window at launch),
   giving `change_sets.json` a real previous/current pair to cite.
-- `a...0004` — a sparse item (Anthropic/Claude) whose snapshot explicitly
+- `Item 4` — a sparse item (Anthropic/Claude) whose snapshot explicitly
   states its context window isn't published yet — `extracted_facts.json`'s
-  5th entry (`g...0005`) records that as a real, grounded
+  5th entry records that as a real, grounded
   `disclosure_status: "not_disclosed"` fact (ADR 0006), backing
   `digests.json`'s second claim ("has not disclosed its context window")
   with actual evidence rather than an inferred absence.
+- `Items 5–20` — 16 new source items expanding coverage across five major
+  industry publishers (OpenAI, Anthropic, Google DeepMind, Meta AI, Mistral AI),
+  diverse publishing dates across 2026, varied topic tags (`model_release`,
+  `benchmark`, `research`, `api_update`), and multi-author records.
+- `Items 5 & 6 (Pagination tie-breaker)` — Google DeepMind (`gemini-1-5-pro`)
+  and Meta AI (`llama-3-1-405b`) share an identical `first_fetched_at`
+  (`2026-08-21T10:00:00Z`) to exercise the keyset pagination `(first_fetched_at DESC, id DESC)`
+  tie-breaking behavior when timestamps coincide.
+- `Items 5, 6, 7 (Snapshot revision history)` — demonstrate multi-snapshot
+  lineage: each item has two sequential snapshots (revisions 1 and 2), with
+  `latest_snapshot_id` on the item pointing at revision 2.
+- `Item 14 (Explicit non-disclosure)` — Anthropic Computer Use preview
+  carries an explicit `disclosure_status: "not_disclosed"` fact with `value: null`
+  for experimental token pricing, grounded by a literal quoted span.
 - `change_sets.json` — one `ChangeSet` containing one `Change`, both
   `previous` and `current` citing real snapshot ids and source URLs. The
   `Change` carries `detected_at` — when the intelligence pipeline detected
@@ -61,8 +75,9 @@ session; don't just append to them solo.
 - `digests.json` — `digest_date` is a real calendar date on the wire
   (`YYYY-MM-DD`); the loader parses it to a `datetime.date` (ADR 0008
   section 5.B).
-- `extracted_facts.json` — one `ExtractedFact` per (snapshot, field),
-  all `extraction_method: "llm_structured_output"` with a model + prompt
-  version recorded, per the contract's reproducibility requirement.
-  4 `disclosure_status: "disclosed"` facts plus the 1 `"not_disclosed"`
-  one described above (ADR 0006).
+- `extracted_facts.json` — one or more `ExtractedFact` records per snapshot,
+  all using `extraction_method: "llm_structured_output"` with `quoted_span`,
+  `confidence`, `extraction_model`, and `prompt_version` recorded per the
+  contract's reproducibility requirement (ADR 0004). Disclosed facts record
+  valid string values; non-disclosed facts record `value: null` with
+  `disclosure_status: "not_disclosed"` (ADR 0006).

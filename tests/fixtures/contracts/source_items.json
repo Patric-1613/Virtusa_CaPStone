@@ -12,7 +12,9 @@
     "latest_snapshot_id": "01a01e6a-a260-79e3-9a2b-1e4e705d3108",
     "event_id": "ev-gpt4o-256k",
     "authors": [],
-    "tags": ["model_release"],
+    "tags": [
+      "model_release"
+    ],
     "language": "en"
   },
   {
@@ -28,7 +30,9 @@
     "latest_snapshot_id": "01a01ef8-8a80-7d72-8af5-02cbdf0784f9",
     "event_id": "ev-gpt4o-256k",
     "authors": [],
-    "tags": ["model_release"],
+    "tags": [
+      "model_release"
+    ],
     "language": "en"
   },
   {
@@ -44,7 +48,9 @@
     "latest_snapshot_id": "019e8798-d240-7551-8296-37bdd4a08abc",
     "event_id": "ev-gpt4o-launch",
     "authors": [],
-    "tags": ["model_release"],
+    "tags": [
+      "model_release"
+    ],
     "language": "en"
   },
   {
@@ -60,7 +66,335 @@
     "latest_snapshot_id": "01a01a5b-82c0-7163-b557-1246abccd49d",
     "event_id": null,
     "authors": [],
-    "tags": ["benchmark"],
+    "tags": [
+      "benchmark"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a023c3-5900-7222-9a3b-3a2023f234f3",
+    "dedupe_key": "sha256:google-deepmind-gemini-1-5-pro-context-expansion",
+    "source_id": "google_deepmind",
+    "publisher": "Google DeepMind",
+    "title": "Gemini 1.5 Pro expands context window to 2 million tokens",
+    "canonical_url": "https://deepmind.google/blog/gemini-1-5-pro-2m-context",
+    "published_at": "2026-08-21T09:30:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-08-21T10:00:00Z",
+    "latest_snapshot_id": "01a029c5-6f00-7363-94a7-d0bd7213b80c",
+    "event_id": "ev-gemini-2m-context",
+    "authors": [
+      "Demis Hassabis",
+      "Koray Kavukcuoglu"
+    ],
+    "tags": [
+      "model_release",
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a023c3-5900-73d2-abda-2ab7cc5e0293",
+    "dedupe_key": "sha256:meta-ai-llama-3-1-405b-release",
+    "source_id": "meta_ai_blog",
+    "publisher": "Meta AI",
+    "title": "Introducing Llama 3.1: Our most capable openly available models to date",
+    "canonical_url": "https://ai.meta.com/blog/meta-llama-3-1",
+    "published_at": "2026-08-21T09:45:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-08-21T10:00:00Z",
+    "latest_snapshot_id": "01a0293c-1ac0-72a0-bce0-6d3f15ae1230",
+    "event_id": "ev-llama-3-1-release",
+    "authors": [
+      "Mark Zuckerberg",
+      "Joelle Pineau"
+    ],
+    "tags": [
+      "model_release",
+      "research"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019f939f-04a0-7133-9a82-bb1b9bd9a3e8",
+    "dedupe_key": "sha256:mistral-ai-mistral-large-2-release",
+    "source_id": "mistral_news",
+    "publisher": "Mistral AI",
+    "title": "Mistral Large 2: A new flagship model with frontier reasoning",
+    "canonical_url": "https://mistral.ai/news/mistral-large-2407",
+    "published_at": "2026-07-24T10:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-07-24T10:15:00Z",
+    "latest_snapshot_id": "019f9849-c800-7540-b944-982cf22f70ee",
+    "event_id": "ev-mistral-large-2",
+    "authors": [
+      "Arthur Mensch",
+      "Guillaume Lample"
+    ],
+    "tags": [
+      "model_release"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019ee4f4-a9a0-7d73-bc5c-64774373ea7a",
+    "dedupe_key": "sha256:anthropic-claude-3-5-sonnet-release",
+    "source_id": "anthropic_news",
+    "publisher": "Anthropic",
+    "title": "Claude 3.5 Sonnet delivers industry-leading coding benchmarks",
+    "canonical_url": "https://www.anthropic.com/news/claude-3-5-sonnet",
+    "published_at": "2026-06-20T12:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-06-20T12:15:00Z",
+    "latest_snapshot_id": "019ee4f4-a9a0-7ed3-8c7d-776c01164838",
+    "event_id": "ev-claude-3-5-sonnet",
+    "authors": [
+      "Dario Amodei"
+    ],
+    "tags": [
+      "model_release",
+      "benchmark"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a0969d-8220-7893-b62b-56414ffbdb4e",
+    "dedupe_key": "sha256:openai-learning-to-reason-o1-preview",
+    "source_id": "openai_news",
+    "publisher": "OpenAI",
+    "title": "Learning to reason with LLMs: Introducing OpenAI o1",
+    "canonical_url": "https://openai.com/news/learning-to-reason-o1",
+    "published_at": "2026-09-12T17:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-09-12T17:15:00Z",
+    "latest_snapshot_id": "01a0969d-8220-73d2-9409-70c402197897",
+    "event_id": "ev-openai-o1-preview",
+    "authors": [
+      "Noam Brown",
+      "Mark Chen"
+    ],
+    "tags": [
+      "model_release",
+      "research"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019e082c-9500-7ab2-8b52-bfa951b86051",
+    "dedupe_key": "sha256:deepmind-alphafold-3-biomolecular-prediction",
+    "source_id": "google_deepmind",
+    "publisher": "Google DeepMind",
+    "title": "Accurate structure prediction of biomolecular interactions with AlphaFold 3",
+    "canonical_url": "https://deepmind.google/blog/alphafold-3-biomolecular-prediction",
+    "published_at": "2026-05-08T15:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-05-08T15:20:00Z",
+    "latest_snapshot_id": "019e082c-9500-7950-935b-528cb3351351",
+    "event_id": null,
+    "authors": [
+      "John Jumper",
+      "Demis Hassabis"
+    ],
+    "tags": [
+      "research"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019fa914-2ea0-7952-a50b-c01e330da960",
+    "dedupe_key": "sha256:meta-ai-llama-3-1-multilingual-evaluation-report",
+    "source_id": "meta_ai_blog",
+    "publisher": "Meta AI",
+    "title": "Comprehensive evaluation of Llama 3.1 across 8 languages and coding tasks",
+    "canonical_url": "https://ai.meta.com/blog/llama-3-1-evaluations",
+    "published_at": "2026-07-28T14:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-07-28T14:15:00Z",
+    "latest_snapshot_id": "019fa914-2ea0-7462-b2e4-28643b470976",
+    "event_id": "ev-llama-3-1-release",
+    "authors": [],
+    "tags": [
+      "benchmark",
+      "research"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019e7371-d320-75f2-804a-ae9ddfa7e1d1",
+    "dedupe_key": "sha256:mistral-ai-codestral-22b-launch",
+    "source_id": "mistral_news",
+    "publisher": "Mistral AI",
+    "title": "Codestral: Our first open-weight generative model for code",
+    "canonical_url": "https://mistral.ai/news/codestral-22b",
+    "published_at": "2026-05-29T11:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-05-29T11:15:00Z",
+    "latest_snapshot_id": "019e7371-d320-75c2-bbb8-e3dc0615e2cc",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "model_release",
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019f0933-8840-7033-83ca-972fa9f3134b",
+    "dedupe_key": "sha256:google-gemma-2-family-launch",
+    "source_id": "google_ai_blog",
+    "publisher": "Google",
+    "title": "Gemma 2: High efficiency open models at 9B and 27B parameters",
+    "canonical_url": "https://blog.google/technology/ai/gemma-2-launch",
+    "published_at": "2026-06-27T13:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-06-27T13:10:00Z",
+    "latest_snapshot_id": "019f0933-8840-7841-9c89-f660f6a5a380",
+    "event_id": null,
+    "authors": [
+      "Tris Warkentin",
+      "Abeba Birhane"
+    ],
+    "tags": [
+      "model_release",
+      "research"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a163c0-2820-7352-bb25-6c87b8f4eb3e",
+    "dedupe_key": "sha256:anthropic-computer-use-capabilities-preview",
+    "source_id": "anthropic_news",
+    "publisher": "Anthropic",
+    "title": "Developing computer use capabilities for AI assistants",
+    "canonical_url": "https://www.anthropic.com/news/computer-use-preview",
+    "published_at": "2026-10-22T13:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-10-22T13:15:00Z",
+    "latest_snapshot_id": "01a163c0-2820-7de2-ad1f-9d4afd3dda46",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "research",
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019fd7db-47a0-73d3-91e5-aae7692593f1",
+    "dedupe_key": "sha256:openai-structured-outputs-api-ga",
+    "source_id": "openai_release_notes",
+    "publisher": "OpenAI",
+    "title": "Introducing Structured Outputs in the API with 100% schema adherence",
+    "canonical_url": "https://openai.com/news/structured-outputs",
+    "published_at": "2026-08-06T16:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-08-06T16:15:00Z",
+    "latest_snapshot_id": "019fd7db-47a0-7450-b801-7f4f6761ba4a",
+    "event_id": null,
+    "authors": [
+      "Michelle Pokrass",
+      "Colin Jarvis"
+    ],
+    "tags": [
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a0aeaa-6e00-7713-9ef5-f4a00247ac5c",
+    "dedupe_key": "sha256:mistral-ai-pixtral-12b-multimodal",
+    "source_id": "mistral_news",
+    "publisher": "Mistral AI",
+    "title": "Pixtral 12B: Multimodal intelligence with native vision encoding",
+    "canonical_url": "https://mistral.ai/news/pixtral-12b",
+    "published_at": "2026-09-17T09:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-09-17T09:20:00Z",
+    "latest_snapshot_id": "01a0aeaa-6e00-7c83-bf84-dcfcac4a58aa",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "model_release"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019f1e43-fd00-7a40-b956-cab6a35dbbfe",
+    "dedupe_key": "sha256:meta-ai-mobilellm-edge-devices-research",
+    "source_id": "meta_ai_blog",
+    "publisher": "Meta AI",
+    "title": "MobileLLM: Optimizing sub-billion parameter models for edge devices",
+    "canonical_url": "https://ai.meta.com/blog/mobilellm-edge-devices",
+    "published_at": "2026-07-01T15:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-07-01T15:20:00Z",
+    "latest_snapshot_id": "019f1e43-fd00-7951-94b4-aed777d53430",
+    "event_id": null,
+    "authors": [
+      "Yingyan Lin",
+      "Peter Vajda"
+    ],
+    "tags": [
+      "research"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a006ab-8860-7840-83aa-51b38648ca9a",
+    "dedupe_key": "sha256:gemini-api-batch-inference-discount",
+    "source_id": "gemini_api_changelog",
+    "publisher": "Google",
+    "title": "Gemini API adds asynchronous batch inference with 50% cost discount",
+    "canonical_url": "https://ai.google.dev/gemini-api/docs/changelog#august-2026",
+    "published_at": "2026-08-15T18:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-08-15T18:25:00Z",
+    "latest_snapshot_id": "01a006ab-8860-7e23-a6c6-5851e07bd1d9",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "019fffc4-90a0-7b72-af69-815328f46b9b",
+    "dedupe_key": "sha256:anthropic-prompt-caching-cost-reduction",
+    "source_id": "anthropic_release_notes",
+    "publisher": "Anthropic",
+    "title": "Prompt Caching reduces latency by up to 80% and costs by up to 90%",
+    "canonical_url": "https://www.anthropic.com/news/prompt-caching",
+    "published_at": "2026-08-14T10:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-08-14T10:15:00Z",
+    "latest_snapshot_id": "019fffc4-90a0-7a70-beff-cb568a32fb67",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "api_update",
+      "benchmark"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a0f7d1-8aa0-7a60-9c71-008d9065b3bd",
+    "dedupe_key": "sha256:openai-whisper-large-v3-turbo-release",
+    "source_id": "openai_release_notes",
+    "publisher": "OpenAI",
+    "title": "Whisper large-v3-turbo released with optimized latency",
+    "canonical_url": "https://openai.com/news/whisper-large-v3-turbo",
+    "published_at": "2026-10-01T14:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-10-01T14:15:00Z",
+    "latest_snapshot_id": "01a0f7d1-8aa0-72e3-a7b2-fb1aa47f16e6",
+    "event_id": null,
+    "authors": [
+      "Jong Wook Kim"
+    ],
+    "tags": [
+      "model_release",
+      "api_update"
+    ],
     "language": "en"
   }
 ]
