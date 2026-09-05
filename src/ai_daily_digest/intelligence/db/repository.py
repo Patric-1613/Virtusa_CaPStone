@@ -208,9 +208,19 @@ class PostgresFactStore:
         return recorded
 
     async def read_current_facts(
-        self, subject: Subject, fields: Sequence[str]
+        self,
+        subject: Subject,
+        fields: Sequence[str],
+        *,
+        for_update: bool = False,
     ) -> dict[str, tuple[CurrentFactModel, ExtractedFactModel]]:
-        """Read current confirmed facts and their referenced extracted facts."""
+        """Read current confirmed facts and their referenced extracted facts.
+
+        When `for_update=True` (PostgreSQL only), locks the `current_facts` rows via
+        `SELECT ... FOR UPDATE OF current_facts` so this read blocks on any concurrent,
+        not-yet-committed writer to the same row rather than returning a stale
+        READ-COMMITTED snapshot -- see `detect_and_persist_changes()`.
+        """
         ck, pk = _subject_keys(subject)
         stmt = (
             select(CurrentFactModel, ExtractedFactModel)
@@ -224,6 +234,10 @@ class PostgresFactStore:
                 CurrentFactModel.field.in_(fields),
             )
         )
+        if for_update:
+            bind = self._session.get_bind()
+            if bind is None or bind.dialect.name != "sqlite":
+                stmt = stmt.with_for_update(of=CurrentFactModel)
         res = await self._session.execute(stmt)
         return {cf.field: (cf, ef) for cf, ef in res.all()}
 
@@ -285,8 +299,9 @@ class PostgresFactStore:
     ) -> dict[str, bool]:
         """Conditionally advance current_facts using PostgreSQL atomic upsert.
 
-        Executes atomic INSERT ... ON CONFLICT DO UPDATE
-        WHERE EXCLUDED.observed_at > current_facts.observed_at.
+        Executes atomic INSERT ... ON CONFLICT DO UPDATE, gated by a full row-value
+        comparison over (observed_at, snapshot_id, extraction_version, fact_id) -- see
+        `_upsert_current_fact()`.
         Returns a dict mapping field_name -> bool (True if the pointer advanced).
         """
         ck, pk = _subject_keys(subject)
@@ -335,8 +350,12 @@ class PostgresFactStore:
         fields = [f.field for f in facts]
         await self.lock_subject_fields(subject, fields)
 
-        # Read current state prior to advance into an immutable snapshot
-        current_map = await self.read_current_facts(subject, fields)
+        # Read current state prior to advance into an immutable snapshot. for_update=True
+        # blocks this read on any in-flight concurrent writer holding the current_facts
+        # row lock (e.g. a direct advance_current_facts() caller that bypasses the advisory
+        # lock below), so once unblocked we observe the actually-committed prior state
+        # instead of a stale pre-commit read.
+        current_map = await self.read_current_facts(subject, fields, for_update=True)
         prior_state: dict[str, PriorFactState] = {
             field: PriorFactState(
                 fact_id=cf.fact_id,
