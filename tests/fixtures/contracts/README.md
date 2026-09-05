@@ -1,11 +1,18 @@
 # Contract fixture pack — draft, not the Milestone-0 deliverable
 
-This is an expanded starter inventory (20 source items / 23 snapshots / 28 facts /
+This is an expanded starter inventory (20 source items / 23 snapshots / 31 facts /
 1 change set / 1 digest), built against the real
 `docs/API_CONTRACT.md` shape so intelligence code has something
 schema-valid to run against. It is **not** what `docs/TEAM_WORKFLOW.md`'s
 "Day-one agreement" item 5 and `docs/ARCHITECTURE.md`'s Milestone 0
 actually require:
+
+> [!IMPORTANT]
+> **Synthetic Test Records Notice**: All items, titles, dates, quoted spans, and URLs in this
+> fixture pack are synthetic test records designed to exercise schemas, parsers, and pipeline
+> invariants. They do NOT represent real product announcements or publications, carry no attribution
+> to real individuals (`authors: []`), and use reserved example domains (`example.com`/`example.org`)
+> for canonical URLs.
 
 ## UUID v7 identifier convention (docs/adr/0007-uuid-v7-identifier-strategy.md)
 
@@ -25,6 +32,13 @@ snapshot's `id`, a `Change`'s citations equal to real snapshot ids, etc.)
 is preserved exactly, just with authentic values. These IDs are frozen
 literals — never regenerated at test-run time — so the pack stays fully
 deterministic.
+
+## Key and Hash Placeholders
+
+Values such as `dedupe_key: "sha256:..."` and `content_hash: "sha256:content-..."` in this
+starter pack are human-readable semantic placeholders (e.g. `sha256:google-deepmind-...`) rather
+than cryptographically computed SHA-256 digests. Production ingestion generates true SHA-256
+digests over normalized URLs and fetched bytes.
 
 > A committed, schema-validated fixture pack in `tests/fixtures/contracts/`:
 > at least twenty `SourceItem` records with snapshots, two change sets,
@@ -53,8 +67,8 @@ session; don't just append to them solo.
   with actual evidence rather than an inferred absence.
 - `Items 5–20` — 16 new source items expanding coverage across five major
   industry publishers (OpenAI, Anthropic, Google DeepMind, Meta AI, Mistral AI),
-  diverse publishing dates across 2026, varied topic tags (`model_release`,
-  `benchmark`, `research`, `api_update`), and multi-author records.
+  diverse publishing dates across 2026, and varied topic tags (`model_release`,
+  `benchmark`, `research`, `api_update`).
 - `Items 5 & 6 (Pagination tie-breaker)` — Google DeepMind (`gemini-1-5-pro`)
   and Meta AI (`llama-3-1-405b`) share an identical `first_fetched_at`
   (`2026-08-21T10:00:00Z`) to exercise the keyset pagination `(first_fetched_at DESC, id DESC)`
@@ -75,9 +89,12 @@ session; don't just append to them solo.
 - `digests.json` — `digest_date` is a real calendar date on the wire
   (`YYYY-MM-DD`); the loader parses it to a `datetime.date` (ADR 0008
   section 5.B).
-- `extracted_facts.json` — one or more `ExtractedFact` records per snapshot,
-  all using `extraction_method: "llm_structured_output"` with `quoted_span`,
+- `extracted_facts.json` — one or more `ExtractedFact` records per snapshot (all 23
+  snapshots have >= 1 associated fact). All facts use fields from the agreed
+  `COMPARABLE_FIELDS` set (`context_window_tokens`, `input_price_usd`, `benchmark_scores`,
+  `licence_terms`), and all use `extraction_method: "llm_structured_output"` with `quoted_span`,
   `confidence`, `extraction_model`, and `prompt_version` recorded per the
   contract's reproducibility requirement (ADR 0004). Disclosed facts record
-  valid string values; non-disclosed facts record `value: null` with
+  valid string values strictly verified to be grounded in their quoted spans via
+  `value_supported_by_quote()`; non-disclosed facts record `value: null` with
   `disclosure_status: "not_disclosed"` (ADR 0006).
