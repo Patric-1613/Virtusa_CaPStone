@@ -66,16 +66,17 @@ def test_production_factory_rejects_missing_origin(monkeypatch: pytest.MonkeyPat
         create_production_app()
 
 
+class _FakeDatabaseProbe:
+    async def is_ready(self) -> bool:
+        return True
+
+
 def test_create_app_wires_both_database_readiness_probe_and_cors_middleware() -> None:
     """Prove create_app retains dual contract: database probe in readiness and CORS middleware."""
     from ai_daily_digest.delivery.api.app import create_app
-    from ai_daily_digest.delivery.api.dependencies import DependencyCheckResult
-
-    async def _db_probe() -> DependencyCheckResult:
-        return DependencyCheckResult(status="ok", latency_ms=1.5)
 
     app = create_app(
-        database_readiness_probe=_db_probe,
+        database_readiness_probe=_FakeDatabaseProbe(),
         frontend_origin=FRONTEND_ORIGIN,
     )
 
@@ -90,7 +91,7 @@ def test_create_app_wires_both_database_readiness_probe_and_cors_middleware() ->
     assert ready_resp.status_code == 200
     assert ready_resp.json() == {
         "status": "ready",
-        "checks": [{"name": "database", "status": "ok", "latency_ms": 1.5}],
+        "checks": [{"name": "database", "ready": True}],
     }
 
     cors_resp = client.options(
@@ -103,4 +104,3 @@ def test_create_app_wires_both_database_readiness_probe_and_cors_middleware() ->
     assert cors_resp.status_code == 200
     assert cors_resp.headers["access-control-allow-origin"] == FRONTEND_ORIGIN
     assert "access-control-allow-credentials" not in cors_resp.headers
-
