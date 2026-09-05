@@ -47,6 +47,10 @@ dependencies = [
   # The plain package is sufficient; the standard extra would add a server
   # runner and unrelated optional dependencies before they are needed.
   "fastapi>=0.141.1",
+  # uvicorn: Render needs an ASGI process runner for the tested production
+  # application factory. The standard library and FastAPI do not ship one;
+  # the plain package avoids unrelated optional server dependencies.
+  "uvicorn>=0.35",
   # --- persistence foundation (docs/adr/0002-postgres-pgvector.md) ---
   # sqlalchemy: no standard-library ORM or typed query layer exists;
   #   docs/ARCHITECTURE.md's technology baseline already names SQLAlchemy 2

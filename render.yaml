@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: ai-daily-digest-api
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv sync --locked --no-dev --no-editable
+    startCommand: .venv/bin/uvicorn ai_daily_digest.delivery.api.production:create_production_app --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /v1/health/live
+    envVars:
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: PAGINATION_CURSOR_SECRET
+        generateValue: true
+      - key: DOCS_ENABLED
+        value: "true"
+
+  - type: web
+    name: ai-daily-digest-web
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: "/*"
+        destination: /index.html
