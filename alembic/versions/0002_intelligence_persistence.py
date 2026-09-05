@@ -700,6 +700,8 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS check_digest_publication_prerequisites();
         DROP FUNCTION IF EXISTS check_published_digest_claims_immutability();
         DROP FUNCTION IF EXISTS check_published_digest_claim_citations_immutability();
+        DROP FUNCTION IF EXISTS reject_row_mutation();
+        DROP FUNCTION IF EXISTS reject_table_truncate();
     """)
 
     # Drop intelligence tables in reverse dependency order

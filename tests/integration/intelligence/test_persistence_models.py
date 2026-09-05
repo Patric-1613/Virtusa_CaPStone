@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
@@ -290,6 +291,14 @@ async def test_current_facts_four_part_ordering_regression(  # pylint: disable=t
     # --- 2. Equal observed_at, snapshot_id, extraction_version: Tie-breaker by fact_id ---
     fid_a, fid_b = new_id(), new_id()
     fid_low, fid_high = (fid_a, fid_b) if fid_a < fid_b else (fid_b, fid_a)
+
+    await store.ensure_subject(Subject(company="CoThree", product="ModelGamma"))
+    # Drop composite FK in this test transaction so we can test the pure
+    # row-comparison predicate on current_facts without conflicting with
+    # uq_extracted_facts_attempt
+    await database_session.execute(
+        text("ALTER TABLE current_facts DROP CONSTRAINT fk_current_facts_extracted_fact_composite;")
+    )
 
     f_model_low = ExtractedFactModel(
         id=fid_low,
