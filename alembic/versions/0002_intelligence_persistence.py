@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -373,6 +372,7 @@ EXECUTE FUNCTION reject_table_truncate();"""
 
 
 def upgrade() -> None:
+    # 1. subjects
     op.create_table(
         "subjects",
         sa.Column("company_key", sa.Text(), nullable=False),
@@ -383,85 +383,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("company_key", "product_key", name="pk_subjects"),
     )
 
-    # 2. source_items — created WITHOUT the latest_snapshot_id FK yet; document_snapshots
-    # doesn't exist until step 3, and the two tables reference each other (ADR 0002 §9).
-    op.create_table(
-        "source_items",
-        sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
-        sa.Column("dedupe_key", sa.Text(), nullable=False),
-        sa.Column("source_id", sa.String(length=255), nullable=False),
-        sa.Column("publisher", sa.String(length=255), nullable=False),
-        sa.Column("title", sa.Text(), nullable=False),
-        sa.Column("canonical_url", sa.Text(), nullable=False),
-        sa.Column("first_fetched_at", sa.TIMESTAMP(timezone=True), nullable=False),
-        sa.Column("published_at", sa.TIMESTAMP(timezone=True), nullable=True),
-        sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=True),
-        sa.Column(
-            "authors",
-            postgresql.ARRAY(sa.Text()).with_variant(sa.JSON(), "sqlite"),
-            nullable=False,
-        ),
-        sa.Column(
-            "tags",
-            postgresql.ARRAY(sa.Text()).with_variant(sa.JSON(), "sqlite"),
-            nullable=False,
-        ),
-        sa.Column("language", sa.String(length=32), nullable=True),
-        sa.Column("event_id", sa.String(length=255), nullable=True),
-        sa.Column("latest_snapshot_id", sa.Uuid(as_uuid=True), nullable=True),
-        sa.PrimaryKeyConstraint("id", name="pk_source_items"),
-        sa.UniqueConstraint("dedupe_key", name="uq_source_items_dedupe_key"),
-    )
-    op.create_index("idx_source_items_pagination", "source_items", ["first_fetched_at", "id"])
-    op.create_index("idx_source_items_publisher", "source_items", ["publisher"])
-    op.create_index("idx_source_items_source_id", "source_items", ["source_id"])
-
-    # 3. document_snapshots
-    op.create_table(
-        "document_snapshots",
-        sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
-        sa.Column("source_item_id", sa.Uuid(as_uuid=True), nullable=False),
-        sa.Column("content_hash", sa.String(length=64), nullable=False),
-        sa.Column("fetched_at", sa.TIMESTAMP(timezone=True), nullable=False),
-        sa.Column("content_text", sa.Text(), nullable=False),
-        sa.Column("raw_storage_path", sa.Text(), nullable=True),
-        sa.Column(
-            "headers",
-            postgresql.JSONB().with_variant(sa.JSON(), "sqlite"),
-            nullable=True,
-        ),
-        sa.ForeignKeyConstraint(
-            ["source_item_id"],
-            ["source_items.id"],
-            name="fk_document_snapshots_source_item_id",
-            ondelete="RESTRICT",
-        ),
-        sa.PrimaryKeyConstraint("id", name="pk_document_snapshots"),
-        sa.UniqueConstraint(
-            "source_item_id",
-            "content_hash",
-            name="uq_document_snapshots_item_content",
-        ),
-        sa.UniqueConstraint("id", "source_item_id", name="uq_document_snapshots_id_source_item"),
-    )
-    op.create_index(
-        "idx_document_snapshots_item_fetched",
-        "document_snapshots",
-        ["source_item_id", "fetched_at"],
-    )
-
-    # 4. Composite FK from source_items -> document_snapshots (ADR 0002 §9)
-    op.create_foreign_key(
-        "fk_source_items_latest_snapshot_composite",
-        "source_items",
-        "document_snapshots",
-        ["latest_snapshot_id", "id"],
-        ["id", "source_item_id"],
-        ondelete="RESTRICT",
-        onupdate="RESTRICT",
-    )
-
-    # 5. extracted_facts
+    # 2. extracted_facts
     op.create_table(
         "extracted_facts",
         sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
